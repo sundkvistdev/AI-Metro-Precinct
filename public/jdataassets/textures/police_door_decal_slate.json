@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "police_door_decal_slate",
+  "seed": 500204,
+  "width": 256,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    {
+      "op": "police_door_emblem",
+      "title": "METRO",
+      "subtitle": "TACTICAL · RESPONSE",
+      "bgColor": "#cbd5e1",
+      "stripeColor": "#1d4ed8",
+      "accentColor": "#60a5fa",
+      "badgeColor": "#1e293b",
+      "badgeCenterColor": "#93c5fd",
+      "textColor": "#0f172a",
+      "subtitleColor": "#1e40af"
+    }
+  ]
+}

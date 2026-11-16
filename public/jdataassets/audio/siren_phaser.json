@@ -1,0 +1,17 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "siren_phaser",
+  "seed": 801004,
+  "kind": "siren_sweep",
+  "gain": 0.19,
+  "siren": {
+    "waveform1": "sawtooth",
+    "waveform2": "square",
+    "detuneRatio": 1.005,
+    "minFreq": 640,
+    "maxFreq": 1440,
+    "sweepRateHz": 8.4,
+    "bandpassFreq": 1350,
+    "bandpassQ": 1.6
+  }
+}

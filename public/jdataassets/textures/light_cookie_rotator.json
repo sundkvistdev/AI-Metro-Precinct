@@ -1,0 +1,20 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "light_cookie_rotator",
+  "seed": 701002,
+  "width": 256,
+  "height": 256,
+  "colorSpace": "srgb",
+  "anisotropy": 4,
+  "layers": [
+    {
+      "op": "light_cookie_lobe",
+      "cx": 128,
+      "cy": 128,
+      "rx": 116,
+      "ry": 84,
+      "hotRadius": 44,
+      "fluteCount": 14
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "siren_aggressive_yelp",
+  "seed": 801002,
+  "kind": "siren_sweep",
+  "gain": 0.21,
+  "siren": {
+    "waveform1": "sawtooth",
+    "waveform2": "triangle",
+    "detuneRatio": 1.006,
+    "minFreq": 620,
+    "maxFreq": 1360,
+    "sweepRateHz": 3.1,
+    "bandpassFreq": 1250,
+    "bandpassQ": 1.5
+  }
+}

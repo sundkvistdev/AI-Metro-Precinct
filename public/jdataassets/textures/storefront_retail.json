@@ -1,0 +1,20 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "storefront_retail",
+  "seed": 601201,
+  "width": 512,
+  "height": 256,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    { "op": "fill", "color": "#2a2f38" },
+    {
+      "op": "storefront_bays",
+      "bays": [
+        { "name": "CORNER MARKET", "awningColor": "#1d4ed8" },
+        { "name": "ROASTERY & CAFE", "awningColor": "#78350f" },
+        { "name": "CITY PHARMACY", "awningColor": "#0f766e" }
+      ]
+    }
+  ]
+}

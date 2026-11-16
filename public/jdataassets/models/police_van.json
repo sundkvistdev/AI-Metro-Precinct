@@ -1,0 +1,115 @@
+{
+  "format": "jdata-model-v1",
+  "id": "police_van",
+  "seed": 900103,
+  "materials": {
+    "black_paint": { "type": "physical", "color": "#1d4ed8", "roughness": 0.26, "metalness": 0.38, "clearcoat": 0.82, "clearcoatRoughness": 0.16 },
+    "white_paint": { "type": "physical", "color": "#f8fafc", "roughness": 0.28, "metalness": 0.14, "clearcoat": 0.72, "clearcoatRoughness": 0.18 },
+    "door_decal": { "type": "physical", "color": "#ffffff", "roughness": 0.28, "metalness": 0.15, "clearcoat": 0.7, "transparent": true, "textureRef": "police_door_decal_transport" },
+    "glass": { "type": "physical", "color": "#0d1724", "roughness": 0.08, "metalness": 0.15, "transparent": true, "opacity": 0.72, "clearcoat": 1.0 },
+    "trim": { "type": "standard", "color": "#1e242d", "roughness": 0.74, "metalness": 0.25 },
+    "chrome": { "type": "standard", "color": "#d1d8e0", "roughness": 0.18, "metalness": 0.92 },
+    "taillight": { "type": "standard", "color": "#b91c1c", "emissive": "#ef4444", "emissiveIntensity": 1.4, "roughness": 0.2 },
+    "headlight_l": { "type": "standard", "color": "#ffffff", "emissive": "#e2e8f0", "emissiveIntensity": 1.6, "roughness": 0.15 },
+    "headlight_r": { "type": "standard", "color": "#ffffff", "emissive": "#e2e8f0", "emissiveIntensity": 1.6, "roughness": 0.15 },
+    "crew_shirt": { "type": "standard", "color": "#1e293b", "roughness": 0.8 },
+    "crew_skin": { "type": "standard", "color": "#d6b092", "roughness": 0.7 },
+    "crew_cap": { "type": "standard", "color": "#0f172a", "roughness": 0.6 },
+    "tire": { "type": "standard", "color": "#16191e", "roughness": 0.88, "metalness": 0.05 },
+    "rim": { "type": "standard", "color": "#b8c2ce", "roughness": 0.28, "metalness": 0.82 },
+    "hub": { "type": "standard", "color": "#0f172a", "roughness": 0.4, "metalness": 0.6 }
+  },
+  "parts": [
+    {
+      "id": "body_group",
+      "tag": "bodyGroup",
+      "kind": "group",
+      "children": [
+        { "id": "underbody", "kind": "box", "dimensions": [2.0, 0.34, 4.96], "position": [0, 0.44, 0], "materialRef": "trim", "castShadow": true, "receiveShadow": true },
+        { "id": "front_clip", "kind": "box", "dimensions": [2.02, 0.62, 1.44], "position": [0, 0.88, 1.72], "materialRef": "black_paint", "castShadow": true },
+        { "id": "mid_body", "kind": "box", "dimensions": [2.06, 0.68, 3.46], "position": [0, 0.9, -0.7], "materialRef": "white_paint", "castShadow": true },
+        { "id": "rear_clip", "kind": "box", "dimensions": [2.04, 0.82, 3.46], "position": [0, 1.62, -0.7], "materialRef": "white_paint", "castShadow": true },
+        { "id": "door_left", "kind": "plane", "dimensions": [1.7, 0.48, 1], "position": [1.04, 1.0, -0.25], "rotation": [0, 1.5707963, 0], "materialRef": "door_decal" },
+        { "id": "door_right", "kind": "plane", "dimensions": [1.7, 0.48, 1], "position": [-1.04, 1.0, -0.25], "rotation": [0, -1.5707963, 0], "materialRef": "door_decal" },
+        { "id": "cabin_glass", "kind": "box", "dimensions": [1.9, 0.86, 1.24], "position": [0, 1.6, 1.52], "materialRef": "glass" },
+        { "id": "cell_window_l", "kind": "box", "dimensions": [0.05, 0.34, 1.22], "position": [1.02, 1.66, -1.2], "materialRef": "trim" },
+        { "id": "cell_window_r", "kind": "box", "dimensions": [0.05, 0.34, 1.22], "position": [-1.02, 1.66, -1.2], "materialRef": "trim" },
+        { "id": "roof", "kind": "box", "dimensions": [1.94, 0.1, 4.46], "position": [0, 2.06, -0.22], "materialRef": "black_paint", "castShadow": true },
+        { "id": "a_pillar_l", "kind": "box", "dimensions": [0.1, 0.86, 0.12], "position": [0.91, 1.6, 2.06], "rotation": [-0.14, 0, 0], "materialRef": "trim" },
+        { "id": "a_pillar_r", "kind": "box", "dimensions": [0.1, 0.86, 0.12], "position": [-0.91, 1.6, 2.06], "rotation": [-0.14, 0, 0], "materialRef": "trim" },
+        { "id": "push_upright_l", "kind": "box", "dimensions": [0.09, 0.64, 0.13], "position": [0.44, 0.72, 2.52], "materialRef": "trim" },
+        { "id": "push_upright_r", "kind": "box", "dimensions": [0.09, 0.64, 0.13], "position": [-0.44, 0.72, 2.52], "materialRef": "trim" },
+        { "id": "push_cross_top", "kind": "box", "dimensions": [1.02, 0.08, 0.11], "position": [0, 0.96, 2.55], "materialRef": "trim" },
+        { "id": "push_cross_mid", "kind": "box", "dimensions": [1.02, 0.08, 0.11], "position": [0, 0.7, 2.55], "materialRef": "trim" },
+        { "id": "front_bumper", "kind": "box", "dimensions": [2.06, 0.24, 0.18], "position": [0, 0.5, 2.46], "materialRef": "trim" },
+        { "id": "rear_bumper", "kind": "box", "dimensions": [2.06, 0.24, 0.18], "position": [0, 0.5, -2.46], "materialRef": "trim" },
+        { "id": "exhaust_l", "kind": "cylinder", "dimensions": [0.048, 0.048, 0.18], "position": [0.58, 0.34, -2.52], "rotation": [1.5707963, 0, 0], "radiusSegments": 10, "materialRef": "chrome" },
+        { "id": "exhaust_r", "kind": "cylinder", "dimensions": [0.048, 0.048, 0.18], "position": [-0.58, 0.34, -2.52], "rotation": [1.5707963, 0, 0], "radiusSegments": 10, "materialRef": "chrome" },
+        { "id": "mirror_l", "kind": "box", "dimensions": [0.22, 0.16, 0.14], "position": [1.1, 1.32, 1.75], "materialRef": "trim" },
+        { "id": "mirror_r", "kind": "box", "dimensions": [0.22, 0.16, 0.14], "position": [-1.1, 1.32, 1.75], "materialRef": "trim" },
+        { "id": "antenna", "kind": "cylinder", "dimensions": [0.01, 0.015, 0.85], "position": [0.68, 2.38, -2.05], "radiusSegments": 6, "materialRef": "chrome" },
+        { "id": "headlight_l", "tag": "headlightLeft", "kind": "box", "dimensions": [0.36, 0.18, 0.06], "position": [0.7, 0.9, 2.45], "materialRef": "headlight_l" },
+        { "id": "headlight_r", "tag": "headlightRight", "kind": "box", "dimensions": [0.36, 0.18, 0.06], "position": [-0.7, 0.9, 2.45], "materialRef": "headlight_r" },
+        { "id": "taillight_l", "kind": "box", "dimensions": [0.32, 0.38, 0.06], "position": [0.78, 1.02, -2.44], "materialRef": "taillight" },
+        { "id": "taillight_r", "kind": "box", "dimensions": [0.32, 0.38, 0.06], "position": [-0.78, 1.02, -2.44], "materialRef": "taillight" },
+        {
+          "id": "cabin_crew",
+          "tag": "cabinCrewGroup",
+          "kind": "group",
+          "children": [
+            { "id": "driver_chest", "kind": "box", "dimensions": [0.34, 0.34, 0.22], "position": [0.42, 1.28, 1.48], "materialRef": "crew_shirt" },
+            { "id": "driver_head", "kind": "sphere", "dimensions": [0.11, 10, 10], "position": [0.42, 1.53, 1.48], "materialRef": "crew_skin" },
+            { "id": "driver_cap", "kind": "cylinder", "dimensions": [0.12, 0.12, 0.06], "position": [0.42, 1.61, 1.48], "radiusSegments": 10, "materialRef": "crew_cap" },
+            { "id": "partner_chest", "kind": "box", "dimensions": [0.34, 0.34, 0.22], "position": [-0.42, 1.28, 1.48], "materialRef": "crew_shirt" },
+            { "id": "partner_head", "kind": "sphere", "dimensions": [0.11, 10, 10], "position": [-0.42, 1.53, 1.48], "materialRef": "crew_skin" },
+            { "id": "partner_cap", "kind": "cylinder", "dimensions": [0.12, 0.12, 0.06], "position": [-0.42, 1.61, 1.48], "radiusSegments": 10, "materialRef": "crew_cap" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "wheel_fl",
+      "tag": "frontWheel",
+      "kind": "group",
+      "position": [0.98, 0.38, 1.46],
+      "children": [
+        { "id": "tire_fl", "kind": "cylinder", "dimensions": [0.38, 0.38, 0.26], "rotation": [0, 0, 1.5707963], "radiusSegments": 18, "materialRef": "tire", "castShadow": true },
+        { "id": "rim_fl", "kind": "cylinder", "dimensions": [0.23, 0.23, 0.28], "rotation": [0, 0, 1.5707963], "radiusSegments": 12, "materialRef": "rim" },
+        { "id": "hub_fl", "kind": "cylinder", "dimensions": [0.09, 0.09, 0.3], "rotation": [0, 0, 1.5707963], "radiusSegments": 10, "materialRef": "hub" }
+      ]
+    },
+    {
+      "id": "wheel_fr",
+      "tag": "frontWheel",
+      "kind": "group",
+      "position": [-0.98, 0.38, 1.46],
+      "children": [
+        { "id": "tire_fr", "kind": "cylinder", "dimensions": [0.38, 0.38, 0.26], "rotation": [0, 0, 1.5707963], "radiusSegments": 18, "materialRef": "tire", "castShadow": true },
+        { "id": "rim_fr", "kind": "cylinder", "dimensions": [0.23, 0.23, 0.28], "rotation": [0, 0, 1.5707963], "radiusSegments": 12, "materialRef": "rim" },
+        { "id": "hub_fr", "kind": "cylinder", "dimensions": [0.09, 0.09, 0.3], "rotation": [0, 0, 1.5707963], "radiusSegments": 10, "materialRef": "hub" }
+      ]
+    },
+    {
+      "id": "wheel_rl",
+      "tag": "rearWheel",
+      "kind": "group",
+      "position": [0.98, 0.38, -1.48],
+      "children": [
+        { "id": "tire_rl", "kind": "cylinder", "dimensions": [0.38, 0.38, 0.26], "rotation": [0, 0, 1.5707963], "radiusSegments": 18, "materialRef": "tire", "castShadow": true },
+        { "id": "rim_rl", "kind": "cylinder", "dimensions": [0.23, 0.23, 0.28], "rotation": [0, 0, 1.5707963], "radiusSegments": 12, "materialRef": "rim" },
+        { "id": "hub_rl", "kind": "cylinder", "dimensions": [0.09, 0.09, 0.3], "rotation": [0, 0, 1.5707963], "radiusSegments": 10, "materialRef": "hub" }
+      ]
+    },
+    {
+      "id": "wheel_rr",
+      "tag": "rearWheel",
+      "kind": "group",
+      "position": [-0.98, 0.38, -1.48],
+      "children": [
+        { "id": "tire_rr", "kind": "cylinder", "dimensions": [0.38, 0.38, 0.26], "rotation": [0, 0, 1.5707963], "radiusSegments": 18, "materialRef": "tire", "castShadow": true },
+        { "id": "rim_rr", "kind": "cylinder", "dimensions": [0.23, 0.23, 0.28], "rotation": [0, 0, 1.5707963], "radiusSegments": 12, "materialRef": "rim" },
+        { "id": "hub_rr", "kind": "cylinder", "dimensions": [0.09, 0.09, 0.3], "rotation": [0, 0, 1.5707963], "radiusSegments": 10, "materialRef": "hub" }
+      ]
+    }
+  ]
+}

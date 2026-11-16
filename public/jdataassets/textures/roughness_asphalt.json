@@ -1,0 +1,20 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "roughness_asphalt",
+  "seed": 702001,
+  "width": 256,
+  "height": 256,
+  "colorSpace": "linear",
+  "repeat": [4, 4],
+  "anisotropy": 4,
+  "layers": [
+    {
+      "op": "roughness_grain",
+      "seedOffset": 7,
+      "baseValue": 0.84,
+      "variance": 0.24,
+      "patchCount": 85,
+      "patchRadius": 28
+    }
+  ]
+}

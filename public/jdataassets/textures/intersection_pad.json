@@ -1,0 +1,29 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "intersection_pad",
+  "seed": 203911,
+  "width": 512,
+  "height": 512,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    { "op": "fill", "color": "#24282f" },
+    {
+      "op": "noise_speckle",
+      "seedOffset": 3,
+      "count": 3200,
+      "size": 2,
+      "minRgb": [30, 32, 34],
+      "maxRgb": [52, 54, 56],
+      "alpha": 1
+    },
+    {
+      "op": "crosswalk_ring",
+      "margin": 14,
+      "stripeWidth": 24,
+      "stripeLength": 54,
+      "step": 44,
+      "color": "rgba(235, 240, 246, 0.86)"
+    }
+  ]
+}

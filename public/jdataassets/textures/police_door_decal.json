@@ -1,0 +1,16 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "police_door_decal",
+  "seed": 500201,
+  "width": 256,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    {
+      "op": "police_door_emblem",
+      "title": "POLICE",
+      "subtitle": "METRO PRECINCT · 911"
+    }
+  ]
+}

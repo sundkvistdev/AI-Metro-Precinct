@@ -1,0 +1,25 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "light_halo",
+  "seed": 701001,
+  "width": 128,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 4,
+  "layers": [
+    {
+      "op": "radial_gradient",
+      "cx": 64,
+      "cy": 64,
+      "rInner": 2,
+      "rOuter": 62,
+      "stops": [
+        { "offset": 0, "color": "rgba(255, 255, 255, 0.95)" },
+        { "offset": 0.16, "color": "rgba(255, 255, 255, 0.65)" },
+        { "offset": 0.42, "color": "rgba(255, 255, 255, 0.22)" },
+        { "offset": 0.72, "color": "rgba(255, 255, 255, 0.05)" },
+        { "offset": 1, "color": "rgba(255, 255, 255, 0)" }
+      ]
+    }
+  ]
+}

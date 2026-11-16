@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "police_door_decal_swat",
+  "seed": 500206,
+  "width": 256,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    {
+      "op": "police_door_emblem",
+      "title": "S.W.A.T.",
+      "subtitle": "HEAVY TACTICAL · TEAM",
+      "bgColor": "#1e293b",
+      "stripeColor": "#090d14",
+      "accentColor": "#f59e0b",
+      "badgeColor": "#f59e0b",
+      "badgeCenterColor": "#0f172a",
+      "textColor": "#f8fafc",
+      "subtitleColor": "#fbbf24"
+    }
+  ]
+}

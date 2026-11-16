@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "facade_office",
+  "seed": 601104,
+  "width": 512,
+  "height": 512,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    { "op": "fill", "color": "#4b5868" },
+    {
+      "op": "facade_windows",
+      "seedOffset": 44,
+      "cols": 8,
+      "rows": 8,
+      "trimColor": "#334155",
+      "frameColor": "#161e29",
+      "litChance": 0.30,
+      "litColor": "#d9b87c",
+      "coolColors": ["#334659", "#1e2c3a"]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "gunshot_suspect",
+  "seed": 801102,
+  "kind": "filtered_noise_burst",
+  "gain": 1.25,
+  "noiseBurst": {
+    "duration": 0.25,
+    "envelope": {
+      "attack": 0,
+      "decay": 0.25,
+      "duration": 0.25,
+      "curveExponent": 1.95
+    },
+    "filterType": "lowpass",
+    "freqStart": 8800,
+    "freqEnd": 300
+  }
+}

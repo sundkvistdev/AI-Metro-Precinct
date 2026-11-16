@@ -1,0 +1,19 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "vehicle_crash",
+  "seed": 802419,
+  "kind": "filtered_noise_burst",
+  "gain": 0.34,
+  "noiseBurst": {
+    "duration": 0.32,
+    "envelope": {
+      "attack": 0,
+      "decay": 0.32,
+      "duration": 0.32,
+      "curveExponent": 2.1
+    },
+    "filterType": "lowpass",
+    "freqStart": 1450,
+    "freqEnd": 140
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "police_door_decal_transport",
+  "seed": 500205,
+  "width": 256,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    {
+      "op": "police_door_emblem",
+      "title": "TRANSPORT",
+      "subtitle": "CORRECTIONS · UNIT",
+      "bgColor": "#f8fafc",
+      "stripeColor": "#1d4ed8",
+      "accentColor": "#f59e0b",
+      "badgeColor": "#1e3a8a",
+      "badgeCenterColor": "#fbbf24",
+      "textColor": "#1e3a8a",
+      "subtitleColor": "#334155"
+    }
+  ]
+}

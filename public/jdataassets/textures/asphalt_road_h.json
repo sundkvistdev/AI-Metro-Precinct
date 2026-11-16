@@ -1,0 +1,28 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "asphalt_road_h",
+  "seed": 104731,
+  "width": 512,
+  "height": 512,
+  "colorSpace": "srgb",
+  "repeat": [6, 1],
+  "anisotropy": 8,
+  "layers": [
+    { "op": "fill", "color": "#252930" },
+    {
+      "op": "noise_speckle",
+      "seedOffset": 2,
+      "count": 4500,
+      "size": 2,
+      "minRgb": [30, 32, 35],
+      "maxRgb": [54, 56, 59],
+      "alpha": 1
+    },
+    { "op": "rect", "x": 0, "y": 110, "w": 512, "h": 52, "color": "rgba(15, 18, 22, 0.25)" },
+    { "op": "rect", "x": 0, "y": 350, "w": 512, "h": 52, "color": "rgba(15, 18, 22, 0.25)" },
+    { "op": "dashed_line", "orientation": "horizontal", "position": 250, "dashLength": 34, "gapLength": 30, "thickness": 4, "color": "#d9a426", "start": 16, "end": 512 },
+    { "op": "dashed_line", "orientation": "horizontal", "position": 258, "dashLength": 34, "gapLength": 30, "thickness": 4, "color": "#d9a426", "start": 16, "end": 512 },
+    { "op": "rect", "x": 0, "y": 14, "w": 512, "h": 5, "color": "rgba(226, 232, 240, 0.65)" },
+    { "op": "rect", "x": 0, "y": 493, "w": 512, "h": 5, "color": "rgba(226, 232, 240, 0.65)" }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "contact_shadow",
+  "seed": 400101,
+  "width": 128,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 4,
+  "layers": [
+    {
+      "op": "radial_gradient",
+      "cx": 64,
+      "cy": 64,
+      "rInner": 10,
+      "rOuter": 62,
+      "stops": [
+        { "offset": 0, "color": "rgba(6, 8, 12, 0.72)" },
+        { "offset": 0.55, "color": "rgba(6, 8, 12, 0.36)" },
+        { "offset": 1, "color": "rgba(6, 8, 12, 0)" }
+      ]
+    }
+  ]
+}

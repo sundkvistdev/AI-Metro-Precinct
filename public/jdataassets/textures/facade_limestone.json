@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "facade_limestone",
+  "seed": 601103,
+  "width": 512,
+  "height": 512,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    { "op": "fill", "color": "#8d8476" },
+    {
+      "op": "facade_windows",
+      "seedOffset": 33,
+      "cols": 5,
+      "rows": 5,
+      "trimColor": "#676055",
+      "frameColor": "#1e242c",
+      "litChance": 0.26,
+      "litColor": "#d9b87c",
+      "coolColors": ["#334659", "#1e2c3a"]
+    }
+  ]
+}

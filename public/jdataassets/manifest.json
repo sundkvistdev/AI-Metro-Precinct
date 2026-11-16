@@ -1,0 +1,52 @@
+{
+  "formatVersion": "1.1.0",
+  "packName": "metro_precinct_core",
+  "textures": {
+    "asphalt_road_v": "/jdataassets/textures/asphalt_road_v.json",
+    "asphalt_road_h": "/jdataassets/textures/asphalt_road_h.json",
+    "intersection_pad": "/jdataassets/textures/intersection_pad.json",
+    "sidewalk_paver": "/jdataassets/textures/sidewalk_paver.json",
+    "contact_shadow": "/jdataassets/textures/contact_shadow.json",
+    "police_door_decal": "/jdataassets/textures/police_door_decal.json",
+    "police_door_decal_navy": "/jdataassets/textures/police_door_decal_navy.json",
+    "police_door_decal_forest": "/jdataassets/textures/police_door_decal_forest.json",
+    "police_door_decal_slate": "/jdataassets/textures/police_door_decal_slate.json",
+    "police_door_decal_transport": "/jdataassets/textures/police_door_decal_transport.json",
+    "police_door_decal_swat": "/jdataassets/textures/police_door_decal_swat.json",
+    "precinct_sign": "/jdataassets/textures/precinct_sign.json",
+    "facade_brick": "/jdataassets/textures/facade_brick.json",
+    "facade_concrete": "/jdataassets/textures/facade_concrete.json",
+    "facade_limestone": "/jdataassets/textures/facade_limestone.json",
+    "facade_office": "/jdataassets/textures/facade_office.json",
+    "storefront_retail": "/jdataassets/textures/storefront_retail.json",
+    "light_halo": "/jdataassets/textures/light_halo.json",
+    "light_cookie_rotator": "/jdataassets/textures/light_cookie_rotator.json",
+    "roughness_asphalt": "/jdataassets/textures/roughness_asphalt.json",
+    "roughness_concrete": "/jdataassets/textures/roughness_concrete.json"
+  },
+  "models": {
+    "police_cruiser": "/jdataassets/models/police_cruiser.json",
+    "police_suv": "/jdataassets/models/police_suv.json",
+    "police_van": "/jdataassets/models/police_van.json",
+    "police_apc": "/jdataassets/models/police_apc.json",
+    "civilian_sedan": "/jdataassets/models/civilian_sedan.json",
+    "civilian_hatch": "/jdataassets/models/civilian_hatch.json",
+    "civilian_taxi": "/jdataassets/models/civilian_taxi.json",
+    "civilian_van": "/jdataassets/models/civilian_van.json",
+    "officer_humanoid": "/jdataassets/models/officer_humanoid.json",
+    "heavy_officer_humanoid": "/jdataassets/models/heavy_officer_humanoid.json",
+    "suspect_humanoid": "/jdataassets/models/suspect_humanoid.json",
+    "pedestrian_humanoid": "/jdataassets/models/pedestrian_humanoid.json"
+  },
+  "audio": {
+    "siren_standard_wail": "/jdataassets/audio/siren_standard_wail.json",
+    "siren_aggressive_yelp": "/jdataassets/audio/siren_aggressive_yelp.json",
+    "siren_phaser": "/jdataassets/audio/siren_phaser.json",
+    "siren_hilo": "/jdataassets/audio/siren_hilo.json",
+    "dispatch_chirp": "/jdataassets/audio/dispatch_chirp.json",
+    "gunshot_police": "/jdataassets/audio/gunshot_police.json",
+    "gunshot_suspect": "/jdataassets/audio/gunshot_suspect.json",
+    "gunshot_rifle": "/jdataassets/audio/gunshot_rifle.json",
+    "vehicle_crash": "/jdataassets/audio/vehicle_crash.json"
+  }
+}

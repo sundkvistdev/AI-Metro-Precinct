@@ -1,0 +1,16 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "dispatch_chirp",
+  "seed": 801003,
+  "kind": "chirp_sequence",
+  "gain": 0.14,
+  "chirp": {
+    "waveform": "sine",
+    "steps": [
+      { "time": 0, "freq": 1480 },
+      { "time": 0.07, "freq": 1820 }
+    ],
+    "duration": 0.19,
+    "endGain": 0.001
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Metro Precinct — 3D Police Response Simulator",
+  "description": "Interactive 3D small-town police response simulator featuring midrise mixed-use zoning, traffic & pedestrians, probabilistic crime dispatch, aggressive pursuit AI, detailed patrol cruisers with LED/flashing/rotating lightbars, and officer dismount combat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "police_door_decal_navy",
+  "seed": 500202,
+  "width": 256,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    {
+      "op": "police_door_emblem",
+      "title": "POLICE",
+      "subtitle": "HIGHWAY · INTERCEPTOR",
+      "bgColor": "#e2e8f0",
+      "stripeColor": "#1e3a8a",
+      "accentColor": "#38bdf8",
+      "badgeColor": "#0f172a",
+      "badgeCenterColor": "#38bdf8",
+      "textColor": "#0f172a",
+      "subtitleColor": "#1e3a8a"
+    }
+  ]
+}

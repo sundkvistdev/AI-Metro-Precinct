@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "sidewalk_paver",
+  "seed": 308821,
+  "width": 256,
+  "height": 256,
+  "colorSpace": "srgb",
+  "repeat": [16, 16],
+  "anisotropy": 8,
+  "layers": [
+    { "op": "fill", "color": "#7b828c" },
+    { "op": "grid_lines", "stepX": 64, "stepY": 64, "lineWidth": 2, "color": "rgba(40, 45, 52, 0.45)" },
+    {
+      "op": "noise_speckle",
+      "seedOffset": 4,
+      "count": 1200,
+      "size": 2,
+      "minRgb": [110, 112, 115],
+      "maxRgb": [140, 142, 145],
+      "alpha": 0.35
+    }
+  ]
+}

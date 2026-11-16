@@ -1,0 +1,94 @@
+{
+  "format": "jdata-model-v1",
+  "id": "heavy_officer_humanoid",
+  "seed": 900304,
+  "materials": {
+    "skin": { "type": "standard", "color": "#d8b193", "roughness": 0.7 },
+    "boot": { "type": "standard", "color": "#0d1016", "roughness": 0.85 },
+    "shirt": { "type": "standard", "color": "#1e293b", "roughness": 0.78 },
+    "pants": { "type": "standard", "color": "#0f172a", "roughness": 0.84 },
+    "armor_plate": { "type": "standard", "color": "#090d14", "roughness": 0.52, "metalness": 0.22 },
+    "pouch": { "type": "standard", "color": "#334155", "roughness": 0.7 },
+    "helmet": { "type": "standard", "color": "#0f172a", "roughness": 0.48, "metalness": 0.18 },
+    "visor": { "type": "physical", "color": "#1e3a8a", "roughness": 0.1, "metalness": 0.35, "clearcoat": 0.9 },
+    "badge": { "type": "standard", "color": "#f59e0b", "metalness": 0.85, "roughness": 0.25 },
+    "rifle": { "type": "standard", "color": "#111827", "metalness": 0.78, "roughness": 0.32 },
+    "rifle_trim": { "type": "standard", "color": "#334155", "roughness": 0.65 },
+    "flash": { "type": "basic", "color": "#fef08a" }
+  },
+  "parts": [
+    {
+      "id": "left_leg",
+      "tag": "leftLeg",
+      "kind": "group",
+      "position": [0.12, 0.88, 0],
+      "children": [
+        { "id": "l_thigh", "kind": "box", "dimensions": [0.18, 0.72, 0.2], "position": [0, -0.36, 0], "materialRef": "pants", "castShadow": true },
+        { "id": "l_kneepad", "kind": "box", "dimensions": [0.19, 0.14, 0.06], "position": [0, -0.4, 0.1], "materialRef": "armor_plate" },
+        { "id": "l_boot", "kind": "box", "dimensions": [0.18, 0.16, 0.26], "position": [0, -0.80, 0.03], "materialRef": "boot", "castShadow": true }
+      ]
+    },
+    {
+      "id": "right_leg",
+      "tag": "rightLeg",
+      "kind": "group",
+      "position": [-0.12, 0.88, 0],
+      "children": [
+        { "id": "r_thigh", "kind": "box", "dimensions": [0.18, 0.72, 0.2], "position": [0, -0.36, 0], "materialRef": "pants", "castShadow": true },
+        { "id": "r_kneepad", "kind": "box", "dimensions": [0.19, 0.14, 0.06], "position": [0, -0.4, 0.1], "materialRef": "armor_plate" },
+        { "id": "r_boot", "kind": "box", "dimensions": [0.18, 0.16, 0.26], "position": [0, -0.80, 0.03], "materialRef": "boot", "castShadow": true }
+      ]
+    },
+    {
+      "id": "torso",
+      "tag": "torso",
+      "kind": "group",
+      "position": [0, 0.88, 0],
+      "children": [
+        { "id": "chest", "kind": "box", "dimensions": [0.46, 0.58, 0.28], "position": [0, 0.29, 0], "materialRef": "shirt", "castShadow": true },
+        { "id": "plate_carrier", "kind": "box", "dimensions": [0.52, 0.45, 0.34], "position": [0, 0.32, 0], "materialRef": "armor_plate", "castShadow": true },
+        { "id": "mag_pouches", "kind": "box", "dimensions": [0.42, 0.14, 0.07], "position": [0, 0.18, 0.19], "materialRef": "pouch" },
+        { "id": "pauldron_l", "kind": "box", "dimensions": [0.14, 0.16, 0.24], "position": [0.3, 0.53, 0], "materialRef": "armor_plate" },
+        { "id": "pauldron_r", "kind": "box", "dimensions": [0.14, 0.16, 0.24], "position": [-0.3, 0.53, 0], "materialRef": "armor_plate" },
+        { "id": "badge", "kind": "box", "dimensions": [0.14, 0.05, 0.02], "position": [0, 0.46, 0.18], "materialRef": "badge" },
+        { "id": "neck_guard", "kind": "cylinder", "dimensions": [0.09, 0.1, 0.11], "position": [0, 0.62, 0], "radiusSegments": 10, "materialRef": "armor_plate" },
+        {
+          "id": "head",
+          "tag": "head",
+          "kind": "group",
+          "position": [0, 0.77, 0],
+          "children": [
+            { "id": "skull", "kind": "sphere", "dimensions": [0.135, 12, 10], "materialRef": "skin", "castShadow": true },
+            { "id": "tac_helmet", "kind": "sphere", "dimensions": [0.162, 12, 10], "position": [0, 0.04, -0.01], "materialRef": "helmet", "castShadow": true },
+            { "id": "tac_visor", "kind": "box", "dimensions": [0.22, 0.085, 0.09], "position": [0, 0.01, 0.125], "materialRef": "visor" }
+          ]
+        },
+        {
+          "id": "left_arm",
+          "tag": "leftArm",
+          "kind": "group",
+          "position": [0.31, 0.52, 0],
+          "children": [
+            { "id": "l_sleeve", "kind": "box", "dimensions": [0.14, 0.46, 0.15], "position": [0, -0.21, 0], "materialRef": "shirt", "castShadow": true },
+            { "id": "l_glove", "kind": "box", "dimensions": [0.11, 0.11, 0.11], "position": [0, -0.47, 0], "materialRef": "armor_plate" }
+          ]
+        },
+        {
+          "id": "right_arm",
+          "tag": "rightArm",
+          "kind": "group",
+          "position": [-0.31, 0.52, 0],
+          "children": [
+            { "id": "r_sleeve", "kind": "box", "dimensions": [0.14, 0.46, 0.15], "position": [0, -0.21, 0], "materialRef": "shirt", "castShadow": true },
+            { "id": "r_glove", "kind": "box", "dimensions": [0.11, 0.11, 0.11], "position": [0, -0.47, 0], "materialRef": "armor_plate" },
+            { "id": "rifle_stock", "kind": "box", "dimensions": [0.05, 0.22, 0.09], "position": [0, -0.36, 0.05], "materialRef": "rifle_trim" },
+            { "id": "rifle_receiver", "kind": "box", "dimensions": [0.056, 0.34, 0.1], "position": [0, -0.60, 0.055], "materialRef": "rifle", "castShadow": true },
+            { "id": "rifle_mag", "kind": "box", "dimensions": [0.04, 0.07, 0.16], "position": [0, -0.64, -0.05], "materialRef": "rifle_trim" },
+            { "id": "rifle_barrel", "kind": "cylinder", "dimensions": [0.018, 0.02, 0.36], "position": [0, -0.90, 0.055], "radiusSegments": 8, "materialRef": "rifle" },
+            { "id": "muzzle_flash", "tag": "muzzleFlash", "kind": "sphere", "dimensions": [0.16, 8, 8], "position": [0, -1.10, 0.055], "materialRef": "flash", "visible": false }
+          ]
+        }
+      ]
+    }
+  ]
+}

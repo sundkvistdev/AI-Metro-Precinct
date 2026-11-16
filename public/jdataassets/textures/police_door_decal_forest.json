@@ -1,0 +1,23 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "police_door_decal_forest",
+  "seed": 500203,
+  "width": 256,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    {
+      "op": "police_door_emblem",
+      "title": "SHERIFF",
+      "subtitle": "COUNTY PATROL · 911",
+      "bgColor": "#fef3c7",
+      "stripeColor": "#14532d",
+      "accentColor": "#eab308",
+      "badgeColor": "#14532d",
+      "badgeCenterColor": "#facc15",
+      "textColor": "#14532d",
+      "subtitleColor": "#365314"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "gunshot_rifle",
+  "seed": 801103,
+  "kind": "filtered_noise_burst",
+  "gain": 1.55,
+  "noiseBurst": {
+    "duration": 0.34,
+    "envelope": {
+      "attack": 0,
+      "decay": 0.34,
+      "duration": 0.34,
+      "curveExponent": 1.85
+    },
+    "filterType": "lowpass",
+    "freqStart": 11800,
+    "freqEnd": 310
+  }
+}

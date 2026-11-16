@@ -1,0 +1,17 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "siren_standard_wail",
+  "seed": 801001,
+  "kind": "siren_sweep",
+  "gain": 0.18,
+  "siren": {
+    "waveform1": "sawtooth",
+    "waveform2": "triangle",
+    "detuneRatio": 1.004,
+    "minFreq": 580,
+    "maxFreq": 1260,
+    "sweepRateHz": 0.42,
+    "bandpassFreq": 1100,
+    "bandpassQ": 1.4
+  }
+}

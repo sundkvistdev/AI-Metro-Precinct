@@ -1,0 +1,18 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "siren_hilo",
+  "seed": 801005,
+  "kind": "siren_hilo",
+  "gain": 0.18,
+  "siren": {
+    "waveform1": "sawtooth",
+    "waveform2": "triangle",
+    "detuneRatio": 1.003,
+    "minFreq": 540,
+    "maxFreq": 720,
+    "sweepRateHz": 1.5,
+    "bandpassFreq": 1050,
+    "bandpassQ": 1.35,
+    "hiloAlternationHz": 1.55
+  }
+}

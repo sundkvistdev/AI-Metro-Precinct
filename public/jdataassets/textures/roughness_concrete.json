@@ -1,0 +1,20 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "roughness_concrete",
+  "seed": 702002,
+  "width": 256,
+  "height": 256,
+  "colorSpace": "linear",
+  "repeat": [4, 4],
+  "anisotropy": 4,
+  "layers": [
+    {
+      "op": "roughness_grain",
+      "seedOffset": 19,
+      "baseValue": 0.78,
+      "variance": 0.22,
+      "patchCount": 70,
+      "patchRadius": 32
+    }
+  ]
+}
