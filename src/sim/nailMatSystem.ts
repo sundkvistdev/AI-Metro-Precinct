@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { EngineConfigAsset } from '../assets/assetTypes';
+import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
 import { resetOfficerPose } from './policeUnitSystem';
@@ -131,12 +131,14 @@ export function pickInterceptRoadSpot(
   units: PoliceUnit[],
   roadGraph: TownRoadGraph,
   existingMats: NailMatActor[],
+  config?: EngineConfigAsset,
+  map?: CustomMapAsset,
 ): InterceptSpot | null {
   if (!crime.inVehiclePursuit || !crime.suspectAlive) return null;
 
-  const world = roadGraph.world;
-  const currNode = roadGraph.nodes[crime.vehicleNodeId];
-  const nextNode = roadGraph.nodes[crime.vehicleNextNodeId];
+  const surface = map ?? config?.world;
+  const currNode = roadGraph.getNodeById(crime.vehicleNodeId);
+  const nextNode = roadGraph.getNodeById(crime.vehicleNextNodeId);
   if (!currNode || !nextNode) return null;
 
   const suspectFwdX = Math.sin(crime.vehicleYaw);
@@ -172,9 +174,11 @@ export function pickInterceptRoadSpot(
   const hop1Ids = nextNode.neighbors.filter((n) => n !== crime.vehicleNodeId);
   const hop1Pool = hop1Ids.length > 0 ? hop1Ids : nextNode.neighbors;
 
+  const edgeBound = Math.max(80, roadGraph.townHalfSize - 2);
   const scoredHop1 = hop1Pool
     .map((id) => {
-      const n = roadGraph.nodes[id];
+      const n = roadGraph.getNodeById(id);
+      if (!n) return { id, score: -999 };
       const dx = n.x - nextNode.x;
       const dz = n.z - nextNode.z;
       const len = Math.hypot(dx, dz) || 1;
@@ -185,14 +189,15 @@ export function pickInterceptRoadSpot(
         const d = Math.hypot(n.x - u.pos.x, n.z - u.pos.z);
         if (d < minCopDist) minCopDist = d;
       }
-      const edgePenalty = Math.abs(n.x) >= 148 || Math.abs(n.z) >= 148 ? -20 : 0;
+      const edgePenalty = Math.abs(n.x) >= edgeBound || Math.abs(n.z) >= edgeBound ? -20 : 0;
       const s = momentum * 40 + Math.min(80, minCopDist) * 0.45 + edgePenalty;
       return { id, score: s };
     })
     .sort((a, b) => b.score - a.score);
 
   for (let h1Idx = 0; h1Idx < Math.min(2, scoredHop1.length); h1Idx++) {
-    const hop1 = roadGraph.nodes[scoredHop1[h1Idx].id];
+    const hop1 = roadGraph.getNodeById(scoredHop1[h1Idx].id);
+    if (!hop1) continue;
     const w1 = h1Idx === 0 ? 1.25 : 0.72;
     rawCandidates.push({
       ax: nextNode.x,
@@ -210,7 +215,8 @@ export function pickInterceptRoadSpot(
     const len1 = Math.hypot(dir1X, dir1Z) || 1;
     const scoredHop2 = hop2Ids
       .map((id) => {
-        const n2 = roadGraph.nodes[id];
+        const n2 = roadGraph.getNodeById(id);
+        if (!n2) return { id, score: -999 };
         const dx2 = n2.x - hop1.x;
         const dz2 = n2.z - hop1.z;
         const l2 = Math.hypot(dx2, dz2) || 1;
@@ -220,7 +226,8 @@ export function pickInterceptRoadSpot(
       .sort((a, b) => b.score - a.score);
 
     for (let h2Idx = 0; h2Idx < Math.min(2, scoredHop2.length); h2Idx++) {
-      const hop2 = roadGraph.nodes[scoredHop2[h2Idx].id];
+      const hop2 = roadGraph.getNodeById(scoredHop2[h2Idx].id);
+      if (!hop2) continue;
       rawCandidates.push({
         ax: hop1.x,
         az: hop1.z,
@@ -240,7 +247,12 @@ export function pickInterceptRoadSpot(
     const cx = THREE.MathUtils.lerp(cand.ax, cand.bx, cand.t);
     const cz = THREE.MathUtils.lerp(cand.az, cand.bz, cand.t);
 
-    if (cx < world.apronBounds.maxX + 7 && cz < 2) continue;
+    const nearApron = roadGraph.stationZones.some(
+      (z) =>
+        Math.abs(cx - z.cx) < z.width * 0.55 + 7 &&
+        Math.abs(cz - z.cz) < z.depth * 0.55 + 4,
+    );
+    if (nearApron) continue;
 
     let overlapsExisting = false;
     for (const m of existingMats) {
@@ -274,15 +286,12 @@ export function pickInterceptRoadSpot(
       (unit.pos.x - cx) * perpX + (unit.pos.z - cz) * perpZ;
     const curbSideSign: 1 | -1 = sideDot >= 0 ? 1 : -1;
 
-    const shoulderOffset = world.roadWidth * 0.5 + 1.4;
+    const shoulderOffset = roadGraph.roadWidth * 0.5 + 1.4;
     const stagX = cx + perpX * (curbSideSign * shoulderOffset) + roadDirX * 3.8;
     const stagZ = cz + perpZ * (curbSideSign * shoulderOffset) + roadDirZ * 3.8;
 
-    const stagingPos = new THREE.Vector3(
-      stagX,
-      getSurfaceHeight(stagX, stagZ, world),
-      stagZ,
-    );
+    const stagingY = surface ? getSurfaceHeight(stagX, stagZ, surface) : roadGraph.roadSurfaceY;
+    const stagingPos = new THREE.Vector3(stagX, stagingY, stagZ);
     const stagingYaw =
       Math.atan2(roadDirX, roadDirZ) - curbSideSign * 0.24;
 
@@ -293,7 +302,7 @@ export function pickInterceptRoadSpot(
     if (score > bestScore) {
       bestScore = score;
       bestSpot = {
-        roadCenter: new THREE.Vector3(cx, world.surfaceHeights.road, cz),
+        roadCenter: new THREE.Vector3(cx, roadGraph.roadSurfaceY, cz),
         roadDirX,
         roadDirZ,
         perpX,
@@ -319,17 +328,19 @@ export function assignUnitToNailMat(
   config: EngineConfigAsset,
   nailMatsGroup: THREE.Group,
   audio: JsonAudioSynth | null,
+  staticBvh?: StaticObstacleBVH,
+  map?: CustomMapAsset,
 ): boolean {
   if (!crime.inVehiclePursuit || !crime.suspectAlive) return false;
   if (!unit.mounted || unit.immobilized || unit.status === UnitStatus.DeployingSpikes) {
     return false;
   }
 
-  const spot = pickInterceptRoadSpot(crime, unit, units, roadGraph, nailMats);
+  const spot = pickInterceptRoadSpot(crime, unit, units, roadGraph, nailMats, config, map);
   if (!spot) return false;
 
   const matId = `mat-${nailMatCounter++}`;
-  const halfSpan = 5.5;
+  const halfSpan = Math.max(4.4, roadGraph.roadWidth * 0.46);
   const visuals = buildNailMatVisuals(
     spot.roadCenter,
     spot.perpX,
@@ -366,6 +377,11 @@ export function assignUnitToNailMat(
   nailMats.push(mat);
 
   unit.targetCrimeId = crime.id;
+  unit.assignedCaseNumber = crime.caseNumber;
+  unit.assignedRole = 'spikes';
+  if (!crime.assignedUnitIds.includes(unit.id)) {
+    crime.assignedUnitIds.push(unit.id);
+  }
   unit.pursuitRole = 'nail_mat';
   unit.status = UnitStatus.DeployingSpikes;
   unit.lightsActive = true;
@@ -373,8 +389,10 @@ export function assignUnitToNailMat(
   unit.freeRoam = false;
   unit.repathTimer = 1.2;
   unit.avoidanceSteer = 0;
+  unit.stuckTimer = 0;
+  unit.reverseTimer = 0;
 
-  routeUnitToInterceptSpot(unit, spot, roadGraph, config);
+  routeUnitToInterceptSpot(unit, spot, roadGraph, config, staticBvh, map);
   crime.nailMatAttempts++;
   audio?.playAssetAt('dispatch_chirp');
   return true;
@@ -385,32 +403,53 @@ function routeUnitToInterceptSpot(
   spot: InterceptSpot,
   roadGraph: TownRoadGraph,
   config: EngineConfigAsset,
+  staticBvh?: StaticObstacleBVH,
+  map?: CustomMapAsset,
 ): void {
-  const { laneOffset, roadCoords, surfaceHeights, apronBounds } = config.world;
-  const exitRoadX = roadCoords[1] ?? -75;
+  const surface = map ?? config.world;
+  const laneOffset = roadGraph.laneOffset;
+  const { primary, secondary } = roadGraph.findStationExitNodeIds();
+  const primaryNode = roadGraph.getNodeById(primary);
+  const secondaryNode = roadGraph.getNodeById(secondary);
+  const exitRoadX = primaryNode?.x ?? config.world.roadCoords[1] ?? -75;
+  const [apronExitX] = roadGraph.stationExitPoint;
+  const primaryApron = roadGraph.stationZones[0];
+  const apronThresholdX = primaryApron
+    ? primaryApron.cx + primaryApron.width * 0.5 + 1
+    : config.world.apronBounds.maxX + 1;
   const bay = config.vehicles.stationBays[unit.bayIndex];
   const wps: THREE.Vector3[] = [];
-  let routeStartNodeId: number;
 
-  if (unit.pos.x < apronBounds.maxX + 1) {
-    const laneExitX =
-      exitRoadX + (spot.roadCenter.z > unit.pos.z ? -laneOffset : laneOffset);
-    wps.push(new THREE.Vector3(laneExitX, surfaceHeights.road, bay.parkPos[2]));
-    const pathN = roadGraph.findNodePath(6, spot.targetNodeId);
-    const pathS = roadGraph.findNodePath(7, spot.targetNodeId);
-    routeStartNodeId = pathN.length <= pathS.length ? 6 : 7;
+  if (unit.pos.x < apronThresholdX) {
+    const headingSouth = spot.roadCenter.z >= bay.parkPos[2];
+    const laneExitX = exitRoadX + (headingSouth ? -laneOffset : laneOffset);
+    wps.push(new THREE.Vector3(apronExitX, surface.surfaceHeights.apron, bay.parkPos[2]));
+    wps.push(new THREE.Vector3(laneExitX, roadGraph.roadSurfaceY, bay.parkPos[2]));
+    let startNodeId = primary;
+    if (primaryNode && secondaryNode) {
+      if (headingSouth) {
+        startNodeId = secondaryNode.z >= primaryNode.z ? secondaryNode.id : primaryNode.id;
+      } else {
+        startNodeId = primaryNode.z <= secondaryNode.z ? primaryNode.id : secondaryNode.id;
+      }
+    }
+    const nodePath = roadGraph.findNodePath(startNodeId, spot.targetNodeId);
+    const roadWps = roadGraph.buildLaneWaypoints(nodePath, spot.stagingPos, true);
+    for (const wp of roadWps) {
+      if (Math.abs(wp.x - exitRoadX) < 6) {
+        if (headingSouth && wp.z < bay.parkPos[2] - 2) continue;
+        if (!headingSouth && wp.z > bay.parkPos[2] + 2) continue;
+      }
+      wps.push(wp);
+    }
   } else {
-    const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z);
+    const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z, staticBvh);
     if (unit.pos.distanceToSquared(entry.point) > 9) {
       wps.push(entry.point);
     }
-    routeStartNodeId = entry.nearestNode.id;
-  }
-
-  const nodePath = roadGraph.findNodePath(routeStartNodeId, spot.targetNodeId);
-  wps.push(...roadGraph.buildLaneWaypoints(nodePath, spot.stagingPos, true));
-  if (unit.pos.x >= apronBounds.maxX + 1) {
-    pruneLeadingWaypoints(unit.pos, unit.yaw, wps);
+    const nodePath = roadGraph.findNodePath(entry.nearestNode.id, spot.targetNodeId);
+    wps.push(...roadGraph.buildLaneWaypoints(nodePath, spot.stagingPos, true));
+    pruneLeadingWaypoints(unit.pos, unit.yaw, wps, staticBvh);
   }
   unit.waypoints = wps;
   unit.waypointIndex = 0;
@@ -473,8 +512,9 @@ export function updateNailMats(
   simTime: number,
   rng: () => number,
   dt: number,
+  map?: CustomMapAsset,
 ): void {
-  const world = config.world;
+  const surface = map ?? config.world;
 
   for (let i = nailMats.length - 1; i >= 0; i--) {
     const mat = nailMats[i];
@@ -528,7 +568,7 @@ export function updateNailMats(
         const curbZ = mat.roadCenter.z + mat.perpZ * (mat.curbSideSign * (mat.halfSpan + 0.55));
         off.pos.set(curbX, 0, curbZ);
         staticBvh.resolveCircle(off.pos, 0.42);
-        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
+        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, surface);
         off.yaw = Math.atan2(
           mat.roadCenter.x - off.pos.x,
           mat.roadCenter.z - off.pos.z,
@@ -560,7 +600,7 @@ export function updateNailMats(
           (toMatZ / (suspectDist || 1)) * suspectFwdZ;
 
         if (suspectDist > 34 && movingToward < -0.25 && distToStage > 18) {
-          const better = pickInterceptRoadSpot(crime, unit, units, roadGraph, nailMats);
+          const better = pickInterceptRoadSpot(crime, unit, units, roadGraph, nailMats, config, map);
           if (better) {
             nailMatsGroup.remove(mat.group);
             disposeNailMatObject(mat.group);
@@ -585,7 +625,7 @@ export function updateNailMats(
             mat.group = visuals.group;
             mat.stripPivot = visuals.stripPivot;
             mat.warningBeacon = visuals.warningBeacon;
-            routeUnitToInterceptSpot(unit, better, roadGraph, config);
+            routeUnitToInterceptSpot(unit, better, roadGraph, config, staticBvh, map);
           } else {
             nailMatsGroup.remove(mat.group);
             disposeNailMatObject(mat.group);

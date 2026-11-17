@@ -1,13 +1,33 @@
 import React, { useRef, useState } from 'react';
 import { AlertTriangle, FolderArchive, RefreshCw } from 'lucide-react';
 import { AssetLoadResult } from '../assets/assetTypes';
-import { BackupMode, WeatherCondition } from '../sim/types';
+import { AudioVoiceQuality } from '../assets/jsonAudioSynth';
+import {
+  BackupMode,
+  DrivingMode,
+  LightbarMode,
+  SirenPattern,
+  WeatherCondition,
+} from '../sim/types';
 
 export interface MainMenuSettings {
   audioEnabled: boolean;
+  audioVolume: number;
+  audioQuality: AudioVoiceQuality;
   simSpeed: 1 | 2;
   weather: WeatherCondition;
   backupMode: BackupMode;
+  drivingMode: DrivingMode;
+  lightbarMode: LightbarMode;
+  sirenPattern: SirenPattern;
+  trafficScale: number;
+  pedScale: number;
+  crimeProbability: number;
+  cowardiceLevel: number;
+  shadowsEnabled: boolean;
+  debrisObstacles: boolean;
+  renderScale: 0.75 | 1 | 1.5;
+  crashIntensity: number;
 }
 
 export interface MainMenuProps {
@@ -66,7 +86,13 @@ export const MainMenu: React.FC<MainMenuProps> = ({
         }}
       />
 
-      <div className="relative z-10 w-[min(360px,92vw)] border border-zinc-500/80 bg-zinc-800/80 backdrop-blur-md p-5 shadow-2xl rounded-none">
+      <div
+        className={`relative z-10 border border-zinc-500/80 bg-zinc-800/85 backdrop-blur-md p-5 shadow-2xl rounded-none transition-all ${
+          showSettings
+            ? 'w-[min(480px,94vw)] max-h-[90vh] overflow-y-auto'
+            : 'w-[min(360px,92vw)]'
+        }`}
+      >
         <h1 className="font-display text-2xl font-bold tracking-wider text-zinc-100 uppercase text-center">
           Metro Precinct
         </h1>
@@ -134,82 +160,379 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             </button>
           </div>
         ) : (
-          <div className="mt-4 space-y-2.5 text-xs">
-            <div className="flex items-center justify-between border border-zinc-600 bg-zinc-700/60 px-2.5 py-1.5">
-              <span className="text-zinc-200">Audio</span>
-              <button
-                type="button"
-                onClick={() =>
-                  onChangeSettings({
-                    ...settings,
-                    audioEnabled: !settings.audioEnabled,
-                  })
-                }
-                className="border border-zinc-500 bg-zinc-800 px-2.5 py-0.5 font-mono-tabular text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
-              >
-                {settings.audioEnabled ? 'Enabled' : 'Muted'}
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between border border-zinc-600 bg-zinc-700/60 px-2.5 py-1.5">
-              <span className="text-zinc-200">Sim Speed</span>
-              <div className="flex gap-1">
-                {([1, 2] as const).map((spd) => (
-                  <button
-                    key={spd}
-                    type="button"
-                    onClick={() => onChangeSettings({ ...settings, simSpeed: spd })}
-                    className={`border px-2 py-0.5 font-mono-tabular cursor-pointer rounded-none ${
-                      settings.simSpeed === spd
-                        ? 'border-zinc-300 bg-zinc-200 text-zinc-900 font-semibold'
-                        : 'border-zinc-500 bg-zinc-800 text-zinc-300 hover:bg-zinc-600'
-                    }`}
-                  >
-                    {spd}x
-                  </button>
-                ))}
+          <div className="mt-4 space-y-3 text-xs">
+            {/* Audio Section */}
+            <div className="border border-zinc-600 bg-zinc-900/40 p-2.5 space-y-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
+                Audio
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-200">Audio Engine</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeSettings({
+                      ...settings,
+                      audioEnabled: !settings.audioEnabled,
+                    })
+                  }
+                  className="border border-zinc-500 bg-zinc-800 px-2.5 py-0.5 font-mono-tabular text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+                >
+                  {settings.audioEnabled ? 'Enabled' : 'Muted'}
+                </button>
+              </div>
+              <label className="block space-y-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-zinc-300">Master Volume</span>
+                  <span className="font-mono-tabular text-zinc-100">
+                    {Math.round(settings.audioVolume * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={Math.round(settings.audioVolume * 100)}
+                  onChange={(e) =>
+                    onChangeSettings({
+                      ...settings,
+                      audioVolume: Number(e.target.value) / 100,
+                    })
+                  }
+                  className="sharp-slider w-full"
+                />
+              </label>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-200">Voice Quality</span>
+                <div className="flex gap-1">
+                  {(['low', 'normal', 'high'] as const).map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => onChangeSettings({ ...settings, audioQuality: q })}
+                      className={`border px-2 py-0.5 capitalize cursor-pointer rounded-none ${
+                        settings.audioQuality === q
+                          ? 'border-zinc-300 bg-zinc-200 text-zinc-900 font-semibold'
+                          : 'border-zinc-600 bg-zinc-800 text-zinc-300 hover:bg-zinc-600'
+                      }`}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            <div className="flex items-center justify-between border border-zinc-600 bg-zinc-700/60 px-2.5 py-1.5">
-              <span className="text-zinc-200">Weather</span>
-              <select
-                value={settings.weather}
-                onChange={(e) =>
-                  onChangeSettings({
-                    ...settings,
-                    weather: e.target.value as WeatherCondition,
-                  })
-                }
-                className="border border-zinc-500 bg-zinc-800 px-2 py-0.5 text-zinc-100 rounded-none cursor-pointer"
-              >
-                <option value={WeatherCondition.Clear}>Clear</option>
-                <option value={WeatherCondition.Overcast}>Overcast</option>
-                <option value={WeatherCondition.Rain}>Rain</option>
-                <option value={WeatherCondition.HeavyFog}>Heavy Fog</option>
-              </select>
+            {/* Simulation Section */}
+            <div className="border border-zinc-600 bg-zinc-900/40 p-2.5 space-y-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
+                Simulation
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-200">Speed</span>
+                  <div className="flex gap-1">
+                    {([1, 2] as const).map((spd) => (
+                      <button
+                        key={spd}
+                        type="button"
+                        onClick={() => onChangeSettings({ ...settings, simSpeed: spd })}
+                        className={`border px-2 py-0.5 font-mono-tabular cursor-pointer rounded-none ${
+                          settings.simSpeed === spd
+                            ? 'border-zinc-300 bg-zinc-200 text-zinc-900 font-semibold'
+                            : 'border-zinc-600 bg-zinc-800 text-zinc-300 hover:bg-zinc-600'
+                        }`}
+                      >
+                        {spd}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-200">Weather</span>
+                  <select
+                    value={settings.weather}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        weather: e.target.value as WeatherCondition,
+                      })
+                    }
+                    className="border border-zinc-500 bg-zinc-800 px-1.5 py-0.5 text-zinc-100 rounded-none cursor-pointer"
+                  >
+                    <option value={WeatherCondition.Clear}>Clear</option>
+                    <option value={WeatherCondition.Overcast}>Overcast</option>
+                    <option value={WeatherCondition.Rain}>Rain</option>
+                    <option value={WeatherCondition.HeavyFog}>Heavy Fog</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block space-y-1">
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-zinc-300">Traffic Density</span>
+                    <span className="font-mono-tabular text-zinc-100">
+                      {Math.round(settings.trafficScale * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={200}
+                    step={10}
+                    value={Math.round(settings.trafficScale * 100)}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        trafficScale: Number(e.target.value) / 100,
+                      })
+                    }
+                    className="sharp-slider w-full"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-zinc-300">Pedestrians</span>
+                    <span className="font-mono-tabular text-zinc-100">
+                      {Math.round(settings.pedScale * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={200}
+                    step={10}
+                    value={Math.round(settings.pedScale * 100)}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        pedScale: Number(e.target.value) / 100,
+                      })
+                    }
+                    className="sharp-slider w-full"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-zinc-300">Auto-Crime</span>
+                    <span className="font-mono-tabular text-zinc-100">
+                      {Math.round(settings.crimeProbability * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={Math.round(settings.crimeProbability * 100)}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        crimeProbability: Number(e.target.value) / 100,
+                      })
+                    }
+                    className="sharp-slider w-full"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-zinc-300">Cowardice</span>
+                    <span className="font-mono-tabular text-zinc-100">
+                      {Math.round(settings.cowardiceLevel * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={Math.round(settings.cowardiceLevel * 100)}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        cowardiceLevel: Number(e.target.value) / 100,
+                      })
+                    }
+                    className="sharp-slider w-full"
+                  />
+                </label>
+              </div>
             </div>
 
-            <div className="flex items-center justify-between border border-zinc-600 bg-zinc-700/60 px-2.5 py-1.5">
-              <span className="text-zinc-200">Backup Policy</span>
-              <select
-                value={settings.backupMode}
-                onChange={(e) =>
-                  onChangeSettings({
-                    ...settings,
-                    backupMode: e.target.value as BackupMode,
-                  })
-                }
-                className="border border-zinc-500 bg-zinc-800 px-2 py-0.5 text-zinc-100 rounded-none cursor-pointer"
-              >
-                <option value={BackupMode.Minimal}>Solo</option>
-                <option value={BackupMode.Standard}>Standard</option>
-                <option value={BackupMode.Perimeter}>Perimeter</option>
-                <option value={BackupMode.FullScale}>Code 99</option>
-              </select>
+            {/* Tactical Defaults Section */}
+            <div className="border border-zinc-600 bg-zinc-900/40 p-2.5 space-y-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
+                Tactical Defaults
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-200">Backup</span>
+                  <select
+                    value={settings.backupMode}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        backupMode: e.target.value as BackupMode,
+                      })
+                    }
+                    className="border border-zinc-500 bg-zinc-800 px-1.5 py-0.5 text-zinc-100 rounded-none cursor-pointer"
+                  >
+                    <option value={BackupMode.Minimal}>Solo</option>
+                    <option value={BackupMode.Standard}>Standard</option>
+                    <option value={BackupMode.Perimeter}>Perimeter</option>
+                    <option value={BackupMode.FullScale}>Code 99</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-200">Driving</span>
+                  <select
+                    value={settings.drivingMode}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        drivingMode: e.target.value as DrivingMode,
+                      })
+                    }
+                    className="border border-zinc-500 bg-zinc-800 px-1.5 py-0.5 text-zinc-100 rounded-none cursor-pointer"
+                  >
+                    <option value={DrivingMode.Standard}>Standard</option>
+                    <option value={DrivingMode.Aggressive}>Aggressive</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-200">Lightbar</span>
+                  <select
+                    value={settings.lightbarMode}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        lightbarMode: e.target.value as LightbarMode,
+                      })
+                    }
+                    className="border border-zinc-500 bg-zinc-800 px-1.5 py-0.5 text-zinc-100 rounded-none cursor-pointer"
+                  >
+                    <option value={LightbarMode.LED}>LED Array</option>
+                    <option value={LightbarMode.FlashingHalogen}>Halogen</option>
+                    <option value={LightbarMode.RotatingHalogen}>Rotator</option>
+                    <option value={LightbarMode.VectorPods}>Vector V-Pod</option>
+                    <option value={LightbarMode.VisorStealth}>Visor Stealth</option>
+                    <option value={LightbarMode.MiniBeacon}>Mini Beacon</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-200">Siren</span>
+                  <select
+                    value={settings.sirenPattern}
+                    onChange={(e) =>
+                      onChangeSettings({
+                        ...settings,
+                        sirenPattern: e.target.value as SirenPattern,
+                      })
+                    }
+                    className="border border-zinc-500 bg-zinc-800 px-1.5 py-0.5 text-zinc-100 rounded-none cursor-pointer"
+                  >
+                    <option value={SirenPattern.AutoCycle}>Auto Cycle</option>
+                    <option value={SirenPattern.Wail}>Wail</option>
+                    <option value={SirenPattern.Yelp}>Yelp</option>
+                    <option value={SirenPattern.Phaser}>Phaser</option>
+                    <option value={SirenPattern.HiLo}>Hi-Lo</option>
+                  </select>
+                </label>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-1.5 pt-1">
+            {/* Graphics & Crash Physics Section */}
+            <div className="border border-zinc-600 bg-zinc-900/40 p-2.5 space-y-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
+                Graphics & Crash Physics
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-200">Shadows</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeSettings({
+                        ...settings,
+                        shadowsEnabled: !settings.shadowsEnabled,
+                      })
+                    }
+                    className="border border-zinc-500 bg-zinc-800 px-2 py-0.5 font-mono-tabular text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+                  >
+                    {settings.shadowsEnabled ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-200">Debris Hitboxes</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeSettings({
+                        ...settings,
+                        debrisObstacles: !settings.debrisObstacles,
+                      })
+                    }
+                    className="border border-zinc-500 bg-zinc-800 px-2 py-0.5 font-mono-tabular text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+                  >
+                    {settings.debrisObstacles ? 'On' : 'Off'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-200">Render Scale</span>
+                <div className="flex gap-1">
+                  {([0.75, 1, 1.5] as const).map((sc) => (
+                    <button
+                      key={sc}
+                      type="button"
+                      onClick={() => onChangeSettings({ ...settings, renderScale: sc })}
+                      className={`border px-2 py-0.5 font-mono-tabular cursor-pointer rounded-none ${
+                        settings.renderScale === sc
+                          ? 'border-zinc-300 bg-zinc-200 text-zinc-900 font-semibold'
+                          : 'border-zinc-600 bg-zinc-800 text-zinc-300 hover:bg-zinc-600'
+                      }`}
+                    >
+                      {sc}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="block space-y-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-zinc-300">Crash Intensity</span>
+                  <span className="font-mono-tabular text-zinc-100">
+                    {Math.round(settings.crashIntensity * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={50}
+                  max={150}
+                  step={10}
+                  value={Math.round(settings.crashIntensity * 100)}
+                  onChange={(e) =>
+                    onChangeSettings({
+                      ...settings,
+                      crashIntensity: Number(e.target.value) / 100,
+                    })
+                  }
+                  className="sharp-slider w-full"
+                />
+              </label>
+            </div>
+
+            {/* Asset Pack Actions */}
+            <div className="grid grid-cols-2 gap-1.5">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}

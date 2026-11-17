@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   AssetIssue,
+  CustomMapAsset,
   EngineConfigAsset,
   LoadedJsonAssets,
 } from '../assets/assetTypes';
@@ -12,6 +13,7 @@ import {
   AvoidanceVehicleProxy,
   computeAvoidanceSteerAndSpeed,
   computePurePursuitLookahead,
+  updateImpatienceAndReverse,
 } from './drivingAvoidance';
 import { updateLightbarVisuals } from './lightbarSystem';
 import {
@@ -64,6 +66,7 @@ export function spawnPoliceUnits(
   rng: () => number,
   clickables: THREE.Object3D[],
   onAssetIssue?: (issue: AssetIssue) => void,
+  map?: CustomMapAsset,
 ): PoliceUnit[] {
   const units: PoliceUnit[] = [];
   const palette = config.vehicles.paintPalette;
@@ -105,7 +108,7 @@ export function spawnPoliceUnits(
       oRig.root.visible = false;
       hierarchy.entities.police.add(oRig.root);
       const startPos = parkPos.clone().add(new THREE.Vector3(0, 0, offsetZ));
-      startPos.y = getSurfaceHeight(startPos.x, startPos.z, config.world);
+      startPos.y = getSurfaceHeight(startPos.x, startPos.z, map ?? config.world);
       return {
         rig: oRig,
         pos: startPos,
@@ -135,7 +138,7 @@ export function spawnPoliceUnits(
       };
     };
 
-    const chassis = config.vehicles.chassis[bay.vehicleKind];
+    const chassis = config.vehicles.chassis[bay.vehicleKind] ?? config.vehicles.chassis['sedan'];
     const mass =
       bay.isHeavyUnit && bay.vehicleKind === 'van'
         ? chassis.mass
@@ -180,9 +183,17 @@ export function spawnPoliceUnits(
       lightPhaseOffset: idx * 0.43 + rng() * 0.31,
       lightRateMult: 0.94 + idx * 0.045 + (rng() - 0.5) * 0.03,
       targetCrimeId: null,
+      assignedCaseNumber: null,
+      assignedRole: null,
       pursuitRole: 'direct',
       officers: [makeOfficer(0.8, 1), makeOfficer(-0.8, -1)],
       holdTimer: 0,
+      stuckTimer: 0,
+      impatience: 0,
+      reverseTimer: 0,
+      reverseSteerDir: 1,
+      towRequested: false,
+      beingTowed: false,
     });
   });
 
@@ -194,27 +205,45 @@ export function routeUnitToStation(
   retreatMode: boolean,
   roadGraph: TownRoadGraph,
   config: EngineConfigAsset,
+  staticBvh?: StaticObstacleBVH,
+  map?: CustomMapAsset,
 ): void {
-  const { laneOffset, roadCoords, surfaceHeights } = config.world;
+  const surface = map ?? config.world;
+  const laneOffset = roadGraph.laneOffset;
   const bay = config.vehicles.stationBays[unit.bayIndex];
-  const exitRoadX = roadCoords[1] ?? -75;
+  const { primary, secondary } = roadGraph.findStationExitNodeIds();
+  const primaryNode = roadGraph.getNodeById(primary);
+  const secondaryNode = roadGraph.getNodeById(secondary);
+  const exitRoadX = primaryNode?.x ?? config.world.roadCoords[1] ?? -75;
+  const [apronExitX] = roadGraph.stationExitPoint;
+  const apronSurfaceY = surface.surfaceHeights.apron;
+  const roadSurfaceY = roadGraph.roadSurfaceY;
 
+  unit.targetCrimeId = null;
+  unit.assignedCaseNumber = null;
+  unit.assignedRole = null;
   unit.lightsActive = retreatMode;
   unit.sirensActive = retreatMode;
   unit.status = retreatMode ? UnitStatus.Retreating : UnitStatus.Returning;
   unit.avoidanceSteer = 0;
+  unit.stuckTimer = 0;
+  unit.reverseTimer = 0;
 
-  const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z);
-  const pathN = roadGraph.findNodePath(entry.nearestNode.id, 6);
-  const pathS = roadGraph.findNodePath(entry.nearestNode.id, 7);
-  const chosenPath = pathN.length <= pathS.length ? pathN : pathS;
+  const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z, staticBvh);
+  const pathA = roadGraph.findNodePath(entry.nearestNode.id, primary);
+  const pathB =
+    secondaryNode && secondary !== primary
+      ? roadGraph.findNodePath(entry.nearestNode.id, secondary)
+      : pathA;
+  const chosenPath = pathA.length <= pathB.length ? pathA : pathB;
   const wps: THREE.Vector3[] = [];
   if (unit.pos.distanceToSquared(entry.point) > 9) {
     wps.push(entry.point);
   }
   wps.push(...roadGraph.buildLaneWaypoints(chosenPath, undefined, retreatMode));
-  pruneLeadingWaypoints(unit.pos, unit.yaw, wps);
-  wps.push(new THREE.Vector3(exitRoadX - laneOffset, surfaceHeights.road, bay.parkPos[2]));
+  pruneLeadingWaypoints(unit.pos, unit.yaw, wps, staticBvh);
+  wps.push(new THREE.Vector3(exitRoadX - laneOffset, roadSurfaceY, bay.parkPos[2]));
+  wps.push(new THREE.Vector3(apronExitX, apronSurfaceY, bay.parkPos[2]));
   wps.push(new THREE.Vector3(...bay.parkPos));
   unit.waypoints = wps;
   unit.waypointIndex = 0;
@@ -230,10 +259,22 @@ export function dispatchNearestUnit(
   isBackup = false,
   allowHeavy = false,
   specificUnitId?: string,
+  staticBvh?: StaticObstacleBVH,
+  map?: CustomMapAsset,
 ): boolean {
-  const { laneOffset, roadCoords, surfaceHeights, apronBounds } = config.world;
-  const exitRoadX = roadCoords[1] ?? -75;
-  const apronThresholdX = apronBounds.maxX + 1;
+  const surface = map ?? config.world;
+  const laneOffset = roadGraph.laneOffset;
+  const { primary, secondary } = roadGraph.findStationExitNodeIds();
+  const primaryNode = roadGraph.getNodeById(primary);
+  const secondaryNode = roadGraph.getNodeById(secondary);
+  const exitRoadX = primaryNode?.x ?? config.world.roadCoords[1] ?? -75;
+  const [apronExitX] = roadGraph.stationExitPoint;
+  const primaryApron = roadGraph.stationZones[0];
+  const apronThresholdX = primaryApron
+    ? primaryApron.cx + primaryApron.width * 0.5 + 1
+    : config.world.apronBounds.maxX + 1;
+  const apronSurfaceY = surface.surfaceHeights.apron;
+  const roadSurfaceY = roadGraph.roadSurfaceY;
 
   const mountedAvailable = units.filter(
     (u) =>
@@ -273,9 +314,14 @@ export function dispatchNearestUnit(
   ).length;
 
   best.targetCrimeId = crime.id;
+  best.assignedCaseNumber = crime.caseNumber;
+  best.assignedRole = allowHeavy ? 'tactical' : isBackup ? 'backup' : 'primary';
   best.pursuitRole = 'direct';
   if (!isBackup || !crime.assignedUnitId) {
     crime.assignedUnitId = best.id;
+  }
+  if (!crime.assignedUnitIds.includes(best.id)) {
+    crime.assignedUnitIds.push(best.id);
   }
 
   if (!best.mounted) {
@@ -298,31 +344,21 @@ export function dispatchNearestUnit(
     });
   }
 
+  const urgencyNorm = THREE.MathUtils.clamp(crime.urgency / 100, 0, 1);
+  const isAggro =
+    drivingMode === DrivingMode.Aggressive || urgencyNorm >= 0.65 || best.isHeavyUnit;
+
   best.lightsActive = true;
-  best.sirensActive = true;
+  best.sirensActive = urgencyNorm >= 0.42 || drivingMode === DrivingMode.Aggressive;
   best.status = crime.inVehiclePursuit ? UnitStatus.Pursuing : UnitStatus.Responding;
   best.repathTimer = 0.75;
   best.avoidanceSteer = 0;
+  best.stuckTimer = 0;
+  best.reverseTimer = 0;
 
   const bay = config.vehicles.stationBays[best.bayIndex];
-  const isAggro = drivingMode === DrivingMode.Aggressive || best.isHeavyUnit;
   const wps: THREE.Vector3[] = [];
   const targetNodeId = crime.inVehiclePursuit ? crime.vehicleNextNodeId : crime.nearestNodeId;
-
-  let routeStartNodeId: number;
-  if (best.pos.x < apronThresholdX) {
-    const laneExitX = exitRoadX + (crime.pos.z > best.pos.z ? -laneOffset : laneOffset);
-    wps.push(new THREE.Vector3(laneExitX, surfaceHeights.road, bay.parkPos[2]));
-    const pathN = roadGraph.findNodePath(6, targetNodeId);
-    const pathS = roadGraph.findNodePath(7, targetNodeId);
-    routeStartNodeId = pathN.length <= pathS.length ? 6 : 7;
-  } else {
-    const entry = roadGraph.findNearestRoadEntryPoint(best.pos.x, best.pos.z);
-    if (best.pos.distanceToSquared(entry.point) > 9) {
-      wps.push(entry.point);
-    }
-    routeStartNodeId = entry.nearestNode.id;
-  }
 
   const pullSpot = crime.inVehiclePursuit
     ? crime.vehiclePos.clone()
@@ -335,10 +371,64 @@ export function dispatchNearestUnit(
     pullSpot.z += Math.cos(crime.roadPullOverYaw) * shift;
   }
 
-  const nodePath = roadGraph.findNodePath(routeStartNodeId, targetNodeId);
-  wps.push(...roadGraph.buildLaneWaypoints(nodePath, pullSpot, isAggro));
-  if (best.pos.x >= apronThresholdX) {
-    pruneLeadingWaypoints(best.pos, best.yaw, wps);
+  if (best.pos.x < apronThresholdX) {
+    const headingSouth = crime.pos.z >= bay.parkPos[2];
+    const laneExitX = exitRoadX + (headingSouth ? -laneOffset : laneOffset);
+    wps.push(new THREE.Vector3(apronExitX, apronSurfaceY, bay.parkPos[2]));
+    wps.push(new THREE.Vector3(laneExitX, roadSurfaceY, bay.parkPos[2]));
+
+    let startNodeId = primary;
+    if (primaryNode && secondaryNode && secondary !== primary) {
+      startNodeId = headingSouth
+        ? secondaryNode.z >= primaryNode.z
+          ? secondaryNode.id
+          : primaryNode.id
+        : primaryNode.z <= secondaryNode.z
+        ? primaryNode.id
+        : secondaryNode.id;
+    }
+    const roadWps = crime.inVehiclePursuit
+      ? roadGraph.buildLaneWaypoints(
+          roadGraph.findNodePath(startNodeId, targetNodeId),
+          pullSpot,
+          isAggro,
+        )
+      : roadGraph.buildRouteToSegmentSpot(
+          startNodeId,
+          crime.segmentNodeA,
+          crime.segmentNodeB,
+          pullSpot,
+          isAggro,
+        );
+
+    // Filter out waypoints along x=-75 that sit behind the bay exit point
+    for (const wp of roadWps) {
+      if (Math.abs(wp.x - exitRoadX) < 6) {
+        if (headingSouth && wp.z < bay.parkPos[2] - 2) continue;
+        if (!headingSouth && wp.z > bay.parkPos[2] + 2) continue;
+      }
+      wps.push(wp);
+    }
+  } else {
+    const entry = roadGraph.findNearestRoadEntryPoint(best.pos.x, best.pos.z, staticBvh);
+    if (best.pos.distanceToSquared(entry.point) > 9) {
+      wps.push(entry.point);
+    }
+    if (crime.inVehiclePursuit) {
+      const nodePath = roadGraph.findNodePath(entry.nearestNode.id, targetNodeId);
+      wps.push(...roadGraph.buildLaneWaypoints(nodePath, pullSpot, isAggro));
+    } else {
+      wps.push(
+        ...roadGraph.buildRouteToSegmentSpot(
+          entry.nearestNode.id,
+          crime.segmentNodeA,
+          crime.segmentNodeB,
+          pullSpot,
+          isAggro,
+        ),
+      );
+    }
+    pruneLeadingWaypoints(best.pos, best.yaw, wps, staticBvh);
   }
 
   best.waypoints = wps;
@@ -355,6 +445,7 @@ export function dismountUnit(
   config: EngineConfigAsset,
   rng: () => number,
   freeRoam = false,
+  map?: CustomMapAsset,
 ): void {
   if (!unit.mounted) return;
   unit.mounted = false;
@@ -392,7 +483,7 @@ export function dismountUnit(
       unit.pos.z + rightZ * lx + fwdZ * lz,
     );
     staticBvh.resolveCircle(off.pos, 0.45);
-    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, config.world);
+    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, map ?? config.world);
 
     off.yaw = idx === 0 ? unit.yaw + Math.PI * 0.45 : unit.yaw - Math.PI * 0.45;
     if (off.hp <= 0) off.hp = off.maxHp;
@@ -429,6 +520,7 @@ export interface PoliceUnitUpdateContext {
   roadGraph: TownRoadGraph;
   staticBvh: StaticObstacleBVH;
   config: EngineConfigAsset;
+  map?: CustomMapAsset;
   combat: CombatSystem;
   vfx: SimVfxManager;
   audio: JsonAudioSynth | null;
@@ -453,7 +545,7 @@ export function buildAllVehicleProxies(
       x: u.pos.x,
       z: u.pos.z,
       yaw: u.yaw,
-      speed: u.speed,
+      speed: Math.max(0, u.speed),
       halfW: u.halfW,
       halfL: u.halfL,
     });
@@ -464,7 +556,7 @@ export function buildAllVehicleProxies(
       x: c.pos.x,
       z: c.pos.z,
       yaw: c.yaw,
-      speed: c.speed,
+      speed: Math.max(0, c.speed),
       halfW: 0.92,
       halfL: 2.24,
     });
@@ -476,7 +568,7 @@ export function buildAllVehicleProxies(
         x: cr.vehiclePos.x,
         z: cr.vehiclePos.z,
         yaw: cr.vehicleYaw,
-        speed: cr.vehicleSpeed,
+        speed: Math.max(0, cr.vehicleSpeed),
         halfW: 0.92,
         halfL: 2.24,
       });
@@ -494,6 +586,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
     roadGraph,
     staticBvh,
     config,
+    map,
     combat,
     vfx,
     audio,
@@ -505,8 +598,11 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
     rng,
   } = ctx;
 
-  const world = config.world;
-  const apronThresholdX = world.apronBounds.maxX + 1;
+  const world = map ?? config.world;
+  const primaryApron = roadGraph.stationZones[0];
+  const apronThresholdX = primaryApron
+    ? primaryApron.cx + primaryApron.width * 0.5 + 1
+    : config.world.apronBounds.maxX + 1;
   const isAggro = drivingMode === DrivingMode.Aggressive;
   const gripScale = weather === WeatherCondition.Rain ? 0.68 : 1.0;
   const haloBoost =
@@ -606,7 +702,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           unit.speed < 1.3 &&
           (unit.status === UnitStatus.Responding || unit.status === UnitStatus.Pursuing)
         ) {
-          dismountUnit(unit, cowardiceLevel, staticBvh, config, rng, false);
+          dismountUnit(unit, cowardiceLevel, staticBvh, config, rng, false, map);
         }
         unit.rig.root.position.copy(unit.pos);
         unit.rig.root.rotation.y = unit.yaw;
@@ -616,25 +712,42 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       if (isPursuit && crime && !crime.inVehiclePursuit) {
         if (crime.suspectAlive) {
           if (unit.pos.distanceToSquared(crime.suspectPos) < 22 * 22) {
-            dismountUnit(unit, cowardiceLevel, staticBvh, config, rng);
+            dismountUnit(unit, cowardiceLevel, staticBvh, config, rng, false, map);
             continue;
           }
           unit.status = UnitStatus.Responding;
           unit.repathTimer = 0;
         } else {
-          unit.targetCrimeId = null;
-          routeUnitToStation(unit, false, roadGraph, config);
+          routeUnitToStation(unit, false, roadGraph, config, staticBvh, map);
         }
       }
 
+      const rawUrgency = crime ? crime.urgency / 100 : isRetreat ? 0.72 : 0.38;
+      const urgencyNorm = THREE.MathUtils.clamp(
+        isAggro && crime ? Math.max(rawUrgency, 0.76) + 0.14 : rawUrgency,
+        0.22,
+        1.0,
+      );
+      const recklessness = THREE.MathUtils.clamp((urgencyNorm - 0.36) / 0.64, 0, 1);
+
+      // Low urgency units run Code 2 (no siren) unless blocked and impatient
       if (
-        (isPursuit || (unit.status === UnitStatus.Responding && unit.waypoints.length === 0)) &&
+        crime &&
+        (unit.status === UnitStatus.Responding || unit.status === UnitStatus.Pursuing)
+      ) {
+        unit.sirensActive =
+          urgencyNorm >= 0.42 || isAggro || unit.impatience >= 0.48;
+      }
+
+      if (
+        (isPursuit ||
+          (unit.status === UnitStatus.Responding && unit.waypointIndex >= unit.waypoints.length)) &&
         crime &&
         crime.suspectAlive
       ) {
         unit.repathTimer -= dt;
         if (unit.repathTimer <= 0) {
-          unit.repathTimer = isPursuit ? 0.55 : 2.0;
+          unit.repathTimer = isPursuit ? 0.55 : 1.8;
           const targetPos = crime.inVehiclePursuit ? crime.vehiclePos : crime.roadPullOverPos;
           const dSq = unit.pos.distanceToSquared(targetPos);
 
@@ -652,37 +765,54 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             const leadDist = distNow < 8 ? 0 : Math.min(8.5, distNow * 0.35);
             const leadX = crime.vehiclePos.x + Math.sin(crime.vehicleYaw) * leadDist;
             const leadZ = crime.vehiclePos.z + Math.cos(crime.vehicleYaw) * leadDist;
-            unit.waypoints = [new THREE.Vector3(leadX, world.surfaceHeights.road, leadZ)];
+            unit.waypoints = [new THREE.Vector3(leadX, roadGraph.roadSurfaceY, leadZ)];
             unit.waypointIndex = 0;
-          } else if (unit.pos.x > apronThresholdX) {
-            const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z);
-            const goalNodeId = crime.inVehiclePursuit
-              ? crime.vehicleNextNodeId
-              : crime.nearestNodeId;
-            const path = roadGraph.findNodePath(entry.nearestNode.id, goalNodeId);
+          } else if (unit.pos.x > apronThresholdX - 5) {
+            const entry = roadGraph.findNearestRoadEntryPoint(
+              unit.pos.x,
+              unit.pos.z,
+              staticBvh,
+            );
             const wps: THREE.Vector3[] = [];
             if (unit.pos.distanceToSquared(entry.point) > 9) {
               wps.push(entry.point);
             }
-            wps.push(...roadGraph.buildLaneWaypoints(path, targetPos, isAggro || isPursuit));
-            pruneLeadingWaypoints(unit.pos, unit.yaw, wps);
+            if (crime.inVehiclePursuit) {
+              const path = roadGraph.findNodePath(entry.nearestNode.id, crime.vehicleNextNodeId);
+              wps.push(...roadGraph.buildLaneWaypoints(path, targetPos, recklessness > 0.35));
+            } else {
+              wps.push(
+                ...roadGraph.buildRouteToSegmentSpot(
+                  entry.nearestNode.id,
+                  crime.segmentNodeA,
+                  crime.segmentNodeB,
+                  targetPos,
+                  recklessness > 0.35,
+                ),
+              );
+            }
+            pruneLeadingWaypoints(unit.pos, unit.yaw, wps, staticBvh);
             unit.waypoints = wps;
             unit.waypointIndex = 0;
           }
         }
       }
 
-      const chassis = config.vehicles.chassis[unit.vehicleKind];
+      const chassis = config.vehicles.chassis[unit.vehicleKind] ?? config.vehicles.chassis['sedan'];
+      const urgencyCruise = THREE.MathUtils.lerp(11.2, 24.4, urgencyNorm);
       const baseCruise =
-        (isAggro || unit.isHeavyUnit ? 18.8 : isRetreat ? 16.8 : 12.6) * chassis.chassisScale;
+        (isRetreat ? 17.0 : urgencyCruise) * chassis.chassisScale;
       const maxCruise =
         isPursuit || isSpikeIntercept
-          ? Math.max(baseCruise, 21.4 * chassis.chassisScale)
+          ? Math.max(baseCruise, THREE.MathUtils.lerp(18.5, 25.2, urgencyNorm) * chassis.chassisScale)
           : baseCruise;
-      const maxAccel = (isAggro || isPursuit || isSpikeIntercept ? 9.8 : 6.0) * chassis.chassisScale;
-      const maxBrake = 11.8;
+      const maxAccel =
+        THREE.MathUtils.lerp(5.4, 11.4, Math.max(urgencyNorm, isPursuit || isSpikeIntercept ? 0.72 : 0)) *
+        chassis.chassisScale;
+      const maxBrake = 12.2;
       const maxSteerRate =
-        (isAggro || isPursuit || isSpikeIntercept ? 2.55 : 1.85) * chassis.maxSteerScale;
+        THREE.MathUtils.lerp(1.75, 2.75, Math.max(urgencyNorm, isPursuit || isSpikeIntercept ? 0.7 : 0)) *
+        chassis.maxSteerScale;
 
       if (unit.waypointIndex >= unit.waypoints.length) {
         if (unit.status === UnitStatus.Responding) {
@@ -692,10 +822,9 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             if (crime && crime.assignedUnitId === unit.id) {
               crime.assignedUnitId = null;
             }
-            unit.targetCrimeId = null;
-            routeUnitToStation(unit, true, roadGraph, config);
+            routeUnitToStation(unit, true, roadGraph, config, staticBvh, map);
           } else {
-            dismountUnit(unit, cowardiceLevel, staticBvh, config, rng, false);
+            dismountUnit(unit, cowardiceLevel, staticBvh, config, rng, false, map);
           }
         } else if (unit.status === UnitStatus.Pursuing) {
           unit.repathTimer = 0;
@@ -715,9 +844,14 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           unit.dyn.bodyRoll = 0;
           unit.lateralOffset = 0;
           unit.avoidanceSteer = 0;
+          unit.stuckTimer = 0;
+          unit.impatience = 0;
+          unit.reverseTimer = 0;
           unit.immobilized = false;
           unit.immobilizeTilt = 0;
           unit.status = UnitStatus.AtStation;
+          unit.assignedCaseNumber = null;
+          unit.assignedRole = null;
           unit.pursuitRole = 'direct';
           unit.lightsActive = false;
           unit.sirensActive = false;
@@ -757,12 +891,20 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         const forwardDot = dx * fwdX + dz * fwdZ;
 
         if (
-          dist < (isFinalWp ? 3.2 : 5.4) ||
-          (!isFinalWp && dist < 16 && forwardDot < 1.2)
+          dist < (isFinalWp ? 3.2 : 5.2) ||
+          (!isFinalWp &&
+            dist < 14 &&
+            forwardDot < 1.0 &&
+            staticBvh.raycastSegment(
+              unit.pos.x,
+              unit.pos.z,
+              unit.waypoints[unit.waypointIndex + 1].x,
+              unit.waypoints[unit.waypointIndex + 1].z,
+            ).clear)
         ) {
           unit.waypointIndex++;
         } else {
-          const lookDist = isFinalWp ? dist : 8.5 + Math.min(4.5, unit.speed * 0.25);
+          const lookDist = isFinalWp ? dist : 7.5 + Math.min(4.2, Math.abs(unit.speed) * 0.22);
           const aim = computePurePursuitLookahead(
             unit.pos,
             unit.waypoints,
@@ -780,7 +922,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
               const nextYaw = Math.atan2(ndx, ndz);
               const bend = Math.abs(normalizeAngle(nextYaw - baseDesiredYaw));
               if (bend > 0.45) {
-                upcomingCornerFactor = isAggro || isPursuit ? 0.6 : 0.46;
+                upcomingCornerFactor = THREE.MathUtils.lerp(0.42, 0.72, recklessness);
               }
             }
           } else if (isFinalWp && !isPursuit && dist < 12) {
@@ -792,9 +934,9 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             absYawDiff > 1.15
               ? 0.28
               : absYawDiff > 0.65
-              ? 0.46
+              ? THREE.MathUtils.lerp(0.42, 0.56, recklessness)
               : absYawDiff > 0.3
-              ? 0.7
+              ? THREE.MathUtils.lerp(0.65, 0.8, recklessness)
               : 1.0;
           const baseGoalSpeed = maxCruise * Math.min(upcomingCornerFactor, curTurnFactor);
 
@@ -802,50 +944,77 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             selfId: unit.id,
             pos: unit.pos,
             yaw: unit.yaw,
-            speed: unit.speed,
+            speed: Math.abs(unit.speed),
             selfHalfW: unit.halfW,
             selfHalfL: unit.halfL,
             baseDesiredYaw,
             baseSpeed: baseGoalSpeed,
             prevSteerBias: unit.avoidanceSteer,
-            canOvertake: unit.sirensActive && !isFinalWp,
+            canOvertake: (urgencyNorm >= 0.45 || unit.sirensActive) && !isFinalWp,
             allVehicles,
             pedestrians,
             staticBvh,
             dt,
+            recklessness,
+            impatience: unit.impatience,
           });
           unit.avoidanceSteer = avoid.nextSteerBias;
           unit.lateralOffset = 0;
 
+          const revState = {
+            impatience: unit.impatience,
+            stuckTimer: unit.stuckTimer,
+            reverseTimer: unit.reverseTimer,
+            reverseSteerDir: unit.reverseSteerDir,
+          };
+          const revStep = updateImpatienceAndReverse(revState, {
+            baseGoalSpeed,
+            actualSpeed: unit.speed,
+            avoid,
+            patienceRate: 0.2 + urgencyNorm * 0.38,
+            reverseThresholdSec: THREE.MathUtils.lerp(2.1, 1.15, urgencyNorm),
+            reverseDurationSec: 1.3,
+            dt,
+          });
+          unit.impatience = revState.impatience;
+          unit.stuckTimer = revState.stuckTimer;
+          unit.reverseTimer = revState.reverseTimer;
+          unit.reverseSteerDir = revState.reverseSteerDir;
+
+          if (revStep.justFinishedReverse) {
+            if (crime && crime.suspectAlive && unit.pos.x > apronThresholdX) {
+              unit.repathTimer = 0;
+            } else if (unit.status === UnitStatus.Returning || unit.status === UnitStatus.Retreating) {
+              routeUnitToStation(unit, unit.status === UnitStatus.Retreating, roadGraph, config, staticBvh, map);
+            }
+          }
+
           const yawState = { yaw: unit.yaw, speed: unit.speed };
-          stepVehicleDynamics(
+          const signedSpeed = stepVehicleDynamics(
             unit.pos,
             yawState,
             unit.dyn,
             unit.rig.bodyGroup,
             {
-              targetSpeed: avoid.speedCap,
+              targetSpeed: revStep.isReversing ? -4.4 : avoid.speedCap,
               desiredYaw: avoid.desiredYaw,
               maxAccel,
               maxBrake,
               maxSteerRate,
-              lateralGrip: 6.4 * gripScale,
+              lateralGrip: THREE.MathUtils.lerp(6.8, 5.1, recklessness) * gripScale,
               mass: unit.mass,
+              reverseTurnDir: revStep.isReversing ? unit.reverseSteerDir : 0,
             },
             dt,
           );
           unit.yaw = yawState.yaw;
-          unit.speed = yawState.speed;
+          unit.speed = signedSpeed;
           unit.pos.y = THREE.MathUtils.damp(
             unit.pos.y,
             getSurfaceHeight(unit.pos.x, unit.pos.z, world),
             12,
             dt,
           );
-
-          if (unit.speed > 4.0) {
-            combat.checkVehiclePedestrianStrike(unit.pos, unit.yaw, unit.speed, pedestrians);
-          }
 
           applyVehicleWheelVisuals(
             unit.rig.wheels,
@@ -1185,8 +1354,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         });
 
         if (isPanicRetreat) {
-          unit.targetCrimeId = null;
-          routeUnitToStation(unit, true, roadGraph, config);
+          routeUnitToStation(unit, true, roadGraph, config, staticBvh, map);
         } else {
           const currCrime = unit.targetCrimeId
             ? crimes.find((c) => c.id === unit.targetCrimeId)
@@ -1200,18 +1368,32 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             } else {
               unit.status = UnitStatus.Responding;
               unit.lightsActive = true;
-              unit.sirensActive = false;
+              unit.sirensActive = currCrime.urgency >= 42;
               unit.waypoints = [];
               unit.waypointIndex = 0;
               unit.repathTimer = 0;
             }
           } else {
             unit.targetCrimeId = null;
+            unit.assignedCaseNumber = null;
+            unit.assignedRole = null;
             const pending = crimes.find((c) => c.suspectAlive && !c.assignedUnitId);
             if (pending) {
-              dispatchNearestUnit(pending, units, roadGraph, config, drivingMode, audio);
+              dispatchNearestUnit(
+                pending,
+                units,
+                roadGraph,
+                config,
+                drivingMode,
+                audio,
+                false,
+                false,
+                undefined,
+                staticBvh,
+                map,
+              );
             } else {
-              routeUnitToStation(unit, false, roadGraph, config);
+              routeUnitToStation(unit, false, roadGraph, config, staticBvh, map);
             }
           }
         }

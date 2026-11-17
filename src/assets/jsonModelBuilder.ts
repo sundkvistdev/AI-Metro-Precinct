@@ -1,14 +1,22 @@
 import * as THREE from 'three';
 import {
+  CrashPartSpec,
   ModelMaterialDef,
   ModelPartDef,
   ProceduralModelAsset,
 } from './assetTypes';
 
+export interface BuiltCrashPart {
+  id: string;
+  object: THREE.Object3D;
+  spec: CrashPartSpec;
+}
+
 export interface BuiltJsonModel {
   root: THREE.Group;
   materials: Record<string, THREE.Material>;
   tags: Record<string, THREE.Object3D[]>;
+  crashParts: BuiltCrashPart[];
   isFallbackCube?: boolean;
 }
 
@@ -37,6 +45,7 @@ export function buildMagentaCubeModel(
     root,
     materials: { fallbackMagenta: mat },
     tags: {},
+    crashParts: [],
     isFallbackCube: true,
   };
 }
@@ -130,6 +139,9 @@ function buildPart(
   part: ModelPartDef,
   materials: Record<string, THREE.Material>,
   tags: Record<string, THREE.Object3D[]>,
+  crashParts: BuiltCrashPart[],
+  defaultCastShadow: boolean,
+  defaultReceiveShadow: boolean,
 ): THREE.Object3D {
   let obj: THREE.Object3D;
 
@@ -161,8 +173,8 @@ function buildPart(
       (part.materialRef && materials[part.materialRef]) ||
       new THREE.MeshStandardMaterial({ color: 0xff00ff });
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.castShadow = Boolean(part.castShadow);
-    mesh.receiveShadow = Boolean(part.receiveShadow);
+    mesh.castShadow = part.castShadow ?? defaultCastShadow;
+    mesh.receiveShadow = part.receiveShadow ?? defaultReceiveShadow;
     obj = mesh;
   }
 
@@ -182,9 +194,19 @@ function buildPart(
     tags[part.tag].push(obj);
   }
 
+  if (part.crashPart) {
+    crashParts.push({
+      id: part.id,
+      object: obj,
+      spec: part.crashPart,
+    });
+  }
+
   if (part.children) {
     for (const child of part.children) {
-      obj.add(buildPart(child, materials, tags));
+      obj.add(
+        buildPart(child, materials, tags, crashParts, defaultCastShadow, defaultReceiveShadow),
+      );
     }
   }
 
@@ -201,6 +223,9 @@ export function buildJsonModel(
 ): BuiltJsonModel {
   const root = new THREE.Group();
   root.name = asset.id;
+  if (asset.flags) {
+    root.userData.modelFlags = asset.flags;
+  }
 
   const materials: Record<string, THREE.Material> = {};
   for (const [key, def] of Object.entries(asset.materials)) {
@@ -215,10 +240,15 @@ export function buildJsonModel(
     );
   }
 
+  const defaultCastShadow = asset.flags?.castShadow ?? false;
+  const defaultReceiveShadow = asset.flags?.receiveShadow ?? false;
   const tags: Record<string, THREE.Object3D[]> = {};
+  const crashParts: BuiltCrashPart[] = [];
   for (const part of asset.parts) {
-    root.add(buildPart(part, materials, tags));
+    root.add(
+      buildPart(part, materials, tags, crashParts, defaultCastShadow, defaultReceiveShadow),
+    );
   }
 
-  return { root, materials, tags };
+  return { root, materials, tags, crashParts };
 }

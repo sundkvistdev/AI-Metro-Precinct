@@ -33,6 +33,7 @@ export class TextureRegistry {
   public readonly magentaFallback: THREE.CanvasTexture;
   private readonly reportedMissing = new Set<string>();
   private readonly onMissingIssue?: (issue: AssetIssue) => void;
+  private readonly maxAnisotropy: number;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -41,11 +42,11 @@ export class TextureRegistry {
   ) {
     this.onMissingIssue = onMissingIssue;
     this.magentaFallback = createMagentaFallbackTexture();
-    const maxAnisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    this.maxAnisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
     for (const [id, texDef] of Object.entries(assets.textures)) {
       try {
-        this.byId[id] = renderJsonTexture(texDef, maxAnisotropy);
+        this.byId[id] = renderJsonTexture(texDef, this.maxAnisotropy);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[TEXTURE RENDER ERROR] (${id}): ${msg}`);
@@ -59,6 +60,36 @@ export class TextureRegistry {
         });
       }
     }
+  }
+
+  public upsertTexture(id: string, asset: LoadedJsonAssets['textures'][string]): THREE.CanvasTexture {
+    const existing = this.byId[id];
+    const nextTex = renderJsonTexture(asset, this.maxAnisotropy);
+    if (existing && existing !== this.magentaFallback) {
+      const prevCanvas = existing.image as HTMLCanvasElement | undefined;
+      const nextCanvas = nextTex.image as HTMLCanvasElement;
+      if (prevCanvas && prevCanvas.width === nextCanvas.width && prevCanvas.height === nextCanvas.height) {
+        const ctx = prevCanvas.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, prevCanvas.width, prevCanvas.height);
+          ctx.drawImage(nextCanvas, 0, 0);
+          existing.colorSpace = nextTex.colorSpace;
+          existing.anisotropy = nextTex.anisotropy;
+          if (asset.repeat && (asset.repeat[0] !== 1 || asset.repeat[1] !== 1)) {
+            existing.wrapS = THREE.RepeatWrapping;
+            existing.wrapT = THREE.RepeatWrapping;
+            existing.repeat.set(asset.repeat[0], asset.repeat[1]);
+          }
+          existing.needsUpdate = true;
+          nextTex.dispose();
+          return existing;
+        }
+      }
+      existing.dispose();
+    }
+    this.byId[id] = nextTex;
+    this.reportedMissing.delete(id);
+    return nextTex;
   }
 
   public get(id: string): THREE.CanvasTexture {

@@ -7,7 +7,7 @@ import {
   LoadedJsonAssets,
 } from '../assets/assetTypes';
 import { loadJsonAssetBundle } from '../assets/jsonAssetLoader';
-import { JsonAudioSynth } from '../assets/jsonAudioSynth';
+import { JsonAudioSynth, AudioVoiceQuality } from '../assets/jsonAudioSynth';
 import { mulberry32 } from '../assets/prng';
 import { TextureRegistry } from '../assets/textureRegistry';
 import {
@@ -18,8 +18,9 @@ import {
 } from './backupSystem';
 import { StaticObstacleBVH } from './bvh';
 import { SimCameraController } from './cameraController';
-import { CombatSystem } from './combatSystem';
+import { CombatSystem, VehicleHumanoidCollider } from './combatSystem';
 import { spawnCrime, updateCrimes } from './crimeSystem';
+import { DevEditorController, DevEditorState } from './devEditorController';
 import { updateNailMats } from './nailMatSystem';
 import {
   buildAllVehicleProxies,
@@ -28,7 +29,7 @@ import {
   updatePoliceUnits,
 } from './policeUnitSystem';
 import { TownRoadGraph } from './roadGraph';
-import { SceneWorldHierarchy } from './sceneHierarchy';
+import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
   CivilianVehicle,
@@ -46,6 +47,7 @@ import {
 import {
   BackupMode,
   CameraMode,
+  CaseAssignedUnitBadge,
   CrimeSummary,
   DrivingMode,
   LightbarMode,
@@ -78,15 +80,29 @@ function detectSoftwareWebGL(): boolean {
 
 export interface PoliceSimInitialSettings {
   audioEnabled?: boolean;
+  audioVolume?: number;
+  audioQuality?: AudioVoiceQuality;
   simSpeed?: 1 | 2;
   weather?: WeatherCondition;
   backupMode?: BackupMode;
+  drivingMode?: DrivingMode;
+  lightbarMode?: LightbarMode;
+  sirenPattern?: SirenPattern;
+  trafficScale?: number;
+  pedScale?: number;
+  crimeProbability?: number;
+  cowardiceLevel?: number;
+  shadowsEnabled?: boolean;
+  debrisObstacles?: boolean;
+  renderScale?: 0.75 | 1 | 1.5;
+  crashIntensity?: number;
 }
 
 export class PoliceSimEngine {
   private container: HTMLElement;
   private onSnapshot: (snap: SimSnapshot) => void;
   private onWebGLContextLost: (lost: boolean) => void;
+  private onDevState?: (state: DevEditorState) => void;
 
   private isSoftwareGl: boolean;
   private renderer: THREE.WebGLRenderer;
@@ -108,6 +124,7 @@ export class PoliceSimEngine {
   private crashPhysics: VehicleCrashPhysicsSystem;
   private weatherSystem: WeatherSystem;
   private cameraController: SimCameraController | null = null;
+  private devEditor: DevEditorController | null = null;
 
   private units: PoliceUnit[] = [];
   private crimes: ActiveCrime[] = [];
@@ -125,9 +142,20 @@ export class PoliceSimEngine {
   private selectedUnitId = 'unit-1';
   private crimeProbability = 0.25;
   private cowardiceLevel = 0.35;
+  private customCrimeProb: number | undefined;
+  private customCowardice: number | undefined;
   private audioWanted = true;
+  private audioVolume = 0.85;
+  private audioQuality: AudioVoiceQuality = 'normal';
+  private trafficScale = 1.0;
+  private pedScale = 1.0;
+  private shadowsEnabled = true;
+  private debrisObstacles = true;
+  private renderScale: 0.75 | 1 | 1.5 = 1;
+  private crashIntensity = 1.0;
   private simSpeed: 1 | 2 = 1;
   private neutralizedCount = 0;
+  private casualtyCount = 0;
 
   private crimeCheckAccum = 0;
   private crimeCooldownTimer = 0;
@@ -151,27 +179,52 @@ export class PoliceSimEngine {
     onWebGLContextLost: (lost: boolean) => void,
     initialAssetResult?: AssetLoadResult,
     initialSettings?: PoliceSimInitialSettings,
+    onDevState?: (state: DevEditorState) => void,
   ) {
     this.container = container;
     this.onSnapshot = onSnapshot;
     this.onWebGLContextLost = onWebGLContextLost;
+    this.onDevState = onDevState;
+    this.isSoftwareGl = detectSoftwareWebGL();
+    this.shadowsEnabled = !this.isSoftwareGl;
 
     if (initialSettings) {
-      if (initialSettings.audioEnabled !== undefined) {
-        this.audioWanted = initialSettings.audioEnabled;
+      if (initialSettings.audioEnabled !== undefined) this.audioWanted = initialSettings.audioEnabled;
+      if (initialSettings.audioVolume !== undefined) this.audioVolume = initialSettings.audioVolume;
+      if (initialSettings.audioQuality !== undefined) this.audioQuality = initialSettings.audioQuality;
+      if (initialSettings.simSpeed !== undefined) this.simSpeed = initialSettings.simSpeed;
+      if (initialSettings.weather !== undefined) this.weather = initialSettings.weather;
+      if (initialSettings.backupMode !== undefined) this.backupMode = initialSettings.backupMode;
+      if (initialSettings.drivingMode !== undefined) this.drivingMode = initialSettings.drivingMode;
+      if (initialSettings.lightbarMode !== undefined) this.lightbarMode = initialSettings.lightbarMode;
+      if (initialSettings.sirenPattern !== undefined) this.sirenPattern = initialSettings.sirenPattern;
+      if (initialSettings.trafficScale !== undefined) {
+        this.trafficScale = THREE.MathUtils.clamp(initialSettings.trafficScale, 0, 2);
       }
-      if (initialSettings.simSpeed !== undefined) {
-        this.simSpeed = initialSettings.simSpeed;
+      if (initialSettings.pedScale !== undefined) {
+        this.pedScale = THREE.MathUtils.clamp(initialSettings.pedScale, 0, 2);
       }
-      if (initialSettings.weather !== undefined) {
-        this.weather = initialSettings.weather;
+      if (initialSettings.crimeProbability !== undefined) {
+        this.customCrimeProb = THREE.MathUtils.clamp(initialSettings.crimeProbability, 0, 1);
+        this.crimeProbability = this.customCrimeProb;
       }
-      if (initialSettings.backupMode !== undefined) {
-        this.backupMode = initialSettings.backupMode;
+      if (initialSettings.cowardiceLevel !== undefined) {
+        this.customCowardice = THREE.MathUtils.clamp(initialSettings.cowardiceLevel, 0, 1);
+        this.cowardiceLevel = this.customCowardice;
+      }
+      if (initialSettings.shadowsEnabled !== undefined) {
+        this.shadowsEnabled = initialSettings.shadowsEnabled && !this.isSoftwareGl;
+      }
+      if (initialSettings.debrisObstacles !== undefined) {
+        this.debrisObstacles = initialSettings.debrisObstacles;
+      }
+      if (initialSettings.renderScale !== undefined) {
+        this.renderScale = initialSettings.renderScale;
+      }
+      if (initialSettings.crashIntensity !== undefined) {
+        this.crashIntensity = THREE.MathUtils.clamp(initialSettings.crashIntensity, 0.5, 1.5);
       }
     }
-
-    this.isSoftwareGl = detectSoftwareWebGL();
     this.renderer = new THREE.WebGLRenderer({
       antialias: !this.isSoftwareGl,
       powerPreference: 'high-performance',
@@ -180,13 +233,13 @@ export class PoliceSimEngine {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.12;
     this.renderer.setPixelRatio(
-      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2),
+      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio * this.renderScale, 2.25),
     );
     this.renderer.setSize(
       container.clientWidth || window.innerWidth,
       container.clientHeight || window.innerHeight,
     );
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
+    this.renderer.shadowMap.enabled = this.shadowsEnabled && !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const canvas = this.renderer.domElement;
@@ -285,13 +338,14 @@ export class PoliceSimEngine {
     this.config = config;
     this.simRng = mulberry32(20261116);
 
+    this.casualtyCount = 0;
     this.paintPalette = config.vehicles.paintPalette.map((sw) => ({
       id: sw.id,
       label: sw.label,
       hex: parseInt(sw.color.replace('#', ''), 16),
     }));
-    this.crimeProbability = config.simulation.defaultCrimeProbability;
-    this.cowardiceLevel = config.simulation.defaultCowardiceLevel;
+    this.crimeProbability = this.customCrimeProb ?? config.simulation.defaultCrimeProbability;
+    this.cowardiceLevel = this.customCowardice ?? config.simulation.defaultCowardiceLevel;
 
     const textures = new TextureRegistry(
       this.renderer,
@@ -299,8 +353,8 @@ export class PoliceSimEngine {
       this.recordAssetIssue,
     );
     this.textures = textures;
-    this.vfx.configure(textures, config.world);
-    this.combat.configure(config);
+    this.vfx.configure(textures, assets.map);
+    this.combat.configure(config, assets.map);
 
     if (!this.audio) {
       this.audio = new JsonAudioSynth(assets.audio, this.audioWanted);
@@ -309,6 +363,8 @@ export class PoliceSimEngine {
       this.audio.setAudioAssets(assets.audio);
       this.audio.setEnabled(this.audioWanted);
     }
+    this.audio.setMasterVolume(this.audioVolume);
+    this.audio.setVoiceQuality(this.audioQuality);
 
     if (!this.cameraController) {
       this.cameraController = new SimCameraController(
@@ -327,11 +383,50 @@ export class PoliceSimEngine {
       this.cameraController.applyConfig(config.camera);
     }
 
-    this.roadGraph = new TownRoadGraph(config.world);
+    if (!this.devEditor) {
+      this.devEditor = new DevEditorController(
+        this.scene,
+        this.hierarchy,
+        this.cameraController,
+        this.renderer.domElement,
+        {
+          onStateChange: (st) => this.onDevState?.(st),
+          onRebuildMap: () => this.rebuildMapAndWorld(),
+          onRebuildModels: () => this.rebuildDynamicActors(),
+          getBuildingMesh: (bid) => this.envHandles?.buildingMeshesById.get(bid),
+          getObjectMesh: (oid) => this.envHandles?.objectMeshesById.get(oid),
+          getSignMesh: (sid) => this.envHandles?.signMeshesById.get(sid),
+        },
+      );
+    }
+
+    this.buildWorldAndEntities();
+    this.devEditor.setAssets(assets, textures, this.audio);
+
+    if (!this.isSoftwareGl && this.cameraController) {
+      this.renderer.compile(this.scene, this.cameraController.camera);
+    }
+
+    this.assetsLoaded = true;
+    this.emitSnapshot();
+    this.clock.getDelta();
+    this.tick();
+  }
+
+  private buildWorldAndEntities(): void {
+    if (!this.assets || !this.config || !this.textures) return;
+    const assets = this.assets;
+    const config = this.config;
+    const textures = this.textures;
+
+    this.roadGraph = new TownRoadGraph(assets.map);
     this.envHandles = buildTownEnvironment(
       this.hierarchy,
-      config.world,
+      assets.map,
       textures,
+      config.world.treePalette,
+      assets,
+      this.recordAssetIssue,
     );
     this.staticBvh.build(this.envHandles.obstacles);
 
@@ -344,6 +439,7 @@ export class PoliceSimEngine {
       this.simRng,
       this.clickables,
       this.recordAssetIssue,
+      assets.map,
     );
     if (this.units.length > 0 && !this.units.some((u) => u.id === this.selectedUnitId)) {
       this.selectedUnitId = this.units[0].id;
@@ -356,15 +452,19 @@ export class PoliceSimEngine {
       assets,
       textures,
       this.recordAssetIssue,
+      this.trafficScale,
+      assets.map,
     );
     this.pedestrians = spawnPedestrians(
       this.hierarchy,
+      assets.map,
       config.world,
       this.staticBvh,
       assets,
       textures,
       this.simRng,
       this.recordAssetIssue,
+      this.pedScale,
     );
 
     this.weatherSystem.applyWeather(
@@ -373,19 +473,79 @@ export class PoliceSimEngine {
       this.envHandles,
       this.audio,
     );
+  }
 
-    if (!this.isSoftwareGl && this.cameraController) {
-      this.renderer.compile(this.scene, this.cameraController.camera);
-    }
-
-    this.assetsLoaded = true;
+  public rebuildMapAndWorld(): void {
+    if (!this.assets || !this.config || !this.textures) return;
+    this.vfx.clearActiveParticles();
+    this.combat.clearTracers();
+    this.crashPhysics.clearDebris();
+    this.crimes = [];
+    this.nailMats = [];
+    this.clickables = [];
+    this.hierarchy.clearAllLayers();
+    this.vfx.configure(this.textures, this.assets.map);
+    this.combat.configure(this.config, this.assets.map);
+    this.buildWorldAndEntities();
+    this.devEditor?.refreshVisuals();
     this.emitSnapshot();
-    this.clock.getDelta();
-    this.tick();
+  }
+
+  public rebuildDynamicActors(): void {
+    if (!this.assets || !this.config || !this.textures || !this.roadGraph) return;
+    this.vfx.clearActiveParticles();
+    this.combat.clearTracers();
+    this.crashPhysics.clearDebris();
+    this.crimes = [];
+    this.nailMats = [];
+    this.clickables = [];
+    disposeGroupContents(this.hierarchy.entities.police);
+    disposeGroupContents(this.hierarchy.entities.traffic);
+    disposeGroupContents(this.hierarchy.entities.pedestrians);
+    disposeGroupContents(this.hierarchy.entities.crimes);
+    disposeGroupContents(this.hierarchy.entities.nailMats);
+
+    this.units = spawnPoliceUnits(
+      this.hierarchy,
+      this.config,
+      this.assets,
+      this.textures,
+      this.isSoftwareGl,
+      this.simRng,
+      this.clickables,
+      this.recordAssetIssue,
+      this.assets.map,
+    );
+    this.civilianCars = spawnCivilianTraffic(
+      this.hierarchy,
+      this.config.world,
+      this.roadGraph,
+      this.assets,
+      this.textures,
+      this.recordAssetIssue,
+      this.trafficScale,
+      this.assets.map,
+    );
+    this.pedestrians = spawnPedestrians(
+      this.hierarchy,
+      this.assets.map,
+      this.config.world,
+      this.staticBvh,
+      this.assets,
+      this.textures,
+      this.simRng,
+      this.recordAssetIssue,
+      this.pedScale,
+    );
+    this.emitSnapshot();
   }
 
   public getLoadedAssets(): LoadedJsonAssets | null {
     return this.assets;
+  }
+
+  public getDevEditor(): DevEditorController | null {
+    return this.devEditor;
   }
 
   private handleGlobalGestureUnlock = (): void => {
@@ -431,13 +591,16 @@ export class PoliceSimEngine {
     this.emitSnapshot();
   }
 
-  public requestBackupNow(): void {
+  public requestBackupNow(crimeId?: string): void {
     if (!this.config || !this.roadGraph) return;
+    const explicitCrime = crimeId
+      ? this.crimes.find((c) => c.id === crimeId && c.suspectAlive)
+      : undefined;
     const selected = this.units.find((u) => u.id === this.selectedUnitId);
     const preferredCrime = selected?.targetCrimeId
       ? this.crimes.find((c) => c.id === selected.targetCrimeId && c.suspectAlive)
       : undefined;
-    const crime = preferredCrime ?? this.crimes.find((c) => c.suspectAlive);
+    const crime = explicitCrime ?? preferredCrime ?? this.crimes.find((c) => c.suspectAlive);
     if (!crime) return;
     if (
       requestManualBackup(
@@ -447,6 +610,8 @@ export class PoliceSimEngine {
         this.config,
         this.drivingMode,
         this.audio,
+        this.staticBvh,
+        this.assets?.map,
       )
     ) {
       this.emitSnapshot();
@@ -474,6 +639,8 @@ export class PoliceSimEngine {
         this.config,
         this.hierarchy.entities.nailMats,
         this.audio,
+        this.staticBvh,
+        this.assets?.map,
       )
     ) {
       this.emitSnapshot();
@@ -520,18 +687,95 @@ export class PoliceSimEngine {
   }
 
   public setCrimeProbability(prob: number): void {
-    this.crimeProbability = THREE.MathUtils.clamp(prob, 0, 1);
+    this.customCrimeProb = THREE.MathUtils.clamp(prob, 0, 1);
+    this.crimeProbability = this.customCrimeProb;
     this.emitSnapshot();
   }
 
   public setCowardiceLevel(level: number): void {
-    this.cowardiceLevel = THREE.MathUtils.clamp(level, 0, 1);
+    this.customCowardice = THREE.MathUtils.clamp(level, 0, 1);
+    this.cowardiceLevel = this.customCowardice;
     this.emitSnapshot();
   }
 
   public setAudioEnabled(enabled: boolean): void {
     this.audioWanted = enabled;
     this.audio?.setEnabled(enabled);
+    this.emitSnapshot();
+  }
+
+  public setAudioVolume(volume: number): void {
+    this.audioVolume = THREE.MathUtils.clamp(volume, 0, 1);
+    this.audio?.setMasterVolume(this.audioVolume);
+    this.emitSnapshot();
+  }
+
+  public setAudioQuality(quality: AudioVoiceQuality): void {
+    this.audioQuality = quality;
+    this.audio?.setVoiceQuality(quality);
+    this.emitSnapshot();
+  }
+
+  public setShadowsEnabled(enabled: boolean): void {
+    this.shadowsEnabled = enabled && !this.isSoftwareGl;
+    this.renderer.shadowMap.enabled = this.shadowsEnabled;
+    this.renderer.shadowMap.needsUpdate = true;
+    this.emitSnapshot();
+  }
+
+  public setDebrisObstacles(enabled: boolean): void {
+    this.debrisObstacles = enabled;
+    this.emitSnapshot();
+  }
+
+  public setRenderScale(scale: 0.75 | 1 | 1.5): void {
+    this.renderScale = scale;
+    this.renderer.setPixelRatio(
+      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio * scale, 2.25),
+    );
+    this.handleResize();
+    this.emitSnapshot();
+  }
+
+  public setCrashIntensity(intensity: number): void {
+    this.crashIntensity = THREE.MathUtils.clamp(intensity, 0.5, 1.5);
+    this.emitSnapshot();
+  }
+
+  public setTrafficDensityScale(scale: number): void {
+    this.trafficScale = THREE.MathUtils.clamp(scale, 0, 2);
+    if (this.assets && this.config && this.textures && this.roadGraph) {
+      disposeGroupContents(this.hierarchy.entities.traffic);
+      this.civilianCars = spawnCivilianTraffic(
+        this.hierarchy,
+        this.config.world,
+        this.roadGraph,
+        this.assets,
+        this.textures,
+        this.recordAssetIssue,
+        this.trafficScale,
+        this.assets.map,
+      );
+    }
+    this.emitSnapshot();
+  }
+
+  public setPedestrianCountScale(scale: number): void {
+    this.pedScale = THREE.MathUtils.clamp(scale, 0, 2);
+    if (this.assets && this.config && this.textures) {
+      disposeGroupContents(this.hierarchy.entities.pedestrians);
+      this.pedestrians = spawnPedestrians(
+        this.hierarchy,
+        this.assets.map,
+        this.config.world,
+        this.staticBvh,
+        this.assets,
+        this.textures,
+        this.simRng,
+        this.recordAssetIssue,
+        this.pedScale,
+      );
+    }
     this.emitSnapshot();
   }
 
@@ -553,6 +797,7 @@ export class PoliceSimEngine {
         this.config,
         this.simRng,
         true,
+        this.assets?.map,
       );
     } else if (
       !unit.immobilized &&
@@ -580,6 +825,7 @@ export class PoliceSimEngine {
       roadGraph: this.roadGraph,
       staticBvh: this.staticBvh,
       config: this.config,
+      map: this.assets.map,
       assets: this.assets,
       textures: this.textures,
       drivingMode: this.drivingMode,
@@ -633,6 +879,9 @@ export class PoliceSimEngine {
       }
     }
 
+    const map = this.assets?.map;
+    this.audio?.ensureRunningIfEnabled();
+
     for (const c of this.crimes) {
       evaluateCrimeBackupPolicy(
         c,
@@ -644,6 +893,8 @@ export class PoliceSimEngine {
         this.backupMode,
         this.drivingMode,
         this.audio,
+        this.staticBvh,
+        map,
       );
     }
 
@@ -662,6 +913,7 @@ export class PoliceSimEngine {
         roadGraph,
         staticBvh: this.staticBvh,
         config,
+        map,
         combat: this.combat,
         vfx: this.vfx,
         audio: this.audio,
@@ -689,6 +941,7 @@ export class PoliceSimEngine {
       this.simTime,
       this.simRng,
       dt,
+      map,
     );
 
     updateCrimes(
@@ -702,6 +955,7 @@ export class PoliceSimEngine {
         roadGraph,
         staticBvh: this.staticBvh,
         config,
+        map,
         combat: this.combat,
         vfx: this.vfx,
         audio: this.audio,
@@ -727,8 +981,7 @@ export class PoliceSimEngine {
       this.nailMats,
       roadGraph,
       this.staticBvh,
-      config.world,
-      this.combat,
+      map ?? config.world,
       this.vfx,
       this.weather,
       this.simRng,
@@ -736,8 +989,9 @@ export class PoliceSimEngine {
     );
 
     this.resolveAllVehicleCollisions(dt);
+    this.resolveHumanoidCollisions();
     this.crashPhysics.stepDebris(this.staticBvh, dt);
-    updatePedestrians(this.pedestrians, this.staticBvh, config.world, dt);
+    updatePedestrians(this.pedestrians, this.staticBvh, map ?? config.world, dt);
     this.combat.updateTracers(
       this.crimes,
       this.units,
@@ -748,6 +1002,9 @@ export class PoliceSimEngine {
       dt,
       () => {
         this.neutralizedCount++;
+      },
+      () => {
+        this.casualtyCount++;
       },
     );
     this.vfx.update(dt);
@@ -774,6 +1031,7 @@ export class PoliceSimEngine {
     const selectedUnit =
       this.units.find((u) => u.id === this.selectedUnitId) ?? this.units[0];
     this.cameraController.update(rawDt, selectedUnit);
+    this.devEditor?.update();
 
     this.snapshotAccum += rawDt;
     if (this.snapshotAccum >= config.simulation.snapshotIntervalSec) {
@@ -906,6 +1164,74 @@ export class PoliceSimEngine {
       this.vfx,
       this.audio,
       dt,
+      {
+        debrisObstacles: this.debrisObstacles,
+        crashIntensity: this.crashIntensity,
+        onHeavyCrash: (mag) => {
+          this.cameraController?.triggerImpactShake(Math.min(0.6, mag * 0.024));
+        },
+      },
+    );
+  }
+
+  private resolveHumanoidCollisions(): void {
+    const humVehicles: VehicleHumanoidCollider[] = [];
+    for (const u of this.units) {
+      if (u.status === UnitStatus.AtStation) continue;
+      humVehicles.push({
+        id: u.id,
+        kind: 'police',
+        pos: u.pos,
+        yaw: u.yaw,
+        speed: u.speed,
+        halfW: u.halfW,
+        halfL: u.halfL,
+      });
+    }
+    for (const c of this.civilianCars) {
+      humVehicles.push({
+        id: c.id,
+        kind: 'civilian',
+        pos: c.pos,
+        yaw: c.yaw,
+        speed: c.speed,
+        halfW: 0.92,
+        halfL: 2.24,
+      });
+    }
+    for (const cr of this.crimes) {
+      if (cr.inVehiclePursuit && cr.vehicleRig && cr.suspectAlive) {
+        humVehicles.push({
+          id: `getaway-${cr.id}`,
+          kind: 'getaway',
+          pos: cr.vehiclePos,
+          yaw: cr.vehicleYaw,
+          speed: cr.vehicleSpeed,
+          halfW: 0.92,
+          halfL: 2.24,
+        });
+      }
+    }
+
+    this.combat.resolveVehicleHumanoidCollisions(
+      humVehicles,
+      this.pedestrians,
+      this.units,
+      this.crimes,
+      this.staticBvh,
+      this.audio,
+      () => {
+        this.casualtyCount++;
+      },
+      () => {
+        this.neutralizedCount++;
+      },
+    );
+    this.combat.resolveHumanoidMutualCollisions(
+      this.pedestrians,
+      this.units,
+      this.crimes,
+      this.staticBvh,
     );
   }
 
@@ -948,27 +1274,45 @@ export class PoliceSimEngine {
         freeRoam: u.freeRoam,
         lightsActive: u.lightsActive,
         sirensActive: u.sirensActive,
-        speedKmh: Math.round(u.speed * 3.6),
+        speedKmh: Math.round(Math.abs(u.speed) * 3.6),
         morale: avgMorale,
         fleeingOfficers,
         downedOfficers,
         targetCrimeId: u.targetCrimeId,
+        assignedCaseNumber: u.assignedCaseNumber,
+        assignedRole: u.assignedRole,
+        impatience: Math.round(u.impatience * 100),
+        reversing: u.reverseTimer > 0,
       };
     });
 
     const crimesSummary: CrimeSummary[] = this.crimes.map((c) => {
       const assigned = this.units.find((u) => u.id === c.assignedUnitId);
       const counts = getCrimeUnitCounts(c, this.units, this.nailMats);
+      const assignedUnits: CaseAssignedUnitBadge[] = this.units
+        .filter((u) => u.targetCrimeId === c.id && u.status !== UnitStatus.Retreating)
+        .map((u) => ({
+          unitId: u.id,
+          callsign: u.callsign,
+          role: u.assignedRole ?? (u.id === c.assignedUnitId ? 'primary' : 'backup'),
+          status: u.status,
+          reversing: u.reverseTimer > 0,
+        }));
       return {
         id: c.id,
+        caseNumber: c.caseNumber,
         type: c.type,
         district: c.district,
+        incidentStatus: c.incidentStatus,
+        urgency: c.urgency,
+        urgencyLevel: c.urgencyLevel,
         suspectAlive: c.suspectAlive,
         suspectHp: Math.round(c.suspectHp),
         suspectWeaponKind: c.suspectWeaponKind,
         inVehiclePursuit: c.inVehiclePursuit,
         vehicleHp: Math.round(c.vehicleHp),
         assignedUnitCallsign: assigned ? assigned.callsign : null,
+        assignedUnits,
         backupDispatched: c.backupDispatched,
         backupCount: Math.max(0, counts.regularCount - 1),
         heavyDeployed: c.heavyDeployed || counts.vanDeployed,
@@ -982,6 +1326,8 @@ export class PoliceSimEngine {
       units: unitsSummary,
       activeCrimes: crimesSummary,
       neutralizedCount: this.neutralizedCount,
+      casualtyCount: this.casualtyCount,
+      debrisCount: this.crashPhysics.getDebrisCount(),
       civilianCarCount: this.civilianCars.length,
       pedestrianCount: this.pedestrians.length,
       activeNailMats: this.nailMats.filter((m) => m.phase !== 'recovering').length,
@@ -995,12 +1341,19 @@ export class PoliceSimEngine {
       crimeProbability: this.crimeProbability,
       cowardiceLevel: this.cowardiceLevel,
       audioEnabled: this.audio?.isEnabled() ?? this.audioWanted,
+      audioVolume: this.audioVolume,
+      audioQuality: this.audioQuality,
+      shadowsEnabled: this.shadowsEnabled,
+      debrisObstacles: this.debrisObstacles,
+      renderScale: this.renderScale,
+      crashIntensity: this.crashIntensity,
       simSpeed: this.simSpeed,
       isSoftwareGl: this.isSoftwareGl,
       paintPalette: this.paintPalette,
       assetPackName: this.assets?.manifest.packName ?? 'unloaded',
       assetSourceLabel: this.assetSourceLabel,
       configVersion: this.config?.version ?? 'missing',
+      mapName: this.assets?.map.name ?? 'Unloaded',
       assetCounts: {
         textures: this.assets ? Object.keys(this.assets.textures).length : 0,
         models: this.assets ? Object.keys(this.assets.models).length : 0,
@@ -1022,6 +1375,7 @@ export class PoliceSimEngine {
     this.renderer.domElement.removeEventListener('webglcontextlost', this.handleContextLost);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestored);
 
+    this.devEditor?.dispose();
     this.cameraController?.dispose();
     this.audio?.dispose();
     this.textures?.dispose();

@@ -71,6 +71,7 @@ export interface VehicleDriveCommand {
   maxSteerRate: number;
   lateralGrip: number;
   mass: number;
+  reverseTurnDir?: 1 | -1 | 0;
 }
 
 export function stepVehicleDynamics(
@@ -89,72 +90,93 @@ export function stepVehicleDynamics(
   let vForward = dyn.vx * fx + dyn.vz * fz;
   let vLateral = dyn.vx * rx + dyn.vz * rz;
 
+  const isReverseCmd = cmd.targetSpeed < -0.05;
   const speedErr = cmd.targetSpeed - vForward;
   let longAccel = 0;
-  if (speedErr > 0.15) {
-    longAccel = Math.min(cmd.maxAccel, speedErr * 2.1);
-  } else if (speedErr < -0.15) {
-    longAccel = Math.max(-cmd.maxBrake, speedErr * 2.8);
+  if (isReverseCmd) {
+    if (speedErr < -0.1) {
+      longAccel = Math.max(-Math.max(4.8, cmd.maxAccel * 0.72), speedErr * 2.4);
+    } else if (speedErr > 0.1) {
+      longAccel = Math.min(cmd.maxBrake, speedErr * 2.5);
+    }
+  } else {
+    if (speedErr > 0.15) {
+      longAccel = Math.min(cmd.maxAccel, speedErr * 2.1);
+    } else if (speedErr < -0.15) {
+      longAccel = Math.max(-cmd.maxBrake, speedErr * 2.8);
+    }
   }
 
   const drag = vForward * 0.18;
   vForward += (longAccel - drag) * dt;
-  if (cmd.targetSpeed <= 0.05 && Math.abs(vForward) < 0.25) {
-    vForward = 0;
+    if (Math.abs(cmd.targetSpeed) <= 0.05 && Math.abs(vForward) < 0.25) {
+      vForward = 0;
+    }
+
+    const yawDiff = normalizeAngle(cmd.desiredYaw - yawRef.yaw);
+    let targetOmega = 0;
+    let targetSteerAngle = 0;
+
+    if (isReverseCmd || vForward < -0.25) {
+      const revAuthority = THREE.MathUtils.clamp(Math.abs(vForward) / 1.4, 0.35, 1.0);
+      const turnDir =
+        cmd.reverseTurnDir === -1 || cmd.reverseTurnDir === 1
+          ? cmd.reverseTurnDir
+          : yawDiff >= 0
+          ? -1
+          : 1;
+      targetOmega = turnDir * Math.min(1.65, cmd.maxSteerRate * 0.75) * revAuthority;
+      targetSteerAngle = -turnDir * 0.42;
+    } else {
+      const speedAuthority = THREE.MathUtils.clamp(Math.abs(vForward) / 2.2, 0.22, 1.0);
+      const highSpeedLimit = 1.0 / (1.0 + Math.abs(vForward) * 0.048);
+      targetOmega =
+        THREE.MathUtils.clamp(yawDiff * 2.15, -cmd.maxSteerRate, cmd.maxSteerRate) *
+        speedAuthority *
+        highSpeedLimit;
+      targetSteerAngle = THREE.MathUtils.clamp(yawDiff * 0.55, -0.42, 0.42);
+    }
+
+    dyn.omega = THREE.MathUtils.damp(dyn.omega, targetOmega, 9.2, dt);
+    yawRef.yaw = normalizeAngle(yawRef.yaw + dyn.omega * dt);
+
+    vLateral *= Math.exp(-cmd.lateralGrip * dt);
+
+    const nfx = Math.sin(yawRef.yaw);
+    const nfz = Math.cos(yawRef.yaw);
+    const nrx = Math.cos(yawRef.yaw);
+    const nrz = -Math.sin(yawRef.yaw);
+
+    dyn.vx = nfx * vForward + nrx * vLateral;
+    dyn.vz = nfz * vForward + nrz * vLateral;
+    yawRef.speed = Math.hypot(dyn.vx, dyn.vz);
+
+    pos.x += dyn.vx * dt;
+    pos.z += dyn.vz * dt;
+
+    dyn.steerAngle = THREE.MathUtils.damp(dyn.steerAngle, targetSteerAngle, 7.5, dt);
+
+    const targetPitch = THREE.MathUtils.clamp(-longAccel * 0.0052, -0.055, 0.06);
+    const centripetal = vForward * dyn.omega;
+    const targetRoll = THREE.MathUtils.clamp(-centripetal * 0.0042, -0.085, 0.085);
+
+    dyn.pitchVel += ((targetPitch - dyn.bodyPitch) * 48 - dyn.pitchVel * 7.5) * dt;
+    dyn.bodyPitch += dyn.pitchVel * dt;
+
+    dyn.rollVel += ((targetRoll - dyn.bodyRoll) * 42 - dyn.rollVel * 7.0) * dt;
+    dyn.bodyRoll += dyn.rollVel * dt;
+
+    bodyGroup.rotation.x = dyn.bodyPitch;
+    bodyGroup.rotation.z = dyn.bodyRoll;
+
+    return vForward;
   }
-
-  const yawDiff = normalizeAngle(cmd.desiredYaw - yawRef.yaw);
-  const speedAuthority = THREE.MathUtils.clamp(Math.abs(vForward) / 2.2, 0.22, 1.0);
-  const highSpeedLimit = 1.0 / (1.0 + Math.abs(vForward) * 0.048);
-  const targetOmega =
-    THREE.MathUtils.clamp(yawDiff * 2.15, -cmd.maxSteerRate, cmd.maxSteerRate) *
-    speedAuthority *
-    highSpeedLimit;
-
-  dyn.omega = THREE.MathUtils.damp(dyn.omega, targetOmega, 9.2, dt);
-  yawRef.yaw = normalizeAngle(yawRef.yaw + dyn.omega * dt);
-
-  vLateral *= Math.exp(-cmd.lateralGrip * dt);
-
-  const nfx = Math.sin(yawRef.yaw);
-  const nfz = Math.cos(yawRef.yaw);
-  const nrx = Math.cos(yawRef.yaw);
-  const nrz = -Math.sin(yawRef.yaw);
-
-  dyn.vx = nfx * vForward + nrx * vLateral;
-  dyn.vz = nfz * vForward + nrz * vLateral;
-  yawRef.speed = Math.hypot(dyn.vx, dyn.vz);
-
-  pos.x += dyn.vx * dt;
-  pos.z += dyn.vz * dt;
-
-  dyn.steerAngle = THREE.MathUtils.damp(
-    dyn.steerAngle,
-    THREE.MathUtils.clamp(yawDiff * 0.55, -0.42, 0.42),
-    7.5,
-    dt,
-  );
-
-  const targetPitch = THREE.MathUtils.clamp(-longAccel * 0.0052, -0.055, 0.06);
-  const centripetal = vForward * dyn.omega;
-  const targetRoll = THREE.MathUtils.clamp(-centripetal * 0.0042, -0.085, 0.085);
-
-  dyn.pitchVel += ((targetPitch - dyn.bodyPitch) * 48 - dyn.pitchVel * 7.5) * dt;
-  dyn.bodyPitch += dyn.pitchVel * dt;
-
-  dyn.rollVel += ((targetRoll - dyn.bodyRoll) * 42 - dyn.rollVel * 7.0) * dt;
-  dyn.bodyRoll += dyn.rollVel * dt;
-
-  bodyGroup.rotation.x = dyn.bodyPitch;
-  bodyGroup.rotation.z = dyn.bodyRoll;
-
-  return vForward;
-}
 
 export interface DetachedPartDebris {
   object: THREE.Object3D;
   vel: THREE.Vector3;
   angVel: THREE.Vector3;
+  radius: number;
   life: number;
 }
 
@@ -177,6 +199,12 @@ export interface VehicleCollisionEntry {
   onWheelBroken?: (tiltSide: number) => void;
 }
 
+export interface CollisionResolutionOptions {
+  debrisObstacles?: boolean;
+  crashIntensity?: number;
+  onHeavyCrash?: (strikeSpeed: number) => void;
+}
+
 const _worldPos = new THREE.Vector3();
 
 export class VehicleCrashPhysicsSystem {
@@ -192,13 +220,22 @@ export class VehicleCrashPhysicsSystem {
     this.rng = rng;
   }
 
+  public getDebrisCount(): number {
+    return this.debris.length;
+  }
+
   public resolveAllCollisions(
     vehicles: VehicleCollisionEntry[],
     staticBvh: StaticObstacleBVH,
     vfx: SimVfxManager,
     audio: JsonAudioSynth | null,
     dt: number,
+    options?: CollisionResolutionOptions,
   ): void {
+    const debrisObstacles = options?.debrisObstacles ?? true;
+    const crashIntensity = options?.crashIntensity ?? 1.0;
+    const onHeavyCrash = options?.onHeavyCrash;
+
     for (const [k, t] of this.cooldowns.entries()) {
       const next = t - dt;
       if (next <= 0) this.cooldowns.delete(k);
@@ -206,29 +243,42 @@ export class VehicleCrashPhysicsSystem {
     }
 
     for (const v of vehicles) {
-      const res = staticBvh.resolveCircle(v.pos, 1.52);
+      const res = staticBvh.resolveOBB(v.pos, v.yaw, v.halfW, v.halfL);
       if (res.collided) {
         const vn = v.dyn.vx * res.normalX + v.dyn.vz * res.normalZ;
         if (vn < 0) {
           const strikeSpeed = -vn;
-          v.dyn.vx -= 1.32 * vn * res.normalX;
-          v.dyn.vz -= 1.32 * vn * res.normalZ;
+          v.dyn.vx -= (1.28 + 0.12 * crashIntensity) * vn * res.normalX;
+          v.dyn.vz -= (1.28 + 0.12 * crashIntensity) * vn * res.normalZ;
           v.dyn.vx *= 0.65;
           v.dyn.vz *= 0.65;
-          v.dyn.pitchVel += strikeSpeed * 0.08;
+          v.dyn.pitchVel += strikeSpeed * 0.095 * crashIntensity;
+          v.dyn.rollVel += (this.rng() - 0.5) * strikeSpeed * 0.07 * crashIntensity;
 
-          if (strikeSpeed > 3.5) {
+          if (strikeSpeed > 3.2) {
             vfx.spawnCollisionEffects(
               res.hitX,
               0.75,
               res.hitZ,
-              strikeSpeed,
-              res.normalX * 3.5,
-              res.normalZ * 3.5,
+              strikeSpeed * crashIntensity,
+              res.normalX * 3.8,
+              res.normalZ * 3.8,
               audio,
             );
-            this.tryDetachParts(v, res.hitX, res.hitZ, res.normalX, res.normalZ, strikeSpeed);
+            this.tryDetachParts(
+              v,
+              res.hitX,
+              res.hitZ,
+              res.normalX,
+              res.normalZ,
+              strikeSpeed,
+              crashIntensity,
+              vfx,
+            );
             v.onImpact(strikeSpeed, false);
+            if (strikeSpeed >= 9.5) {
+              onHeavyCrash?.(strikeSpeed * crashIntensity);
+            }
           }
         }
         v.applyState(v.yaw, Math.hypot(v.dyn.vx, v.dyn.vz));
@@ -254,13 +304,13 @@ export class VehicleCrashPhysicsSystem {
       const shareA = b.mass / totalMass;
       const shareB = a.mass / totalMass;
 
-      const sep = sat.overlap * 0.72;
+      const sep = sat.overlap * 0.78;
       a.pos.x -= sat.normalX * sep * shareA;
       a.pos.z -= sat.normalZ * sep * shareA;
       b.pos.x += sat.normalX * sep * shareB;
       b.pos.z += sat.normalZ * sep * shareB;
-      staticBvh.resolveCircle(a.pos, 1.5);
-      staticBvh.resolveCircle(b.pos, 1.5);
+      staticBvh.resolveOBB(a.pos, a.yaw, a.halfW, a.halfL);
+      staticBvh.resolveOBB(b.pos, b.yaw, b.halfW, b.halfL);
 
       const pairKey = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
       if (this.cooldowns.has(pairKey)) return;
@@ -285,7 +335,7 @@ export class VehicleCrashPhysicsSystem {
         -velAlongNormal,
         Math.hypot(a.dyn.vx - b.dyn.vx, a.dyn.vz - b.dyn.vz) * 0.45,
       );
-      if (strikeSpeed < 2.0) return;
+      if (strikeSpeed < 1.8) return;
 
       this.cooldowns.set(pairKey, 0.34);
 
@@ -294,7 +344,7 @@ export class VehicleCrashPhysicsSystem {
       const rACrossN = rAx * sat.normalZ - rAz * sat.normalX;
       const rBCrossN = rBx * sat.normalZ - rBz * sat.normalX;
 
-      const restitution = 0.26;
+      const restitution = 0.26 + 0.08 * Math.min(1.5, crashIntensity);
       const denom =
         invMassA +
         invMassB +
@@ -311,20 +361,20 @@ export class VehicleCrashPhysicsSystem {
       b.dyn.vz += jz * invMassB;
 
       a.dyn.omega = THREE.MathUtils.clamp(
-        a.dyn.omega - rACrossN * impulseMag * invInertiaA * 0.85,
-        -6.5,
-        6.5,
+        a.dyn.omega - rACrossN * impulseMag * invInertiaA * 0.9,
+        -6.8,
+        6.8,
       );
       b.dyn.omega = THREE.MathUtils.clamp(
-        b.dyn.omega + rBCrossN * impulseMag * invInertiaB * 0.85,
-        -6.5,
-        6.5,
+        b.dyn.omega + rBCrossN * impulseMag * invInertiaB * 0.9,
+        -6.8,
+        6.8,
       );
 
-      a.dyn.pitchVel += (this.rng() - 0.5) * strikeSpeed * 0.06;
-      b.dyn.pitchVel += (this.rng() - 0.5) * strikeSpeed * 0.06;
-      a.dyn.rollVel += (this.rng() - 0.5) * strikeSpeed * 0.08;
-      b.dyn.rollVel += (this.rng() - 0.5) * strikeSpeed * 0.08;
+      a.dyn.pitchVel += (this.rng() - 0.5) * strikeSpeed * 0.075 * crashIntensity;
+      b.dyn.pitchVel += (this.rng() - 0.5) * strikeSpeed * 0.075 * crashIntensity;
+      a.dyn.rollVel += (this.rng() - 0.5) * strikeSpeed * 0.095 * crashIntensity;
+      b.dyn.rollVel += (this.rng() - 0.5) * strikeSpeed * 0.095 * crashIntensity;
 
       a.applyState(a.yaw, Math.hypot(a.dyn.vx, a.dyn.vz));
       b.applyState(b.yaw, Math.hypot(b.dyn.vx, b.dyn.vz));
@@ -333,18 +383,94 @@ export class VehicleCrashPhysicsSystem {
         sat.contactX,
         0.78,
         sat.contactZ,
-        strikeSpeed,
-        sat.normalX * 3.5,
-        sat.normalZ * 3.5,
+        strikeSpeed * crashIntensity,
+        sat.normalX * 3.8,
+        sat.normalZ * 3.8,
         audio,
       );
 
-      this.tryDetachParts(a, sat.contactX, sat.contactZ, -sat.normalX, -sat.normalZ, strikeSpeed);
-      this.tryDetachParts(b, sat.contactX, sat.contactZ, sat.normalX, sat.normalZ, strikeSpeed);
+      this.tryDetachParts(
+        a,
+        sat.contactX,
+        sat.contactZ,
+        -sat.normalX,
+        -sat.normalZ,
+        strikeSpeed,
+        crashIntensity,
+        vfx,
+      );
+      this.tryDetachParts(
+        b,
+        sat.contactX,
+        sat.contactZ,
+        sat.normalX,
+        sat.normalZ,
+        strikeSpeed,
+        crashIntensity,
+        vfx,
+      );
 
       a.onImpact(strikeSpeed, b.kind === 'police');
       b.onImpact(strikeSpeed, a.kind === 'police');
+      if (strikeSpeed >= 9.5) {
+        onHeavyCrash?.(strikeSpeed * crashIntensity);
+      }
     });
+
+    // Grounded debris as road obstacles
+    if (debrisObstacles && this.debris.length > 0 && vehicles.length > 0) {
+      for (const d of this.debris) {
+        // Grace period right after detaching so parent vehicle doesn't re-hit its own part mid-air
+        if (d.life > 27.35 || d.object.position.y > 0.95) continue;
+
+        for (let i = 0; i < vehicles.length; i++) {
+          const v = vehicles[i];
+          const spd = Math.hypot(v.dyn.vx, v.dyn.vz);
+          if (spd < 1.2) continue;
+
+          const dx = d.object.position.x - v.pos.x;
+          const dz = d.object.position.z - v.pos.z;
+          if (dx * dx + dz * dz > (v.halfL + d.radius + 0.6) ** 2) continue;
+
+          const cosY = Math.cos(v.yaw);
+          const sinY = Math.sin(v.yaw);
+          const lx = dx * cosY - dz * sinY;
+          const lz = dx * sinY + dz * cosY;
+
+          if (Math.abs(lx) < v.halfW + d.radius && Math.abs(lz) < v.halfL + d.radius) {
+            const kickSpeed = Math.max(4.5, spd * 0.85);
+            const fwdX = Math.sin(v.yaw);
+            const fwdZ = Math.cos(v.yaw);
+            d.vel.x = fwdX * kickSpeed + (this.rng() - 0.5) * 4.5 + (lx >= 0 ? cosY : -cosY) * 2.5;
+            d.vel.y = 2.1 + Math.min(3.5, spd * 0.22);
+            d.vel.z = fwdZ * kickSpeed + (this.rng() - 0.5) * 4.5 + (lx >= 0 ? -sinY : sinY) * 2.5;
+            d.angVel.set(
+              (this.rng() - 0.5) * 14,
+              (this.rng() - 0.5) * 14,
+              (this.rng() - 0.5) * 14,
+            );
+            d.object.position.y = Math.max(d.object.position.y, 0.25);
+
+            // Impart noticeable bump and slow-down to vehicle running over debris
+            v.dyn.vx *= 0.92;
+            v.dyn.vz *= 0.92;
+            v.dyn.pitchVel += (this.rng() > 0.5 ? 1 : -1) * Math.min(1.6, spd * 0.11);
+            v.dyn.rollVel += (lx >= 0 ? -1 : 1) * Math.min(1.8, spd * 0.12);
+            v.applyState(v.yaw, Math.hypot(v.dyn.vx, v.dyn.vz));
+
+            if (spd > 5.0) {
+              vfx.spawnImpactSparks(
+                d.object.position.x,
+                0.28,
+                d.object.position.z,
+                3,
+                0.65,
+              );
+            }
+          }
+        }
+      }
+    }
   }
 
   private tryDetachParts(
@@ -354,8 +480,11 @@ export class VehicleCrashPhysicsSystem {
     outNx: number,
     outNz: number,
     strikeSpeed: number,
+    crashIntensity: number,
+    vfx: SimVfxManager,
   ): void {
-    if (strikeSpeed < 7.2 || veh.detachableParts.length === 0) return;
+    const effectiveStrike = strikeSpeed * crashIntensity;
+    if (effectiveStrike < 6.4 || veh.detachableParts.length === 0) return;
 
     const dx = contactX - veh.pos.x;
     const dz = contactZ - veh.pos.z;
@@ -369,24 +498,41 @@ export class VehicleCrashPhysicsSystem {
     const candidates: Array<{ part: DetachablePartRef; distSq: number }> = [];
     for (const p of veh.detachableParts) {
       if (p.detached) continue;
+      if (p.isLightbar && veh.policeRig?.lightbar.visorStealthActive) continue;
+
       const ddx = p.localOffset.x - localX;
       const ddz = p.localOffset.z - localZ;
       const distSq = ddx * ddx + ddz * ddz;
 
       if (p.isWheel) {
-        if (strikeSpeed >= 8.2 && distSq < 1.85) {
+        if (effectiveStrike >= 8.2 && distSq < 1.95) {
           const sign = p.localOffset.x >= 0 ? 1 : -1;
-          const severity = THREE.MathUtils.clamp((strikeSpeed - 7.5) * 0.028, 0.09, 0.3);
+          const severity = THREE.MathUtils.clamp((effectiveStrike - 7.5) * 0.028, 0.09, 0.3);
           p.object.userData.bentAmount = sign * severity;
           if (Math.abs(severity) >= 0.21) {
             veh.onWheelBroken?.(sign);
           }
         }
-        if (distSq > 1.85) continue;
+        if (distSq > 1.95) continue;
       }
 
-      if (strikeSpeed < p.minStrikeSpeed) continue;
-      if (distSq < 4.4 || (strikeSpeed >= 15.0 && distSq < 8.5)) {
+      const proximityLimit = effectiveStrike >= 14.5 ? 8.5 : 4.6;
+      if (distSq > proximityLimit) continue;
+
+      // Progressive structural damage based on part HP
+      const dmgFactor = Math.max(0.25, 1.0 - distSq / proximityLimit);
+      if (effectiveStrike >= p.minStrikeSpeed * 0.72) {
+        const partDmg = (effectiveStrike - p.minStrikeSpeed * 0.55) * 4.4 * dmgFactor;
+        p.hp = Math.max(0, p.hp - partDmg);
+
+        if (p.hp > 0 && p.hp < p.maxHp * 0.65 && !p.isWheel) {
+          // Visible structural bend/crumple before snapping free
+          p.object.rotation.x += (this.rng() - 0.5) * 0.09;
+          p.object.rotation.z += (this.rng() - 0.5) * 0.11;
+        }
+      }
+
+      if (p.hp <= 0 || effectiveStrike >= p.minStrikeSpeed * 1.15) {
         candidates.push({ part: p, distSq });
       }
     }
@@ -394,14 +540,14 @@ export class VehicleCrashPhysicsSystem {
     if (candidates.length === 0) return;
     candidates.sort((c1, c2) => c1.distSq - c2.distSq);
 
-    const maxToDetach = strikeSpeed >= 15 ? 3 : strikeSpeed >= 11 ? 2 : 1;
+    const maxToDetach = effectiveStrike >= 15 ? 3 : effectiveStrike >= 10.5 ? 2 : 1;
     const count = Math.min(maxToDetach, candidates.length);
 
     for (let k = 0; k < count; k++) {
       const part = candidates[k].part;
       part.detached = true;
 
-      if (part.isLightbar && veh.policeRig) {
+      if (part.role === 'lightbar' && veh.policeRig) {
         const lb = veh.policeRig.lightbar;
         lb.detached = true;
         lb.redPointLight.intensity = 0;
@@ -410,6 +556,8 @@ export class VehicleCrashPhysicsSystem {
         lb.cookieRight.visible = false;
         lb.leftLensMat.emissiveIntensity = 0;
         lb.rightLensMat.emissiveIntensity = 0;
+        lb.miniBeaconLeftMat.emissiveIntensity = 0;
+        lb.miniBeaconRightMat.emissiveIntensity = 0;
         (lb.haloLeft.material as THREE.SpriteMaterial).opacity = 0;
         (lb.haloRight.material as THREE.SpriteMaterial).opacity = 0;
         (lb.haloCenter.material as THREE.SpriteMaterial).opacity = 0;
@@ -417,29 +565,29 @@ export class VehicleCrashPhysicsSystem {
 
       if (veh.policeRig) {
         const lb = veh.policeRig.lightbar;
-        if (part.id === 'headlight_l') {
+        if (part.role === 'headlight_l') {
           lb.headlightLeftDetached = true;
           lb.headlightLeftMat.emissiveIntensity = 0;
           (lb.haloHeadLeft.material as THREE.SpriteMaterial).opacity = 0;
-        } else if (part.id === 'headlight_r') {
+        } else if (part.role === 'headlight_r') {
           lb.headlightRightDetached = true;
           lb.headlightRightMat.emissiveIntensity = 0;
           (lb.haloHeadRight.material as THREE.SpriteMaterial).opacity = 0;
-        } else if (part.id === 'taillight_l') {
+        } else if (part.role === 'taillight_l') {
           lb.taillightLeftDetached = true;
           lb.taillightLeftMat.emissiveIntensity = 0;
-        } else if (part.id === 'taillight_r') {
+        } else if (part.role === 'taillight_r') {
           lb.taillightRightDetached = true;
           lb.taillightRightMat.emissiveIntensity = 0;
         }
       }
 
       if (
-        part.isLightbar ||
-        part.id.startsWith('headlight') ||
-        part.id.startsWith('taillight') ||
-        part.id.startsWith('hl_') ||
-        part.id.startsWith('tl_')
+        part.role === 'lightbar' ||
+        part.role === 'headlight_l' ||
+        part.role === 'headlight_r' ||
+        part.role === 'taillight_l' ||
+        part.role === 'taillight_r'
       ) {
         part.object.traverse((child) => {
           if (child instanceof THREE.Mesh && child.material) {
@@ -457,7 +605,7 @@ export class VehicleCrashPhysicsSystem {
         });
       }
 
-      if (part.isWheel) {
+      if (part.isWheel || part.role === 'wheel') {
         veh.onWheelBroken?.(part.localOffset.x >= 0 ? 1 : -1);
         if (veh.wheels) {
           const idx = veh.wheels.indexOf(part.object as THREE.Group);
@@ -473,10 +621,22 @@ export class VehicleCrashPhysicsSystem {
       this.debrisGroup.attach(part.object);
       part.object.getWorldPosition(_worldPos);
 
-      const blast = 3.2 + strikeSpeed * 0.42;
-      const vx = veh.dyn.vx * 0.72 + outNx * blast + (this.rng() - 0.5) * 4.5;
-      const vy = 3.6 + this.rng() * (strikeSpeed * 0.28);
-      const vz = veh.dyn.vz * 0.72 + outNz * blast + (this.rng() - 0.5) * 4.5;
+      if (effectiveStrike > 10.5) {
+        vfx.spawnImpactSparks(
+          _worldPos.x,
+          Math.max(0.35, _worldPos.y),
+          _worldPos.z,
+          5,
+          0.95,
+          outNx * 4,
+          outNz * 4,
+        );
+      }
+
+      const blast = 3.4 + effectiveStrike * 0.44;
+      const vx = veh.dyn.vx * 0.74 + outNx * blast + (this.rng() - 0.5) * 4.8;
+      const vy = 3.8 + this.rng() * (effectiveStrike * 0.3);
+      const vz = veh.dyn.vz * 0.74 + outNz * blast + (this.rng() - 0.5) * 4.8;
 
       this.debris.push({
         object: part.object,
@@ -486,10 +646,11 @@ export class VehicleCrashPhysicsSystem {
           (this.rng() - 0.5) * 14,
           (this.rng() - 0.5) * 14,
         ),
-        life: 16.0,
+        radius: part.radius,
+        life: 28.0,
       });
 
-      if (this.debris.length > 55) {
+      if (this.debris.length > 64) {
         const oldest = this.debris.shift()!;
         this.debrisGroup.remove(oldest.object);
       }
@@ -509,7 +670,7 @@ export class VehicleCrashPhysicsSystem {
       d.vel.y -= 22.0 * dt;
       d.object.position.addScaledVector(d.vel, dt);
 
-      const res = staticBvh.resolveCircle(d.object.position, 0.35);
+      const res = staticBvh.resolveCircle(d.object.position, d.radius * 0.75);
       if (res.collided) {
         const vn = d.vel.x * res.normalX + d.vel.z * res.normalZ;
         if (vn < 0) {
@@ -525,10 +686,10 @@ export class VehicleCrashPhysicsSystem {
         } else {
           d.vel.y = 0;
         }
-        const groundDamp = Math.exp(-5.8 * dt);
+        const groundDamp = Math.exp(-5.4 * dt);
         d.vel.x *= groundDamp;
         d.vel.z *= groundDamp;
-        d.angVel.multiplyScalar(Math.exp(-6.5 * dt));
+        d.angVel.multiplyScalar(Math.exp(-6.2 * dt));
       }
 
       d.object.rotation.x += d.angVel.x * dt;

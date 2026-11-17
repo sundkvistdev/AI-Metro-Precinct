@@ -9,6 +9,7 @@ import { ErrorDialog } from './components/ErrorDialog';
 import { MainMenu, MainMenuSettings } from './components/MainMenu';
 import { SidebarPaneId, SidebarPanel } from './components/SidebarPanel';
 import { TopStatusHud } from './components/TopStatusHud';
+import { DevEditorState } from './sim/devEditorController';
 import { PoliceSimEngine } from './sim/PoliceSimEngine';
 import {
   BackupMode,
@@ -26,6 +27,8 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   units: [],
   activeCrimes: [],
   neutralizedCount: 0,
+  casualtyCount: 0,
+  debrisCount: 0,
   civilianCarCount: 0,
   pedestrianCount: 0,
   activeNailMats: 0,
@@ -39,12 +42,19 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   crimeProbability: 0.25,
   cowardiceLevel: 0.35,
   audioEnabled: true,
+  audioVolume: 0.85,
+  audioQuality: 'normal',
+  shadowsEnabled: true,
+  debrisObstacles: true,
+  renderScale: 1,
+  crashIntensity: 1.0,
   simSpeed: 1,
   isSoftwareGl: false,
   paintPalette: [],
   assetPackName: 'unloaded',
   assetSourceLabel: '/jdataassets/manifest.json',
   configVersion: '1.0.0',
+  mapName: 'Metro Grid',
   assetCounts: { textures: 0, models: 0, audio: 0 },
   assetsLoaded: false,
   assetIssues: [],
@@ -58,14 +68,28 @@ export default function App() {
   const [screen, setScreen] = useState<ScreenState>('menu');
   const [menuSettings, setMenuSettings] = useState<MainMenuSettings>({
     audioEnabled: true,
+    audioVolume: 0.85,
+    audioQuality: 'normal',
     simSpeed: 1,
     weather: WeatherCondition.Clear,
     backupMode: BackupMode.Standard,
+    drivingMode: DrivingMode.Standard,
+    lightbarMode: LightbarMode.LED,
+    sirenPattern: SirenPattern.AutoCycle,
+    trafficScale: 1.0,
+    pedScale: 1.0,
+    crimeProbability: 0.25,
+    cowardiceLevel: 0.35,
+    shadowsEnabled: true,
+    debrisObstacles: true,
+    renderScale: 1,
+    crashIntensity: 1.0,
   });
 
   const [preflightResult, setPreflightResult] = useState<AssetLoadResult | null>(null);
   const [loadingAssets, setLoadingAssets] = useState(true);
   const [snapshot, setSnapshot] = useState<SimSnapshot>(INITIAL_SNAPSHOT);
+  const [devState, setDevState] = useState<DevEditorState | null>(null);
   const [activePane, setActivePane] = useState<SidebarPaneId | null>('units');
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [contextLost, setContextLost] = useState(false);
@@ -115,15 +139,24 @@ export default function App() {
       (lost) => setContextLost(lost),
       preflightResult,
       menuSettings,
+      (nextDev) => setDevState(nextDev),
     );
     engineRef.current = engine;
+    engine.getDevEditor()?.setActive(activePane === 'devtools');
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) {
         return;
       }
       if (e.key === 'h' || e.key === 'H') {
-        setActivePane((prev) => (prev ? null : 'units'));
+        setActivePane((prev) => {
+          engine.getDevEditor()?.setActive(false);
+          return prev ? null : 'units';
+        });
       } else if (e.code === 'Space') {
         e.preventDefault();
         engine.triggerCrimeNow();
@@ -145,6 +178,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
       engine.dispose();
       engineRef.current = null;
+      setDevState(null);
     };
     // Intentionally initialize once per 'playing' session; live pack swaps go through engineRef.current.applyAssetLoadResult
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -175,7 +209,11 @@ export default function App() {
   }, [preflightResult]);
 
   const handleTogglePane = useCallback((pane: SidebarPaneId) => {
-    setActivePane((prev) => (prev === pane ? null : pane));
+    setActivePane((prev) => {
+      const next = prev === pane ? null : pane;
+      engineRef.current?.getDevEditor()?.setActive(next === 'devtools');
+      return next;
+    });
   }, []);
 
   const handleSelectUnit = useCallback((id: string) => {
@@ -202,8 +240,8 @@ export default function App() {
     engineRef.current?.setBackupMode(mode);
   }, []);
 
-  const handleRequestBackup = useCallback(() => {
-    engineRef.current?.requestBackupNow();
+  const handleRequestBackup = useCallback((crimeId?: string) => {
+    engineRef.current?.requestBackupNow(crimeId);
   }, []);
 
   const handleDeployNailMat = useCallback(() => {
@@ -248,11 +286,23 @@ export default function App() {
     curr.setAudioEnabled(!snapshot.audioEnabled);
   }, [snapshot.audioEnabled]);
 
+  const handleSetAudioVolume = useCallback((volume: number) => {
+    engineRef.current?.setAudioVolume(volume);
+  }, []);
+
   const handleToggleSimSpeed = useCallback(() => {
     const curr = engineRef.current;
     if (!curr) return;
     curr.setSimSpeed(snapshot.simSpeed === 1 ? 2 : 1);
   }, [snapshot.simSpeed]);
+
+  const handleSetDebrisObstacles = useCallback((enabled: boolean) => {
+    engineRef.current?.setDebrisObstacles(enabled);
+  }, []);
+
+  const handleSetCrashIntensity = useCallback((intensity: number) => {
+    engineRef.current?.setCrashIntensity(intensity);
+  }, []);
 
   const activeFatalError =
     screen === 'playing'
@@ -334,7 +384,10 @@ export default function App() {
             <TopStatusHud
               snapshot={snapshot}
               onOpenErrorDialog={() => setErrorDialogOpen(true)}
-              onReturnToMenu={() => setScreen('menu')}
+              onReturnToMenu={() => {
+                engineRef.current?.getDevEditor()?.setActive(false);
+                setScreen('menu');
+              }}
             />
             <SidebarPanel
               snapshot={snapshot}
@@ -359,11 +412,18 @@ export default function App() {
               onTriggerPursuit={handleTriggerPursuit}
               onToggleMount={handleToggleMount}
               onToggleAudio={handleToggleAudio}
+              onSetAudioVolume={handleSetAudioVolume}
               onToggleSimSpeed={handleToggleSimSpeed}
+              onSetDebrisObstacles={handleSetDebrisObstacles}
+              onSetCrashIntensity={handleSetCrashIntensity}
               onLoadZipPack={(file) => void handleLoadZipPack(file)}
               onExportZipPack={() => void handleExportZipPack()}
               onReloadDefaultPack={() => void loadDefaultPack()}
               onOpenErrorDialog={() => setErrorDialogOpen(true)}
+              devTools={{
+                controller: engineRef.current?.getDevEditor() ?? null,
+                state: devState,
+              }}
             />
           </div>
         </>

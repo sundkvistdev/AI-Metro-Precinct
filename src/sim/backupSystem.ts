@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { EngineConfigAsset } from '../assets/assetTypes';
+import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
+import { StaticObstacleBVH } from './bvh';
 import { assignUnitToNailMat } from './nailMatSystem';
 import { dispatchNearestUnit } from './policeUnitSystem';
 import { TownRoadGraph } from './roadGraph';
@@ -95,11 +96,14 @@ export function evaluateCrimeBackupPolicy(
   backupMode: BackupMode,
   drivingMode: DrivingMode,
   audio: JsonAudioSynth | null,
+  staticBvh?: StaticObstacleBVH,
+  map?: CustomMapAsset,
 ): void {
   if (!crime.suspectAlive) return;
 
   const policy = config.backupPolicies[backupMode];
-  const effectiveDriving = policy.forceAggressive ? DrivingMode.Aggressive : drivingMode;
+  const effectiveDriving =
+    policy.forceAggressive || crime.urgency >= 78 ? DrivingMode.Aggressive : drivingMode;
 
   const counts = getCrimeUnitCounts(crime, units, nailMats);
   const primary = crime.assignedUnitId
@@ -117,6 +121,9 @@ export function evaluateCrimeBackupPolicy(
         audio,
         false,
         false,
+        undefined,
+        staticBvh,
+        map,
       )
     ) {
       return;
@@ -161,9 +168,11 @@ export function evaluateCrimeBackupPolicy(
       shouldCallRegularBackup =
         downedTotal > 0 || (primary?.immobilized ?? false) || retreatingUnits > 0;
     } else if (backupMode === BackupMode.Standard) {
-      shouldCallRegularBackup = primaryUnderDuress || prolonged;
+      shouldCallRegularBackup =
+        primaryUnderDuress || prolonged || crime.urgency >= 74;
     } else {
-      shouldCallRegularBackup = crime.elapsedSec > policy.regularDelaySec;
+      shouldCallRegularBackup =
+        crime.elapsedSec > policy.regularDelaySec || crime.urgency >= 82;
     }
   }
 
@@ -185,6 +194,8 @@ export function evaluateCrimeBackupPolicy(
           config,
           nailMatsGroup,
           audio,
+          staticBvh,
+          map,
         )
       ) {
         crime.backupDispatched = true;
@@ -202,6 +213,9 @@ export function evaluateCrimeBackupPolicy(
         audio,
         true,
         false,
+        undefined,
+        staticBvh,
+        map,
       )
     ) {
       crime.backupDispatched = true;
@@ -238,6 +252,8 @@ export function evaluateCrimeBackupPolicy(
         config,
         nailMatsGroup,
         audio,
+        staticBvh,
+        map,
       );
     }
   }
@@ -250,6 +266,7 @@ export function evaluateCrimeBackupPolicy(
       downedTotal > 0 ||
       retreatingUnits > 0 ||
       fleeingOrCriticalTotal >= 2 ||
+      crime.urgency >= 90 ||
       (!crime.inVehiclePursuit &&
         crime.engagedSec > policy.heavyDelaySec &&
         crime.suspectHp > 35);
@@ -261,6 +278,7 @@ export function evaluateCrimeBackupPolicy(
       downedTotal > 0 ||
       retreatingUnits > 0 ||
       anyInjured ||
+      crime.urgency >= 86 ||
       (crime.suspectWeaponKind === 'rifle' && crime.elapsedSec > 7.5) ||
       crime.engagedSec > policy.heavyDelaySec;
   } else {
@@ -284,6 +302,8 @@ export function evaluateCrimeBackupPolicy(
         true,
         true,
         heavyUnit.id,
+        staticBvh,
+        map,
       )
     ) {
       crime.heavyDeployed = true;
@@ -298,6 +318,8 @@ export function requestManualBackup(
   config: EngineConfigAsset,
   drivingMode: DrivingMode,
   audio: JsonAudioSynth | null,
+  staticBvh?: StaticObstacleBVH,
+  map?: CustomMapAsset,
 ): boolean {
   if (!crime.suspectAlive) return false;
   const standbyReg = findStandbyUnit(units, crime, false);
@@ -313,6 +335,8 @@ export function requestManualBackup(
       true,
       false,
       standbyReg.id,
+      staticBvh,
+      map,
     )
   ) {
     crime.backupDispatched = true;
@@ -332,6 +356,8 @@ export function requestManualBackup(
       true,
       true,
       standbyHeavy.id,
+      staticBvh,
+      map,
     )
   ) {
     crime.heavyDeployed = true;
@@ -349,6 +375,8 @@ export function requestManualNailMat(
   config: EngineConfigAsset,
   nailMatsGroup: THREE.Group,
   audio: JsonAudioSynth | null,
+  staticBvh?: StaticObstacleBVH,
+  map?: CustomMapAsset,
 ): boolean {
   if (!crime.suspectAlive || !crime.inVehiclePursuit) return false;
 
@@ -383,6 +411,8 @@ export function requestManualNailMat(
     config,
     nailMatsGroup,
     audio,
+    staticBvh,
+    map,
   );
   if (ok) {
     crime.backupDispatched = true;

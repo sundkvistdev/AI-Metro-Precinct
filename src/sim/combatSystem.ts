@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { EngineConfigAsset } from '../assets/assetTypes';
+import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
 import { getSurfaceHeight, WorldConfig } from './roadGraph';
@@ -13,6 +13,16 @@ import {
 } from './simActors';
 import { PoliceVehicleKind, UnitStatus, WeaponKind } from './types';
 import { SimVfxManager, stepRagdollPhysics, triggerRagdoll } from './vfx';
+
+export interface VehicleHumanoidCollider {
+  id: string;
+  kind: 'police' | 'civilian' | 'getaway';
+  pos: THREE.Vector3;
+  yaw: number;
+  speed: number;
+  halfW: number;
+  halfL: number;
+}
 
 const _vDir = new THREE.Vector3();
 const _vLook = new THREE.Vector3();
@@ -139,6 +149,7 @@ export class CombatSystem {
 
   private weapons: WeaponsConfig | null = null;
   private world: WorldConfig | null = null;
+  private map: CustomMapAsset | null = null;
   private chassis: ChassisConfigMap | null = null;
 
   private pistolTracerGeo = new THREE.BoxGeometry(0.055, 0.055, 1.35);
@@ -153,10 +164,19 @@ export class CombatSystem {
     this.vfx = vfx;
   }
 
-  public configure(config: EngineConfigAsset): void {
+  public configure(config: EngineConfigAsset, map?: CustomMapAsset): void {
     this.weapons = config.weapons;
     this.world = config.world;
+    this.map = map ?? null;
     this.chassis = config.vehicles.chassis;
+  }
+
+  private get surfaceSource(): CustomMapAsset | WorldConfig {
+    return this.map ?? this.world!;
+  }
+
+  private get mapHalfSize(): number {
+    return this.map?.bounds.halfSize ?? this.world?.townHalfSize ?? 150;
   }
 
   public clearTracers(): void {
@@ -166,43 +186,282 @@ export class CombatSystem {
     this.tracers.length = 0;
   }
 
-  public checkVehiclePedestrianStrike(
-    vehPos: THREE.Vector3,
-    vehYaw: number,
-    vehSpeed: number,
+  public resolveVehicleHumanoidCollisions(
+    vehicles: VehicleHumanoidCollider[],
     pedestrians: PedestrianActor[],
+    units: PoliceUnit[],
+    crimes: ActiveCrime[],
+    staticBvh: StaticObstacleBVH,
+    audio: JsonAudioSynth | null,
+    onPedCasualty?: () => void,
+    onSuspectNeutralized?: () => void,
   ): void {
-    const fwdX = Math.sin(vehYaw);
-    const fwdZ = Math.cos(vehYaw);
+    if (!this.world && !this.map) return;
+    const surface = this.surfaceSource;
+    const humRadius = 0.44;
 
-    for (const ped of pedestrians) {
-      if (ped.ragdoll.active) continue;
-      const dx = ped.pos.x - vehPos.x;
-      const dz = ped.pos.z - vehPos.z;
-      const distSq = dx * dx + dz * dz;
-      if (distSq < 2.05 * 2.05) {
-        const dist = Math.sqrt(distSq) || 1;
-        const knockSpd = Math.min(14, vehSpeed * 0.72);
-        triggerRagdoll(
-          ped.ragdoll,
-          this.rng,
-          fwdX * knockSpd + (dx / dist) * 3.5,
-          3.8 + Math.min(3.2, vehSpeed * 0.16),
-          fwdZ * knockSpd + (dz / dist) * 3.5,
-          6.5,
-        );
-        if (vehSpeed > 6.2) {
+    const testHitAndPush = (
+      hPos: THREE.Vector3,
+      v: VehicleHumanoidCollider,
+    ): { hit: boolean; pushX: number; pushZ: number } => {
+      const dx = hPos.x - v.pos.x;
+      const dz = hPos.z - v.pos.z;
+      const maxR = v.halfL + humRadius + 0.65;
+      if (dx * dx + dz * dz > maxR * maxR) {
+        return { hit: false, pushX: 0, pushZ: 0 };
+      }
+
+      const cosY = Math.cos(v.yaw);
+      const sinY = Math.sin(v.yaw);
+      const lx = dx * cosY - dz * sinY;
+      const lz = dx * sinY + dz * cosY;
+
+      const extW = v.halfW + humRadius;
+      const extL = v.halfL + humRadius;
+      if (Math.abs(lx) >= extW || Math.abs(lz) >= extL) {
+        return { hit: false, pushX: 0, pushZ: 0 };
+      }
+
+      const penX = extW - Math.abs(lx);
+      const penZ = extL - Math.abs(lz);
+      let lnx = 0;
+      let lnz = 0;
+      let pen = 0;
+      if (penX < penZ) {
+        lnx = lx >= 0 ? 1 : -1;
+        pen = penX + 0.04;
+      } else {
+        lnz = lz >= 0 ? 1 : -1;
+        pen = penZ + 0.04;
+      }
+
+      const pushX = lnx * cosY + lnz * sinY;
+      const pushZ = -lnx * sinY + lnz * cosY;
+      hPos.x += pushX * pen;
+      hPos.z += pushZ * pen;
+      staticBvh.resolveCircle(hPos, 0.45);
+      return { hit: true, pushX, pushZ };
+    };
+
+    for (const v of vehicles) {
+      const fwdX = Math.sin(v.yaw);
+      const fwdZ = Math.cos(v.yaw);
+
+      // 1) Pedestrians
+      for (const ped of pedestrians) {
+        const res = testHitAndPush(ped.pos, v);
+        if (!res.hit) continue;
+
+        if (!ped.dead && !ped.ragdoll.active && v.speed >= 1.1) {
+          const dmg = v.speed >= 8.5 ? 120 : (v.speed - 0.8) * 14.5;
+          ped.hp = Math.max(0, ped.hp - dmg);
+          const diedNow = ped.hp <= 0;
+          ped.injured = ped.hp > 0 && ped.hp < ped.maxHp;
+          ped.dead = diedNow;
+          if (diedNow) {
+            onPedCasualty?.();
+          }
+
+          const knockSpd = Math.min(14.5, v.speed * 0.78);
+          triggerRagdoll(
+            ped.ragdoll,
+            this.rng,
+            fwdX * knockSpd + res.pushX * 3.6,
+            3.2 + Math.min(3.8, v.speed * 0.18),
+            fwdZ * knockSpd + res.pushZ * 3.6,
+            diedNow ? 9999 : 4.5,
+          );
           this.vfx.spawnBloodImpact(
             ped.pos.x,
             ped.pos.y + 0.85,
             ped.pos.z,
             fwdX,
             fwdZ,
-            Math.min(1.4, vehSpeed / 11),
-            vehSpeed > 9.0,
+            Math.min(1.5, v.speed / 8.5),
+            diedNow || v.speed > 5.0,
           );
+          audio?.playAssetAt('ped_impact', ped.pos);
+          ped.panicTimer = 10.0;
         }
-        ped.panicTimer = 9.0;
+        if (!ped.ragdoll.active) {
+          ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surface);
+          ped.rig.root.position.copy(ped.pos);
+        }
+      }
+
+      // 2) Dismounted Police Officers
+      for (const u of units) {
+        if (u.mounted) continue;
+        for (const off of u.officers) {
+          if (off.mountPhase === 'boarding') continue;
+          const res = testHitAndPush(off.pos, v);
+          if (!res.hit) continue;
+
+          if (off.hp > 0 && !off.ragdoll.active && v.speed >= 1.25) {
+            const dmg = v.speed >= 10.5 ? 100 : (v.speed - 0.9) * 9.5;
+            off.hp = Math.max(0, off.hp - dmg);
+            off.morale = Math.max(0, off.morale - 36);
+            const died = off.hp <= 0;
+            const knockSpd = Math.min(13, v.speed * 0.72);
+            triggerRagdoll(
+              off.ragdoll,
+              this.rng,
+              fwdX * knockSpd + res.pushX * 3.4,
+              2.8 + Math.min(3.4, v.speed * 0.16),
+              fwdZ * knockSpd + res.pushZ * 3.4,
+              died ? 9999 : 3.2,
+            );
+            this.vfx.spawnBloodImpact(
+              off.pos.x,
+              off.pos.y + 0.85,
+              off.pos.z,
+              fwdX,
+              fwdZ,
+              Math.min(1.4, v.speed / 9),
+              died || v.speed > 5.5,
+            );
+            audio?.playAssetAt('ped_impact', off.pos);
+
+            if (died) {
+              if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
+              for (const partner of u.officers) {
+                if (partner !== off && partner.hp > 0) {
+                  partner.morale = Math.max(0, partner.morale - (partner.isHeavy ? 14 : 40));
+                }
+              }
+            }
+          }
+          if (!off.ragdoll.active) {
+            off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, surface);
+            off.rig.root.position.copy(off.pos);
+          }
+        }
+      }
+
+      // 3) Foot Suspects
+      for (const c of crimes) {
+        if (!c.suspectAlive || c.inVehiclePursuit) continue;
+        const res = testHitAndPush(c.suspectPos, v);
+        if (!res.hit) continue;
+
+        if (!c.suspectRagdoll.active && v.speed >= 1.15) {
+          const dmg = v.speed >= 9.0 ? 130 : (v.speed - 0.8) * 12.5;
+          c.suspectHp = Math.max(0, c.suspectHp - dmg);
+          const knockedOut = c.suspectHp <= 0;
+          const knockSpd = Math.min(14, v.speed * 0.76);
+
+          if (knockedOut) {
+            c.suspectAlive = false;
+            onSuspectNeutralized?.();
+            if (c.suspectRig.threatRing) c.suspectRig.threatRing.visible = false;
+            if (c.suspectRig.muzzleFlash) c.suspectRig.muzzleFlash.visible = false;
+          }
+          triggerRagdoll(
+            c.suspectRagdoll,
+            this.rng,
+            fwdX * knockSpd + res.pushX * 3.5,
+            3.0 + Math.min(3.5, v.speed * 0.17),
+            fwdZ * knockSpd + res.pushZ * 3.5,
+            knockedOut ? 9999 : 2.6,
+          );
+          this.vfx.spawnBloodImpact(
+            c.suspectPos.x,
+            c.suspectPos.y + 0.85,
+            c.suspectPos.z,
+            fwdX,
+            fwdZ,
+            Math.min(1.5, v.speed / 8.5),
+            knockedOut || v.speed > 5.0,
+          );
+          audio?.playAssetAt('ped_impact', c.suspectPos);
+        }
+        if (!c.suspectRagdoll.active) {
+          c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, surface);
+          c.suspectRig.root.position.copy(c.suspectPos);
+        }
+      }
+    }
+  }
+
+  public resolveHumanoidMutualCollisions(
+    pedestrians: PedestrianActor[],
+    units: PoliceUnit[],
+    crimes: ActiveCrime[],
+    staticBvh: StaticObstacleBVH,
+  ): void {
+    if (!this.world && !this.map) return;
+    const surface = this.surfaceSource;
+    const entries: Array<{ pos: THREE.Vector3; root: THREE.Object3D; mobile: boolean }> = [];
+
+    for (const p of pedestrians) {
+      entries.push({
+        pos: p.pos,
+        root: p.rig.root,
+        mobile: !p.dead && !p.ragdoll.active,
+      });
+    }
+    for (const u of units) {
+      if (u.mounted) continue;
+      for (const o of u.officers) {
+        if (o.mountPhase === 'boarding') continue;
+        entries.push({
+          pos: o.pos,
+          root: o.rig.root,
+          mobile: o.hp > 0 && !o.ragdoll.active,
+        });
+      }
+    }
+    for (const c of crimes) {
+      if (c.inVehiclePursuit) continue;
+      entries.push({
+        pos: c.suspectPos,
+        root: c.suspectRig.root,
+        mobile: c.suspectAlive && !c.suspectRagdoll.active,
+      });
+    }
+
+    const minDist = 0.82;
+    const minDistSq = minDist * minDist;
+
+    for (let i = 0; i < entries.length; i++) {
+      const a = entries[i];
+      for (let j = i + 1; j < entries.length; j++) {
+        const b = entries[j];
+        if (!a.mobile && !b.mobile) continue;
+        const dx = b.pos.x - a.pos.x;
+        const dz = b.pos.z - a.pos.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq >= minDistSq) continue;
+
+        const dist = Math.sqrt(distSq);
+        const nx = dist > 1e-4 ? dx / dist : 1;
+        const nz = dist > 1e-4 ? dz / dist : 0;
+        const push = minDist - dist;
+
+        if (a.mobile && b.mobile) {
+          a.pos.x -= nx * push * 0.5;
+          a.pos.z -= nz * push * 0.5;
+          b.pos.x += nx * push * 0.5;
+          b.pos.z += nz * push * 0.5;
+          staticBvh.resolveCircle(a.pos, 0.44);
+          staticBvh.resolveCircle(b.pos, 0.44);
+          a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface);
+          b.pos.y = getSurfaceHeight(b.pos.x, b.pos.z, surface);
+          a.root.position.copy(a.pos);
+          b.root.position.copy(b.pos);
+        } else if (a.mobile) {
+          a.pos.x -= nx * push;
+          a.pos.z -= nz * push;
+          staticBvh.resolveCircle(a.pos, 0.44);
+          a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface);
+          a.root.position.copy(a.pos);
+        } else {
+          b.pos.x += nx * push;
+          b.pos.z += nz * push;
+          staticBvh.resolveCircle(b.pos, 0.44);
+          b.pos.y = getSurfaceHeight(b.pos.x, b.pos.z, surface);
+          b.root.position.copy(b.pos);
+        }
       }
     }
   }
@@ -218,8 +477,8 @@ export class CombatSystem {
     audio: JsonAudioSynth | null,
     dt: number,
   ): void {
-    if (!this.weapons || !this.world) return;
-    const world = this.world;
+    if (!this.weapons || (!this.world && !this.map)) return;
+    const world = this.surfaceSource;
 
     if (off.hp <= 0) {
       if (off.ragdoll.active) {
@@ -494,9 +753,9 @@ export class CombatSystem {
     staticBvh: StaticObstacleBVH,
     dt: number,
   ): void {
-    if (!this.world) return;
-    const world = this.world;
-    const roamBound = Math.max(120, world.townHalfSize - 36);
+    if (!this.world && !this.map) return;
+    const world = this.surfaceSource;
+    const roamBound = Math.max(120, this.mapHalfSize - 36);
 
     if (off.hp <= 0) {
       if (off.ragdoll.active) {
@@ -634,13 +893,25 @@ export class CombatSystem {
     simTime: number,
     dt: number,
   ): void {
-    if (!this.weapons || !this.world) return;
-    const world = this.world;
-    const roamBound = Math.max(120, world.townHalfSize - 35);
+    if (!this.weapons || (!this.world && !this.map)) return;
+    const world = this.surfaceSource;
+    const roamBound = Math.max(120, this.mapHalfSize - 35);
 
     if (c.suspectRig.threatRing) {
       const s = 1 + Math.sin(simTime * 5) * 0.12;
       c.suspectRig.threatRing.scale.set(s, s, 1);
+    }
+
+    if (c.suspectRagdoll.active) {
+      stepRagdollPhysics(c.suspectRagdoll, c.suspectPos, c.suspectRig, staticBvh, world, dt);
+      c.suspectRagdoll.recoverTimer -= dt;
+      if (c.suspectRagdoll.recoverTimer <= 0 && c.suspectAlive) {
+        c.suspectRagdoll.active = false;
+        c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, world);
+        c.suspectRig.root.rotation.set(0, c.suspectYaw, 0);
+        c.suspectRig.torso.position.y = c.suspectRig.torsoBaseY;
+      }
+      return;
     }
 
     let targetOfficer: OfficerActor | null = null;
@@ -873,9 +1144,10 @@ export class CombatSystem {
     staticBvh: StaticObstacleBVH,
     dt: number,
     onSuspectNeutralized: () => void,
+    onPedCasualty?: () => void,
   ): void {
-    if (!this.world || !this.chassis) return;
-    const world = this.world;
+    if ((!this.world && !this.map) || !this.chassis) return;
+    const world = this.surfaceSource;
 
     for (let i = this.tracers.length - 1; i >= 0; i--) {
       const tr = this.tracers[i];
@@ -1096,17 +1368,24 @@ export class CombatSystem {
 
       if (!destroyed) {
         for (const ped of pedestrians) {
-          if (ped.ragdoll.active) continue;
+          if (ped.ragdoll.active || ped.dead) continue;
           const hit = segmentHitsHumanoid(p0, p1, ped.pos, 0.5, 1.75);
           if (hit.hit) {
             const vLen = Math.hypot(tr.vel.x, tr.vel.z) || 1;
+            ped.hp = Math.max(0, ped.hp - tr.damage);
+            ped.injured = ped.hp > 0 && ped.hp < ped.maxHp;
+            const died = ped.hp <= 0;
+            if (died && !ped.dead) {
+              ped.dead = true;
+              onPedCasualty?.();
+            }
             triggerRagdoll(
               ped.ragdoll,
               this.rng,
               (tr.vel.x / vLen) * 5.2,
               2.6,
               (tr.vel.z / vLen) * 5.2,
-              7.5,
+              died ? 9999 : 7.5,
             );
             ped.panicTimer = 9.0;
             this.vfx.spawnBloodImpact(

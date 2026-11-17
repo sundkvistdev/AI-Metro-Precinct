@@ -1,7 +1,8 @@
 {
-  "formatVersion": "1.2.0",
+  "formatVersion": "1.3.0",
   "packName": "metro_precinct_core",
   "config": "/jdataassets/engine_config.json",
+  "map": "/jdataassets/maps/metro_default.json",
   "textures": {
     "asphalt_road_v": "/jdataassets/textures/asphalt_road_v.json",
     "asphalt_road_h": "/jdataassets/textures/asphalt_road_h.json",
@@ -48,6 +49,7 @@
     "gunshot_police": "/jdataassets/audio/gunshot_police.json",
     "gunshot_suspect": "/jdataassets/audio/gunshot_suspect.json",
     "gunshot_rifle": "/jdataassets/audio/gunshot_rifle.json",
-    "vehicle_crash": "/jdataassets/audio/vehicle_crash.json"
+    "vehicle_crash": "/jdataassets/audio/vehicle_crash.json",
+    "ped_impact": "/jdataassets/audio/ped_impact.json"
   }
 }

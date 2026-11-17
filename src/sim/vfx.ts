@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CustomMapAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { StaticObstacleBVH } from './bvh';
@@ -49,14 +50,14 @@ export function stepRagdollPhysics(
   pos: THREE.Vector3,
   rig: HumanoidRig,
   bvh: StaticObstacleBVH,
-  world: WorldConfig,
+  surfaceSource: CustomMapAsset | WorldConfig,
   dt: number,
 ): void {
   rag.vel.y -= 23.0 * dt;
   pos.addScaledVector(rag.vel, dt);
   bvh.resolveCircle(pos, 0.45);
 
-  const groundY = getSurfaceHeight(pos.x, pos.z, world) + 0.16;
+  const groundY = getSurfaceHeight(pos.x, pos.z, surfaceSource) + 0.16;
   if (pos.y <= groundY) {
     pos.y = groundY;
     if (rag.vel.y < -1.8) {
@@ -124,7 +125,7 @@ export class SimVfxManager {
   private vfxGroup: THREE.Group;
   private rng: () => number;
   private textures: TextureRegistry | null = null;
-  private world: WorldConfig | null = null;
+  private world: CustomMapAsset | WorldConfig | null = null;
 
   private sparks: ImpactSpark[] = [];
   private smokePuffs: SmokePuff[] = [];
@@ -145,7 +146,10 @@ export class SimVfxManager {
     this.rng = rng;
   }
 
-  public configure(textures: TextureRegistry, world: WorldConfig): void {
+  public configure(
+    textures: TextureRegistry,
+    world: CustomMapAsset | WorldConfig,
+  ): void {
     this.textures = textures;
     this.world = world;
   }

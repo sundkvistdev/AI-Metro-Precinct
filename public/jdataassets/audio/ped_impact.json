@@ -1,0 +1,19 @@
+{
+  "format": "jdata-audio-v1",
+  "id": "ped_impact",
+  "seed": 802911,
+  "kind": "filtered_noise_burst",
+  "gain": 0.42,
+  "noiseBurst": {
+    "duration": 0.19,
+    "envelope": {
+      "attack": 0,
+      "decay": 0.19,
+      "duration": 0.19,
+      "curveExponent": 2.6
+    },
+    "filterType": "lowpass",
+    "freqStart": 720,
+    "freqEnd": 95
+  }
+}

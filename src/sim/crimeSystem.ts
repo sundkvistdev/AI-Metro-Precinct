@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   AssetIssue,
+  CustomMapAsset,
   EngineConfigAsset,
   LoadedJsonAssets,
 } from '../assets/assetTypes';
@@ -11,6 +12,7 @@ import { CombatSystem } from './combatSystem';
 import {
   AvoidanceVehicleProxy,
   computeAvoidanceSteerAndSpeed,
+  updateImpatienceAndReverse,
 } from './drivingAvoidance';
 import { isPointNearArmedNailMat } from './nailMatSystem';
 import { dismountUnit, dispatchNearestUnit } from './policeUnitSystem';
@@ -25,7 +27,9 @@ import {
 import {
   CrimeType,
   DrivingMode,
+  IncidentStatus,
   UnitStatus,
+  UrgencyLevel,
   WeaponKind,
   WeatherCondition,
 } from './types';
@@ -46,6 +50,42 @@ import {
   stepRagdollPhysics,
 } from './vfx';
 
+export function computeUrgencyLevel(urgency: number): UrgencyLevel {
+  if (urgency >= 86) return 'critical';
+  if (urgency >= 66) return 'high';
+  if (urgency >= 42) return 'medium';
+  return 'low';
+}
+
+function computeInitialUrgency(
+  type: CrimeType,
+  weaponKind: WeaponKind,
+  rng: () => number,
+): number {
+  let base = 50;
+  switch (type) {
+    case CrimeType.StorefrontHeist:
+      base = 34 + Math.round(rng() * 18);
+      break;
+    case CrimeType.StreetAssault:
+      base = 52 + Math.round(rng() * 16);
+      break;
+    case CrimeType.ArmedRobbery:
+      base = 66 + Math.round(rng() * 14);
+      break;
+    case CrimeType.ShotsFired:
+      base = 76 + Math.round(rng() * 16);
+      break;
+    case CrimeType.VehiclePursuit:
+      base = 72 + Math.round(rng() * 16);
+      break;
+  }
+  if (weaponKind === 'rifle' && type !== CrimeType.VehiclePursuit) {
+    base += 10;
+  }
+  return THREE.MathUtils.clamp(base, 15, 96);
+}
+
 export interface SpawnCrimeParams {
   forcePursuit: boolean;
   crimes: ActiveCrime[];
@@ -60,6 +100,7 @@ export interface SpawnCrimeParams {
   drivingMode: DrivingMode;
   audio: JsonAudioSynth | null;
   rng: () => number;
+  map?: CustomMapAsset;
   onAssetIssue?: (issue: AssetIssue) => void;
 }
 
@@ -78,9 +119,11 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     drivingMode,
     audio,
     rng,
+    map,
     onAssetIssue,
   } = params;
 
+  const surface = map ?? config.world;
   if (crimes.length >= config.simulation.maxActiveCrimes) return null;
 
   const isPursuit = forcePursuit || rng() < config.simulation.pursuitTriggerChance;
@@ -105,7 +148,7 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
   );
   const pos = new THREE.Vector3(spot.x, 0, spot.z);
   staticBvh.resolveCircle(pos, 0.52);
-  pos.y = getSurfaceHeight(pos.x, pos.z, config.world);
+  pos.y = getSurfaceHeight(pos.x, pos.z, surface);
   suspectRig.root.position.copy(pos);
   suspectRig.root.visible = !isPursuit;
   hierarchy.entities.crimes.add(suspectRig.root);
@@ -127,23 +170,27 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
   let vehicleNextNodeId = spot.nearestNodeId;
 
   if (isPursuit) {
-    const startNode = roadGraph.nodes[spot.nearestNodeId];
-    vehicleNextNodeId =
-      startNode.neighbors[Math.floor(rng() * startNode.neighbors.length)];
-    const nextNode = roadGraph.nodes[vehicleNextNodeId];
-    const dx = nextNode.x - startNode.x;
-    const dz = nextNode.z - startNode.z;
-    const len = Math.hypot(dx, dz) || 1;
-    const ux = dx / len;
-    const uz = dz / len;
-    const laneOffset = config.world.laneOffset;
-    const vx0 = startNode.x + ux * 16 - uz * laneOffset;
-    const vz0 = startNode.z + uz * 16 + ux * laneOffset;
-    vehiclePos.set(vx0, getSurfaceHeight(vx0, vz0, config.world), vz0);
-    vehicleYaw = Math.atan2(ux, uz);
-    vehicleDyn.vx = ux * 11;
-    vehicleDyn.vz = uz * 11;
-    vehicleNodeId = startNode.id;
+    const startNode = roadGraph.getNodeById(spot.nearestNodeId) ?? roadGraph.nodes[0];
+    if (startNode) {
+      vehicleNextNodeId =
+        startNode.neighbors.length > 0
+          ? startNode.neighbors[Math.floor(rng() * startNode.neighbors.length)]
+          : startNode.id;
+      const nextNode = roadGraph.getNodeById(vehicleNextNodeId) ?? startNode;
+      const dx = nextNode.x - startNode.x;
+      const dz = nextNode.z - startNode.z;
+      const len = Math.hypot(dx, dz) || 1;
+      const ux = dx / len;
+      const uz = dz / len;
+      const laneOffset = roadGraph.laneOffset;
+      const vx0 = startNode.x + ux * 16 - uz * laneOffset;
+      const vz0 = startNode.z + uz * 16 + ux * laneOffset;
+      vehiclePos.set(vx0, getSurfaceHeight(vx0, vz0, surface), vz0);
+      vehicleYaw = Math.atan2(ux, uz);
+      vehicleDyn.vx = ux * 11;
+      vehicleDyn.vz = uz * 11;
+      vehicleNodeId = startNode.id;
+    }
 
     const variants: ('sedan' | 'hatch')[] = ['sedan', 'hatch'];
     const paletteHexes = config.world.getawayColors.map((c) =>
@@ -174,14 +221,23 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     hierarchy.entities.crimes.add(vehicleRig.root);
   }
 
+  const baseUrgency = computeInitialUrgency(type, suspectWeaponKind, rng);
+
   const crime: ActiveCrime = {
     id,
+    caseNumber: 100 + crimeCounter,
     type,
     district: spot.district,
+    incidentStatus: isPursuit ? 'pursuit' : 'reported',
+    baseUrgency,
+    urgency: baseUrgency,
+    urgencyLevel: computeUrgencyLevel(baseUrgency),
     pos: isPursuit ? vehiclePos.clone() : pos.clone(),
     roadPullOverPos: isPursuit ? vehiclePos.clone() : spot.roadPullOverPos.clone(),
     roadPullOverYaw: spot.roadPullOverYaw,
     nearestNodeId: spot.nearestNodeId,
+    segmentNodeA: spot.segmentNodeA,
+    segmentNodeB: spot.segmentNodeB,
     suspectRig,
     suspectPos: isPursuit ? vehiclePos.clone() : pos.clone(),
     suspectYaw: rng() * Math.PI * 2,
@@ -211,12 +267,16 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     vehicleTurnApex: null,
     vehiclePinnedTimer: 0,
     vehicleStuckTimer: 0,
+    vehicleImpatience: 0,
+    vehicleReverseTimer: 0,
+    vehicleReverseSteerDir: 1,
     vehicleImmobilized: false,
     vehicleImmobilizeTilt: 0,
     vehicleTireBlowoutTimer: 0,
     vehicleSmokeTimer: 0,
     vehicleSmokeAccum: 0,
     assignedUnitId: null,
+    assignedUnitIds: [],
     backupDispatched: false,
     heavyDeployed: false,
     nailMatAttempts: 0,
@@ -228,7 +288,19 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
   };
 
   crimes.push(crime);
-  dispatchNearestUnit(crime, units, roadGraph, config, drivingMode, audio);
+  dispatchNearestUnit(
+    crime,
+    units,
+    roadGraph,
+    config,
+    drivingMode,
+    audio,
+    false,
+    false,
+    undefined,
+    staticBvh,
+    map,
+  );
   return crime;
 }
 
@@ -240,8 +312,10 @@ export function bailOutGetawaySuspect(
   config: EngineConfigAsset,
   cowardiceLevel: number,
   rng: () => number,
+  map?: CustomMapAsset,
 ): void {
   if (!crime.inVehiclePursuit) return;
+  const surface = map ?? config.world;
   crime.inVehiclePursuit = false;
   crime.vehicleSpeed = 0;
   crime.vehicleDyn.vx = 0;
@@ -255,17 +329,20 @@ export function bailOutGetawaySuspect(
   const sideZ = -Math.sin(crime.vehicleYaw) * 1.8;
   crime.suspectPos.set(crime.vehiclePos.x + sideX, 0, crime.vehiclePos.z + sideZ);
   staticBvh.resolveCircle(crime.suspectPos, 0.52);
-  crime.suspectPos.y = getSurfaceHeight(crime.suspectPos.x, crime.suspectPos.z, config.world);
+  crime.suspectPos.y = getSurfaceHeight(crime.suspectPos.x, crime.suspectPos.z, surface);
   crime.pos.copy(crime.suspectPos);
   crime.roadPullOverPos.copy(crime.vehiclePos);
   crime.nearestNodeId = roadGraph.findNearestNode(crime.vehiclePos.x, crime.vehiclePos.z).id;
+  crime.segmentNodeA = crime.vehicleNodeId;
+  crime.segmentNodeB = crime.vehicleNextNodeId;
+  crime.incidentStatus = 'on_scene';
   crime.suspectRig.root.position.copy(crime.suspectPos);
   crime.suspectRig.root.visible = true;
 
   for (const u of units) {
     if (u.targetCrimeId === crime.id && u.status === UnitStatus.Pursuing) {
       if (u.pos.distanceToSquared(crime.vehiclePos) < 22 * 22) {
-        dismountUnit(u, cowardiceLevel, staticBvh, config, rng);
+        dismountUnit(u, cowardiceLevel, staticBvh, config, rng, false, map);
       } else {
         u.status = UnitStatus.Responding;
         u.repathTimer = 0;
@@ -283,16 +360,16 @@ export function updateGetawayVehicle(
   roadGraph: TownRoadGraph,
   staticBvh: StaticObstacleBVH,
   config: EngineConfigAsset,
-  combat: CombatSystem,
   vfx: SimVfxManager,
   weather: WeatherCondition,
   cowardiceLevel: number,
   simTime: number,
   rng: () => number,
   dt: number,
+  map?: CustomMapAsset,
 ): void {
-  const world = config.world;
-  const laneOffset = world.laneOffset;
+  const surface = map ?? config.world;
+  const laneOffset = roadGraph.laneOffset;
 
   if (crime.vehicleTireBlowoutTimer > 0 && !crime.vehicleImmobilized) {
     crime.vehicleTireBlowoutTimer = Math.max(0, crime.vehicleTireBlowoutTimer - dt);
@@ -340,49 +417,75 @@ export function updateGetawayVehicle(
       6,
       dt,
     );
-    crime.vehiclePos.y = getSurfaceHeight(crime.vehiclePos.x, crime.vehiclePos.z, world);
+    crime.vehiclePos.y = getSurfaceHeight(crime.vehiclePos.x, crime.vehiclePos.z, surface);
     crime.vehicleRig!.root.position.copy(crime.vehiclePos);
     crime.vehicleRig!.root.rotation.y = crime.vehicleYaw;
-    bailOutGetawaySuspect(crime, units, roadGraph, staticBvh, config, cowardiceLevel, rng);
+    bailOutGetawaySuspect(crime, units, roadGraph, staticBvh, config, cowardiceLevel, rng, map);
     return;
   }
 
-  const currNode = roadGraph.nodes[crime.vehicleNodeId];
-  const nextNode = roadGraph.nodes[crime.vehicleNextNodeId];
+  const currNode = roadGraph.getNodeById(crime.vehicleNodeId) ?? roadGraph.nodes[0];
+  const nextNode = roadGraph.getNodeById(crime.vehicleNextNodeId) ?? currNode;
+  if (!currNode || !nextNode) return;
 
-  const segDx = nextNode.x - currNode.x;
-  const segDz = nextNode.z - currNode.z;
-  const segLen = Math.hypot(segDx, segDz) || 1;
-  const ux = segDx / segLen;
-  const uz = segDz / segLen;
+  const exitSample = roadGraph.sampleDirectedEdge(currNode, nextNode, 0.94);
+  const ux = exitSample.tx;
+  const uz = exitSample.tz;
   const rx = -uz * laneOffset;
   const rz = ux * laneOffset;
 
-  let targetX = nextNode.x - ux * 7.5 + rx;
-  let targetZ = nextNode.z - uz * 7.5 + rz;
+  const endTargetX = nextNode.x - ux * 7.5 + rx;
+  const endTargetZ = nextNode.z - uz * 7.5 + rz;
+  let targetX = endTargetX;
+  let targetZ = endTargetZ;
+
   if (crime.vehicleTurnApex) {
     targetX = crime.vehicleTurnApex.x;
     targetZ = crime.vehicleTurnApex.z;
+  } else {
+    const prog = roadGraph.findDirectedEdgeProgress(
+      crime.vehiclePos.x,
+      crime.vehiclePos.z,
+      currNode,
+      nextNode,
+    );
+    if (prog.isCurved && prog.t < 0.85) {
+      const ahead = roadGraph.sampleDirectedEdge(
+        currNode,
+        nextNode,
+        Math.min(0.95, prog.t + 0.25),
+      );
+      targetX = ahead.x - ahead.tz * laneOffset;
+      targetZ = ahead.z + ahead.tx * laneOffset;
+    }
   }
 
   const dx = targetX - crime.vehiclePos.x;
   const dz = targetZ - crime.vehiclePos.z;
   const dist = Math.hypot(dx, dz);
+  const endDist = crime.vehicleTurnApex
+    ? dist
+    : Math.hypot(endTargetX - crime.vehiclePos.x, endTargetZ - crime.vehiclePos.z);
   const vehFwdX = Math.sin(crime.vehicleYaw);
   const vehFwdZ = Math.cos(crime.vehicleYaw);
-  const passedTarget = dx * vehFwdX + dz * vehFwdZ < -1.0 && dist < 16;
+  const passedTarget =
+    (endTargetX - crime.vehiclePos.x) * vehFwdX +
+      (endTargetZ - crime.vehiclePos.z) * vehFwdZ <
+      -1.0 && endDist < 16;
 
-  if (dist < 5.5 || passedTarget) {
+  if (endDist < 5.5 || passedTarget) {
     if (crime.vehicleTurnApex) {
       crime.vehicleTurnApex = null;
     } else {
       const candidates = nextNode.neighbors.filter((n) => n !== crime.vehicleNodeId);
       const pool = candidates.length > 0 ? candidates : nextNode.neighbors;
-      let pick = pool[0];
+      let pick = pool[0] ?? nextNode.id;
       let bestScore = -Infinity;
+      const edgeBound = Math.max(80, roadGraph.townHalfSize - 2);
 
       for (const candId of pool) {
-        const cand = roadGraph.nodes[candId];
+        const cand = roadGraph.getNodeById(candId);
+        if (!cand) continue;
         let minWeightedCopDist = Infinity;
         for (const u of units) {
           const d = Math.hypot(cand.x - u.pos.x, cand.z - u.pos.z);
@@ -395,7 +498,7 @@ export function updateGetawayVehicle(
         const cDz = cand.z - nextNode.z;
         const cLen = Math.hypot(cDx, cDz) || 1;
         const momentumBonus = ((cDx / cLen) * vehFwdX + (cDz / cLen) * vehFwdZ) * 34;
-        const edgePenalty = Math.abs(cand.x) >= 148 || Math.abs(cand.z) >= 148 ? -18 : 0;
+        const edgePenalty = Math.abs(cand.x) >= edgeBound || Math.abs(cand.z) >= edgeBound ? -18 : 0;
         const score = minWeightedCopDist + momentumBonus + edgePenalty + rng() * 18;
         if (score > bestScore) {
           bestScore = score;
@@ -403,16 +506,14 @@ export function updateGetawayVehicle(
         }
       }
 
-      const afterNode = roadGraph.nodes[pick];
-      const ndx = afterNode.x - nextNode.x;
-      const ndz = afterNode.z - nextNode.z;
-      const nlen = Math.hypot(ndx, ndz) || 1;
-      const nrx = -(ndz / nlen) * laneOffset;
-      const nrz = (ndx / nlen) * laneOffset;
+      const afterNode = roadGraph.getNodeById(pick) ?? nextNode;
+      const nextEntry = roadGraph.sampleDirectedEdge(nextNode, afterNode, 0.06);
+      const nrx = -nextEntry.tz * laneOffset;
+      const nrz = nextEntry.tx * laneOffset;
 
       crime.vehicleTurnApex = new THREE.Vector3(
         nextNode.x + (rx + nrx) * 0.5,
-        world.surfaceHeights.road,
+        roadGraph.roadSurfaceY,
         nextNode.z + (rz + nrz) * 0.5,
       );
       crime.vehicleNodeId = crime.vehicleNextNodeId;
@@ -442,10 +543,42 @@ export function updateGetawayVehicle(
       pedestrians,
       staticBvh,
       dt,
+      recklessness: 0.9,
+      impatience: crime.vehicleImpatience,
     });
+
+    const revState = {
+      impatience: crime.vehicleImpatience,
+      stuckTimer: crime.vehicleStuckTimer,
+      reverseTimer: crime.vehicleReverseTimer,
+      reverseSteerDir: crime.vehicleReverseSteerDir,
+    };
+    const revStep = updateImpatienceAndReverse(revState, {
+      baseGoalSpeed: crime.vehicleMaxSpeed * speedFactor,
+      actualSpeed: crime.vehicleSpeed,
+      avoid,
+      patienceRate: 0.55,
+      reverseThresholdSec: 1.3,
+      reverseDurationSec: 1.25,
+      dt,
+    });
+    crime.vehicleImpatience = revState.impatience;
+    crime.vehicleStuckTimer = revState.stuckTimer;
+    crime.vehicleReverseTimer = revState.reverseTimer;
+    crime.vehicleReverseSteerDir = revState.reverseSteerDir;
+
+    if (revStep.justFinishedReverse) {
+      crime.vehicleTurnApex = null;
+      const pool = nextNode.neighbors.filter((n) => n !== crime.vehicleNodeId);
+      if (pool.length > 0) {
+        crime.vehicleNodeId = crime.vehicleNextNodeId;
+        crime.vehicleNextNodeId = pool[Math.floor(rng() * pool.length)];
+      }
+    }
 
     let targetYaw = avoid.desiredYaw;
     if (
+      !revStep.isReversing &&
       !blowoutActive &&
       isPointNearArmedNailMat(crime.vehiclePos.x, crime.vehiclePos.z, vehFwdX, vehFwdZ, nailMats)
     ) {
@@ -453,33 +586,25 @@ export function updateGetawayVehicle(
     }
 
     const yawState = { yaw: crime.vehicleYaw, speed: crime.vehicleSpeed };
-    stepVehicleDynamics(
+    const signedSpeed = stepVehicleDynamics(
       crime.vehiclePos,
       yawState,
       crime.vehicleDyn,
       crime.vehicleRig!.bodyGroup,
       {
-        targetSpeed: avoid.speedCap,
+        targetSpeed: revStep.isReversing ? -4.8 : avoid.speedCap,
         desiredYaw: targetYaw,
         maxAccel: blowoutActive ? 1.5 : 11.0,
         maxBrake: 12.0,
         maxSteerRate: blowoutActive ? 1.35 : 2.75,
         lateralGrip: grip,
         mass: 1.15,
+        reverseTurnDir: revStep.isReversing ? crime.vehicleReverseSteerDir : 0,
       },
       dt,
     );
     crime.vehicleYaw = yawState.yaw;
-    crime.vehicleSpeed = yawState.speed;
-
-    if (crime.vehicleSpeed > 4.0) {
-      combat.checkVehiclePedestrianStrike(
-        crime.vehiclePos,
-        crime.vehicleYaw,
-        crime.vehicleSpeed,
-        pedestrians,
-      );
-    }
+    crime.vehicleSpeed = signedSpeed;
   }
 
   let policeAdjacent = false;
@@ -489,28 +614,13 @@ export function updateGetawayVehicle(
       break;
     }
   }
-  if (policeAdjacent && crime.vehicleSpeed < 3.5) {
+  if (policeAdjacent && Math.abs(crime.vehicleSpeed) < 3.5) {
     crime.vehiclePinnedTimer += dt;
-    crime.vehicleStuckTimer = 0;
   } else {
     crime.vehiclePinnedTimer = Math.max(0, crime.vehiclePinnedTimer - dt);
-    if (crime.vehicleSpeed < 1.2) {
-      crime.vehicleStuckTimer += dt;
-      if (crime.vehicleStuckTimer > 1.5) {
-        crime.vehicleStuckTimer = 0;
-        crime.vehicleTurnApex = null;
-        const pool = nextNode.neighbors.filter((n) => n !== crime.vehicleNodeId);
-        if (pool.length > 0) {
-          crime.vehicleNodeId = crime.vehicleNextNodeId;
-          crime.vehicleNextNodeId = pool[Math.floor(rng() * pool.length)];
-        }
-      }
-    } else {
-      crime.vehicleStuckTimer = 0;
-    }
   }
 
-  crime.vehiclePos.y = getSurfaceHeight(crime.vehiclePos.x, crime.vehiclePos.z, world);
+  crime.vehiclePos.y = getSurfaceHeight(crime.vehiclePos.x, crime.vehiclePos.z, surface);
   crime.pos.copy(crime.vehiclePos);
   crime.suspectPos.copy(crime.vehiclePos);
 
@@ -533,7 +643,7 @@ export function updateGetawayVehicle(
   }
 
   if (crime.vehicleHp <= 0 || crime.vehiclePinnedTimer >= 2.2) {
-    bailOutGetawaySuspect(crime, units, roadGraph, staticBvh, config, cowardiceLevel, rng);
+    bailOutGetawaySuspect(crime, units, roadGraph, staticBvh, config, cowardiceLevel, rng, map);
   }
 }
 
@@ -554,6 +664,7 @@ export interface UpdateCrimesParams {
   cowardiceLevel: number;
   simTime: number;
   rng: () => number;
+  map?: CustomMapAsset;
   onCrimeCleared: () => void;
 }
 
@@ -575,25 +686,70 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
     cowardiceLevel,
     simTime,
     rng,
+    map,
     onCrimeCleared,
   } = params;
+  const surface = map ?? config.world;
 
   for (let i = crimes.length - 1; i >= 0; i--) {
     const c = crimes[i];
     c.elapsedSec += dt;
 
+    const assignedUnits = units.filter(
+      (u) => u.targetCrimeId === c.id && u.status !== UnitStatus.Retreating,
+    );
+    c.assignedUnitIds = assignedUnits.map((u) => u.id);
+
+    if (!c.suspectAlive) {
+      c.incidentStatus = 'resolved';
+    } else if (c.inVehiclePursuit) {
+      c.incidentStatus = 'pursuit';
+    } else if (
+      assignedUnits.some(
+        (u) => u.status === UnitStatus.Dismounting || u.status === UnitStatus.Engaging,
+      )
+    ) {
+      c.incidentStatus = 'on_scene';
+    } else if (assignedUnits.length > 0) {
+      c.incidentStatus = 'dispatched';
+    } else {
+      c.incidentStatus = 'reported';
+    }
+
     if (c.suspectAlive) {
-      const activelyEngaged = units.some(
+      const activelyEngaged = assignedUnits.some(
         (u) =>
-          u.targetCrimeId === c.id &&
-          (u.status === UnitStatus.Dismounting ||
-            u.status === UnitStatus.Engaging ||
-            (u.status === UnitStatus.Pursuing &&
-              u.pos.distanceToSquared(c.vehiclePos) < 28 * 28)),
+          u.status === UnitStatus.Dismounting ||
+          u.status === UnitStatus.Engaging ||
+          (u.status === UnitStatus.Pursuing &&
+            u.pos.distanceToSquared(c.vehiclePos) < 28 * 28),
       );
       if (activelyEngaged) {
         c.engagedSec += dt;
       }
+
+      let kiaOfficers = 0;
+      let injuredOfficers = 0;
+      let fleeingOfficers = 0;
+      for (const u of assignedUnits) {
+        for (const o of u.officers) {
+          if (o.hp <= 0) kiaOfficers++;
+          else if (o.hp < 65) injuredOfficers++;
+          if (o.hp > 0 && o.cowardiceState === 'fleeing') fleeingOfficers++;
+        }
+      }
+
+      const casualtyBoost = kiaOfficers * 24 + fleeingOfficers * 8 + injuredOfficers * 7;
+      const delayBoost =
+        c.incidentStatus === 'reported' || c.incidentStatus === 'dispatched'
+          ? Math.min(16, c.elapsedSec * 0.45)
+          : Math.min(12, c.elapsedSec * 0.25);
+      c.urgency = THREE.MathUtils.clamp(
+        Math.round(c.baseUrgency + casualtyBoost + delayBoost),
+        10,
+        100,
+      );
+      c.urgencyLevel = computeUrgencyLevel(c.urgency);
     }
 
     if (c.muzzleTimer > 0) {
@@ -624,13 +780,13 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
         roadGraph,
         staticBvh,
         config,
-        combat,
         vfx,
         weather,
         cowardiceLevel,
         simTime,
         rng,
         dt,
+        map,
       );
       continue;
     }
@@ -646,7 +802,7 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
         dt,
       );
     } else {
-      stepRagdollPhysics(c.suspectRagdoll, c.suspectPos, c.suspectRig, staticBvh, config.world, dt);
+      stepRagdollPhysics(c.suspectRagdoll, c.suspectPos, c.suspectRig, staticBvh, surface, dt);
       c.cleanupTimer -= dt;
       if (c.cleanupTimer <= 0) {
         hierarchy.entities.crimes.remove(c.suspectRig.root);

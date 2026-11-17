@@ -4,6 +4,9 @@ export enum LightbarMode {
   LED = 'LED',
   FlashingHalogen = 'FLASHING_HALOGEN',
   RotatingHalogen = 'ROTATING_HALOGEN',
+  VectorPods = 'VECTOR_PODS',
+  VisorStealth = 'VISOR_STEALTH',
+  MiniBeacon = 'MINI_BEACON',
 }
 
 export enum SirenPattern {
@@ -60,9 +63,20 @@ export enum CrimeType {
   VehiclePursuit = 'Vehicle Pursuit',
 }
 
-export type PoliceVehicleKind = 'sedan' | 'suv' | 'van' | 'apc';
+export type PoliceVehicleKind = 'sedan' | 'suv' | 'van' | 'apc' | (string & {});
 
 export type WeaponKind = 'pistol' | 'rifle';
+
+export type IncidentStatus =
+  | 'reported'
+  | 'dispatched'
+  | 'on_scene'
+  | 'pursuit'
+  | 'resolved';
+
+export type UrgencyLevel = 'low' | 'medium' | 'high' | 'critical';
+
+export type CaseAssignmentRole = 'primary' | 'backup' | 'tactical' | 'spikes';
 
 export type PoliceLiveryId =
   | 'classic_bw'
@@ -77,6 +91,14 @@ export interface PaintSwatchSummary {
   id: string;
   label: string;
   hex: number;
+}
+
+export interface CaseAssignedUnitBadge {
+  unitId: string;
+  callsign: string;
+  role: CaseAssignmentRole;
+  status: UnitStatus;
+  reversing: boolean;
 }
 
 export interface UnitSummary {
@@ -98,18 +120,27 @@ export interface UnitSummary {
   downedOfficers: number;
   immobilized: boolean;
   targetCrimeId: string | null;
+  assignedCaseNumber: number | null;
+  assignedRole: CaseAssignmentRole | null;
+  impatience: number;
+  reversing: boolean;
 }
 
 export interface CrimeSummary {
   id: string;
+  caseNumber: number;
   type: CrimeType;
   district: string;
+  incidentStatus: IncidentStatus;
+  urgency: number;
+  urgencyLevel: UrgencyLevel;
   suspectAlive: boolean;
   suspectHp: number;
   suspectWeaponKind: WeaponKind;
   inVehiclePursuit: boolean;
   vehicleHp: number;
   assignedUnitCallsign: string | null;
+  assignedUnits: CaseAssignedUnitBadge[];
   backupDispatched: boolean;
   backupCount: number;
   heavyDeployed: boolean;
@@ -122,6 +153,8 @@ export interface SimSnapshot {
   units: UnitSummary[];
   activeCrimes: CrimeSummary[];
   neutralizedCount: number;
+  casualtyCount: number;
+  debrisCount: number;
   civilianCarCount: number;
   pedestrianCount: number;
   activeNailMats: number;
@@ -135,12 +168,19 @@ export interface SimSnapshot {
   crimeProbability: number;
   cowardiceLevel: number;
   audioEnabled: boolean;
+  audioVolume: number;
+  audioQuality: 'low' | 'normal' | 'high';
+  shadowsEnabled: boolean;
+  debrisObstacles: boolean;
+  renderScale: 0.75 | 1 | 1.5;
+  crashIntensity: number;
   simSpeed: 1 | 2;
   isSoftwareGl: boolean;
   paintPalette: PaintSwatchSummary[];
   assetPackName: string;
   assetSourceLabel: string;
   configVersion: string;
+  mapName: string;
   assetCounts: {
     textures: number;
     models: number;

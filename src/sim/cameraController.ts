@@ -32,6 +32,10 @@ export class SimCameraController {
   private callbacks: CameraControllerCallbacks;
   private cameraNeedsSnap = false;
   private userOrbiting = false;
+  private gizmoDragging = false;
+  private devEditorActive = false;
+  private shakeIntensity = 0;
+  private appliedShake = new THREE.Vector3();
 
   private keys = new Set<string>();
   private freeYaw = 0;
@@ -129,15 +133,50 @@ export class SimCameraController {
     this.cameraNeedsSnap = true;
   }
 
+  public setGizmoDragging(dragging: boolean): void {
+    this.gizmoDragging = dragging;
+    this.controls.enabled = !dragging && this.mode !== CameraMode.FreeFly;
+  }
+
+  public setDevEditorActive(active: boolean): void {
+    this.devEditorActive = active;
+  }
+
+  public focusTarget(
+    tx: number,
+    ty: number,
+    tz: number,
+    cx: number,
+    cy: number,
+    cz: number,
+  ): void {
+    this.mode = CameraMode.Overview;
+    this.controls.enabled = !this.gizmoDragging;
+    this.appliedShake.set(0, 0, 0);
+    this.controls.target.set(tx, ty, tz);
+    this.camera.position.set(cx, cy, cz);
+    this.controls.update();
+  }
+
+  public triggerImpactShake(intensity: number): void {
+    this.shakeIntensity = Math.min(0.65, Math.max(this.shakeIntensity, intensity * 0.032));
+  }
+
   public resetView(): void {
     this.mode = CameraMode.Overview;
-    this.controls.enabled = true;
+    this.controls.enabled = !this.gizmoDragging;
+    this.appliedShake.set(0, 0, 0);
     this.controls.target.set(...this.config.overviewTarget);
     this.camera.position.set(...this.config.overviewPos);
     this.controls.update();
   }
 
   public update(dt: number, selectedUnit: PoliceUnit | undefined): void {
+    if (this.appliedShake.lengthSq() > 0) {
+      this.camera.position.sub(this.appliedShake);
+      this.appliedShake.set(0, 0, 0);
+    }
+
     const moveFwd =
       (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0) -
       (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0);
@@ -235,16 +274,18 @@ export class SimCameraController {
           this.camera.position.copy(this.controls.target).add(_v1);
         }
 
-        this.controls.target.x = THREE.MathUtils.clamp(this.controls.target.x, -260, 260);
-        this.controls.target.z = THREE.MathUtils.clamp(this.controls.target.z, -260, 260);
+        this.controls.target.x = THREE.MathUtils.clamp(this.controls.target.x, -350, 350);
+        this.controls.target.z = THREE.MathUtils.clamp(this.controls.target.z, -350, 350);
       }
 
       this.controls.update();
+      this.applyCameraShake(dt);
       return;
     }
 
     if (!selectedUnit) {
       this.controls.update();
+      this.applyCameraShake(dt);
       return;
     }
 
@@ -300,6 +341,21 @@ export class SimCameraController {
     }
 
     this.controls.update();
+    this.applyCameraShake(dt);
+  }
+
+  private applyCameraShake(dt: number): void {
+    if (this.shakeIntensity <= 0.002) {
+      this.shakeIntensity = 0;
+      return;
+    }
+    this.appliedShake.set(
+      (Math.random() - 0.5) * 2 * this.shakeIntensity,
+      (Math.random() - 0.5) * 1.4 * this.shakeIntensity,
+      (Math.random() - 0.5) * 2 * this.shakeIntensity,
+    );
+    this.camera.position.add(this.appliedShake);
+    this.shakeIntensity *= Math.exp(-9.5 * dt);
   }
 
   private handleKeyDown = (e: KeyboardEvent): void => {
@@ -352,7 +408,7 @@ export class SimCameraController {
 
   private handlePointerUp = (e: PointerEvent): void => {
     this.isFreeDragging = false;
-    if (this.dragMoved || e.button !== 0) return;
+    if (this.dragMoved || e.button !== 0 || this.gizmoDragging || this.devEditorActive) return;
 
     const rect = this.domElement.getBoundingClientRect();
     if (

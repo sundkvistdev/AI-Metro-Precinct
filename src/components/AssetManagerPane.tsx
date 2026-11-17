@@ -18,7 +18,7 @@ export interface AssetManagerPaneProps {
   onOpenErrorDialog: () => void;
 }
 
-type AssetTab = 'textures' | 'models' | 'audio' | 'config';
+type AssetTab = 'textures' | 'models' | 'audio' | 'map' | 'config';
 
 export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
   snapshot,
@@ -61,6 +61,22 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
           meta: aud.kind,
         }));
     }
+    if (tab === 'map') {
+      const m = loadedAssets.map;
+      return [
+        { id: 'map.id', meta: m.id },
+        { id: 'map.name', meta: m.name },
+        { id: 'map.bounds', meta: `±${m.bounds.halfSize}m` },
+        { id: 'map.roadNodes', meta: `${m.roadNetwork.nodes.length} nodes` },
+        { id: 'map.roadEdges', meta: `${m.roadNetwork.edges.length} edges` },
+        { id: 'map.buildings', meta: `${m.buildings.length} structures` },
+        { id: 'map.zones', meta: `${m.zones.length} zones` },
+        { id: 'map.pedLoops', meta: `${m.pedLoops.length} loops` },
+        { id: 'map.trees', meta: `${m.trees.length} trees` },
+      ].filter(
+        (row) => !q || row.id.toLowerCase().includes(q) || row.meta.toLowerCase().includes(q),
+      );
+    }
     const cfg = loadedAssets.config;
     return [
       { id: 'world.townHalfSize', meta: `${cfg.world.townHalfSize}m` },
@@ -101,6 +117,10 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
         <div className="flex items-center justify-between gap-2">
           <span className="text-zinc-400">Source</span>
           <span className="text-zinc-200 truncate">{snapshot.assetSourceLabel}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-zinc-400">Map</span>
+          <span className="text-zinc-200 truncate">{snapshot.mapName}</span>
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="text-zinc-400">Config</span>
@@ -171,13 +191,14 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-0.5 bg-zinc-900/50 p-0.5 border border-zinc-600">
+      <div className="grid grid-cols-5 gap-0.5 bg-zinc-900/50 p-0.5 border border-zinc-600">
         {(
           [
             { key: 'models', label: 'Models' },
-            { key: 'textures', label: 'Textures' },
+            { key: 'textures', label: 'Tex' },
             { key: 'audio', label: 'Audio' },
-            { key: 'config', label: 'Config' },
+            { key: 'map', label: 'Map' },
+            { key: 'config', label: 'Cfg' },
           ] as const
         ).map((item) => (
           <button

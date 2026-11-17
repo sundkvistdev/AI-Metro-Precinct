@@ -23,6 +23,8 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
             Metro Precinct
           </span>
           <span aria-hidden="true" className="text-zinc-500">·</span>
+          <span className="text-zinc-300">{snapshot.mapName}</span>
+          <span aria-hidden="true" className="text-zinc-500">·</span>
           <span className="font-mono-tabular text-zinc-200">
             Calls {snapshot.activeCrimes.length}
           </span>
@@ -30,6 +32,14 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
           <span className="font-mono-tabular text-zinc-200">
             Neutralized {snapshot.neutralizedCount}
           </span>
+          {snapshot.casualtyCount > 0 && (
+            <>
+              <span aria-hidden="true" className="text-zinc-500">·</span>
+              <span className="font-mono-tabular text-red-300">
+                Casualties {snapshot.casualtyCount}
+              </span>
+            </>
+          )}
           <span aria-hidden="true" className="text-zinc-500">·</span>
           <span className="font-mono-tabular text-zinc-300">
             Traffic {snapshot.civilianCarCount}
@@ -38,6 +48,14 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
           <span className="font-mono-tabular text-zinc-300">
             Peds {snapshot.pedestrianCount}
           </span>
+          {snapshot.debrisCount > 0 && (
+            <>
+              <span aria-hidden="true" className="text-zinc-500">·</span>
+              <span className="font-mono-tabular text-zinc-300">
+                Debris {snapshot.debrisCount}
+              </span>
+            </>
+          )}
           {snapshot.activeNailMats > 0 && (
             <>
               <span aria-hidden="true" className="text-zinc-500">·</span>
@@ -51,30 +69,52 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
 
       <div className="flex items-start gap-1.5">
         {snapshot.activeCrimes.length > 0 && (
-          <div className="pointer-events-auto ui-panel border-red-400/50 px-2.5 py-1.5 shadow-md max-w-md">
-            <div className="space-y-0.5">
-              {snapshot.activeCrimes.slice(0, 3).map((crime) => (
-                <div
-                  key={crime.id}
-                  className="flex items-center justify-between gap-3 text-[11px] text-zinc-100 font-mono-tabular"
-                >
-                  <span className="truncate">
-                    {crime.type} ({crime.suspectWeaponKind}) · {crime.district}
-                  </span>
-                  <span className="shrink-0 text-zinc-300">
-                    {!crime.suspectAlive
-                      ? 'Down'
-                      : crime.inVehiclePursuit
-                      ? `Car ${crime.vehicleHp}%`
-                      : `HP ${crime.suspectHp}%`}
-                    {crime.assignedUnitCallsign ? ` · ${crime.assignedUnitCallsign}` : ''}
-                    {crime.backupCount > 0 ? ` · +${crime.backupCount}` : ''}
-                    {crime.heavyDeployed ? ' · SWAT' : ''}
-                    {crime.apcDeployed ? ' · APC' : ''}
-                    {crime.nailMatDeployed ? ' · Spikes' : ''}
-                  </span>
-                </div>
-              ))}
+          <div className="pointer-events-auto ui-panel border-red-400/50 px-2.5 py-1.5 shadow-md max-w-lg">
+            <div className="space-y-1">
+              {snapshot.activeCrimes.slice(0, 3).map((crime) => {
+                const urgClass =
+                  crime.urgencyLevel === 'critical'
+                    ? 'border-red-400/80 bg-red-600/85 text-white'
+                    : crime.urgencyLevel === 'high'
+                    ? 'border-orange-400/80 bg-orange-600/80 text-white'
+                    : crime.urgencyLevel === 'medium'
+                    ? 'border-amber-400/70 bg-amber-600/50 text-amber-100'
+                    : 'border-zinc-500 bg-zinc-700 text-zinc-200';
+                const statusLabel =
+                  crime.incidentStatus === 'on_scene'
+                    ? 'ON SCENE'
+                    : crime.incidentStatus.toUpperCase();
+                return (
+                  <div
+                    key={crime.id}
+                    className="flex items-center justify-between gap-2.5 text-[11px] text-zinc-100 font-mono-tabular"
+                  >
+                    <span className="flex items-center gap-1.5 truncate">
+                      <span className={`px-1 py-0 border text-[10px] font-semibold uppercase ${urgClass}`}>
+                        U{crime.urgency}
+                      </span>
+                      <span className="text-zinc-300 font-semibold">#{crime.caseNumber}</span>
+                      <span className="truncate">
+                        {crime.type} ({crime.suspectWeaponKind}) · {crime.district}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-zinc-300">
+                      {statusLabel} ·{' '}
+                      {!crime.suspectAlive
+                        ? 'Down'
+                        : crime.inVehiclePursuit
+                        ? `Car ${crime.vehicleHp}%`
+                        : `HP ${crime.suspectHp}%`}
+                      {crime.assignedUnits.length > 0
+                        ? ` · ${crime.assignedUnits.map((u) => u.callsign).join(', ')}`
+                        : crime.assignedUnitCallsign
+                        ? ` · ${crime.assignedUnitCallsign}`
+                        : ' · Unassigned'}
+                      {crime.nailMatDeployed ? ' · Spikes' : ''}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

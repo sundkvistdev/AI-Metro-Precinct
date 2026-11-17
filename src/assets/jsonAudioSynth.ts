@@ -3,6 +3,8 @@ import { SirenPattern } from '../sim/types';
 import { ProceduralAudioAsset } from './assetTypes';
 import { mulberry32 } from './prng';
 
+export type AudioVoiceQuality = 'low' | 'normal' | 'high';
+
 interface SirenVoice {
   osc1: OscillatorNode;
   osc2: OscillatorNode;
@@ -11,6 +13,30 @@ interface SirenVoice {
   panner: PannerNode;
   phase: number;
   autoPhaseOffset: number;
+  lastActiveTime: number;
+}
+
+const QUALITY_LIMITS: Record<
+  AudioVoiceQuality,
+  { maxTransients: number; maxSirens: number; echoLevel: number }
+> = {
+  low: { maxTransients: 6, maxSirens: 2, echoLevel: 0.18 },
+  normal: { maxTransients: 12, maxSirens: 4, echoLevel: 0.36 },
+  high: { maxTransients: 18, maxSirens: 6, echoLevel: 0.42 },
+};
+
+const ASSET_COOLDOWN_MS: Record<string, number> = {
+  gunshot_police: 32,
+  gunshot_suspect: 32,
+  gunshot_rifle: 28,
+  vehicle_crash: 90,
+  ped_impact: 115,
+  tire_blowout: 130,
+  dispatch_chirp: 110,
+};
+
+function isFiniteVec3(v: THREE.Vector3 | undefined): v is THREE.Vector3 {
+  return !!v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
 }
 
 export class JsonAudioSynth {
@@ -25,7 +51,13 @@ export class JsonAudioSynth {
 
   private sirenVoices = new Map<string, SirenVoice>();
   private enabled = true;
+  private masterVolume = 0.85;
+  private voiceQuality: AudioVoiceQuality = 'normal';
   private rainTarget = 0;
+
+  private listenerPos = new THREE.Vector3(0, 40, 0);
+  private activeTransients = 0;
+  private lastPlayedMs = new Map<string, number>();
 
   private audioAssets: Record<string, ProceduralAudioAsset>;
   private cachedNoiseBuffers = new Map<string, AudioBuffer>();
@@ -46,7 +78,7 @@ export class JsonAudioSynth {
     if (this.gunshotShaperCurve) return this.gunshotShaperCurve;
     const samples = 512;
     const curve = new Float32Array(new ArrayBuffer(samples * 4));
-    const drive = 3.8;
+    const drive = 3.6;
     for (let i = 0; i < samples; i++) {
       const x = (i * 2) / samples - 1;
       curve[i] = Math.tanh(x * drive);
@@ -58,7 +90,14 @@ export class JsonAudioSynth {
   public unlockOnGesture(): void {
     if (!this.enabled) return;
     this.ensureContext();
-    if (this.ctx && this.ctx.state === 'suspended') {
+    if (this.ctx && this.ctx.state !== 'running') {
+      void this.ctx.resume();
+    }
+  }
+
+  public ensureRunningIfEnabled(): void {
+    if (!this.enabled || !this.ctx) return;
+    if (this.ctx.state === 'suspended') {
       void this.ctx.resume();
     }
   }
@@ -67,40 +106,73 @@ export class JsonAudioSynth {
     this.enabled = enabled;
     if (enabled) {
       this.ensureContext();
-      if (this.ctx && this.ctx.state === 'suspended') {
+      if (this.ctx && this.ctx.state !== 'running') {
         void this.ctx.resume();
       }
       if (this.masterGain && this.ctx) {
-        this.masterGain.gain.setTargetAtTime(0.92, this.ctx.currentTime, 0.05);
+        this.masterGain.gain.setTargetAtTime(this.effectiveMasterGain(), this.ctx.currentTime, 0.05);
       }
     } else if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
     }
   }
 
+  public setMasterVolume(volume: number): void {
+    this.masterVolume = THREE.MathUtils.clamp(Number.isFinite(volume) ? volume : 0.85, 0, 1);
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setTargetAtTime(
+        this.enabled ? this.effectiveMasterGain() : 0,
+        this.ctx.currentTime,
+        0.04,
+      );
+    }
+  }
+
+  public getMasterVolume(): number {
+    return this.masterVolume;
+  }
+
+  public setVoiceQuality(quality: AudioVoiceQuality): void {
+    this.voiceQuality = quality;
+    const cfg = QUALITY_LIMITS[quality];
+    if (this.echoInput && this.ctx) {
+      this.echoInput.gain.setTargetAtTime(cfg.echoLevel, this.ctx.currentTime, 0.05);
+    }
+    for (const v of this.sirenVoices.values()) {
+      v.panner.panningModel = quality === 'low' ? 'equalpower' : 'HRTF';
+    }
+  }
+
+  public getVoiceQuality(): AudioVoiceQuality {
+    return this.voiceQuality;
+  }
+
   public isEnabled(): boolean {
     return this.enabled;
+  }
+
+  private effectiveMasterGain(): number {
+    return 0.92 * this.masterVolume;
   }
 
   private ensureContext(): void {
     if (this.ctx) return;
     const AudioCtx =
       window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
 
     this.ctx = new AudioCtx();
     const compressor = this.ctx.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-12, this.ctx.currentTime);
-    compressor.knee.setValueAtTime(10, this.ctx.currentTime);
-    compressor.ratio.setValueAtTime(5.5, this.ctx.currentTime);
-    compressor.attack.setValueAtTime(0.0015, this.ctx.currentTime);
-    compressor.release.setValueAtTime(0.16, this.ctx.currentTime);
+    compressor.threshold.setValueAtTime(-14, this.ctx.currentTime);
+    compressor.knee.setValueAtTime(14, this.ctx.currentTime);
+    compressor.ratio.setValueAtTime(6.0, this.ctx.currentTime);
+    compressor.attack.setValueAtTime(0.002, this.ctx.currentTime);
+    compressor.release.setValueAtTime(0.14, this.ctx.currentTime);
     compressor.connect(this.ctx.destination);
 
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = this.enabled ? 0.92 : 0;
+    this.masterGain.gain.value = this.enabled ? this.effectiveMasterGain() : 0;
     this.masterGain.connect(compressor);
 
     // Dry bus
@@ -110,7 +182,7 @@ export class JsonAudioSynth {
 
     // Siren / general urban canyon echo bus
     this.echoInput = this.ctx.createGain();
-    this.echoInput.gain.value = 0.36;
+    this.echoInput.gain.value = QUALITY_LIMITS[this.voiceQuality].echoLevel;
 
     const delayA = this.ctx.createDelay(1.0);
     delayA.delayTime.value = 0.145;
@@ -122,7 +194,7 @@ export class JsonAudioSynth {
     echoFilter.frequency.value = 1650;
 
     const feedbackGain = this.ctx.createGain();
-    feedbackGain.gain.value = 0.28;
+    feedbackGain.gain.value = 0.24;
 
     this.echoInput.connect(delayA);
     this.echoInput.connect(delayB);
@@ -134,7 +206,7 @@ export class JsonAudioSynth {
 
     // Dedicated crisp street-canyon multi-tap echo for gunshots
     this.gunshotEchoInput = this.ctx.createGain();
-    this.gunshotEchoInput.gain.value = 0.95;
+    this.gunshotEchoInput.gain.value = 0.85;
 
     const gTap1 = this.ctx.createDelay(1.5);
     gTap1.delayTime.value = 0.115;
@@ -149,7 +221,7 @@ export class JsonAudioSynth {
     gFilter.Q.value = 0.65;
 
     const gFeedback = this.ctx.createGain();
-    gFeedback.gain.value = 0.42;
+    gFeedback.gain.value = 0.34;
 
     this.gunshotEchoInput.connect(gTap1);
     this.gunshotEchoInput.connect(gTap2);
@@ -190,13 +262,16 @@ export class JsonAudioSynth {
   }
 
   public setRainIntensity(intensity: number): void {
-    this.rainTarget = intensity * 0.14;
+    const safeIntensity = Number.isFinite(intensity) ? THREE.MathUtils.clamp(intensity, 0, 1.5) : 0;
+    this.rainTarget = safeIntensity * 0.14;
     if (this.ctx && this.rainGain) {
       this.rainGain.gain.setTargetAtTime(this.rainTarget, this.ctx.currentTime, 0.25);
     }
   }
 
   public updateListener(pos: THREE.Vector3, forward: THREE.Vector3, up: THREE.Vector3): void {
+    if (!isFiniteVec3(pos) || !isFiniteVec3(forward) || !isFiniteVec3(up)) return;
+    this.listenerPos.copy(pos);
     if (!this.ctx || !this.enabled) return;
     const l = this.ctx.listener;
     const t = this.ctx.currentTime;
@@ -222,10 +297,10 @@ export class JsonAudioSynth {
     if (existing) return existing;
 
     const panner = this.ctx.createPanner();
-    panner.panningModel = 'HRTF';
+    panner.panningModel = this.voiceQuality === 'low' ? 'equalpower' : 'HRTF';
     panner.distanceModel = 'inverse';
     panner.refDistance = 16;
-    panner.maxDistance = 320;
+    panner.maxDistance = 300;
     panner.rolloffFactor = 1.25;
 
     const filter = this.ctx.createBiquadFilter();
@@ -262,9 +337,19 @@ export class JsonAudioSynth {
       panner,
       phase: unitIdx * 0.37,
       autoPhaseOffset: unitIdx * 3.1,
+      lastActiveTime: 0,
     };
     this.sirenVoices.set(unitId, voice);
     return voice;
+  }
+
+  private activeAudibleSirenCount(): number {
+    let count = 0;
+    const now = performance.now();
+    for (const v of this.sirenVoices.values()) {
+      if (now - v.lastActiveTime < 160) count++;
+    }
+    return count;
   }
 
   public updateUnitSiren(
@@ -277,14 +362,23 @@ export class JsonAudioSynth {
     dt: number,
   ): void {
     if (!this.ctx || this.ctx.state !== 'running') return;
+    if (!isFiniteVec3(worldPos)) return;
     const voice = this.getOrCreateSirenVoice(unitId, unitIdx);
     if (!voice) return;
 
     const now = this.ctx.currentTime;
-    if (!this.enabled || !active) {
+    const dist = worldPos.distanceTo(this.listenerPos);
+    const maxSirens = QUALITY_LIMITS[this.voiceQuality].maxSirens;
+    const nowMs = performance.now();
+    const wasRecentlyActive = nowMs - voice.lastActiveTime < 160;
+    const overBudget = !wasRecentlyActive && this.activeAudibleSirenCount() >= maxSirens;
+
+    if (!this.enabled || !active || dist > 300 || overBudget) {
       voice.gain.gain.setTargetAtTime(0, now, 0.08);
       return;
     }
+
+    voice.lastActiveTime = nowMs;
 
     if (voice.panner.positionX) {
       voice.panner.positionX.setTargetAtTime(worldPos.x, now, 0.03);
@@ -316,7 +410,8 @@ export class JsonAudioSynth {
 
     let freq = 720;
     if (resolvedPattern === SirenPattern.HiLo && spec) {
-      const step = Math.floor((simTime + voice.autoPhaseOffset) * (spec.hiloAlternationHz ?? 1.55)) % 2;
+      const step =
+        Math.floor((simTime + voice.autoPhaseOffset) * (spec.hiloAlternationHz ?? 1.55)) % 2;
       freq = step === 0 ? spec.maxFreq : spec.minFreq;
     } else if (spec) {
       voice.phase += dt * spec.sweepRateHz;
@@ -333,6 +428,158 @@ export class JsonAudioSynth {
     voice.gain.gain.setTargetAtTime(asset?.gain ?? 0.22, now, 0.05);
   }
 
+  private canSpawnTransient(key: string, worldPos?: THREE.Vector3, maxDistance = 320): boolean {
+    if (!this.enabled || !this.ctx || this.ctx.state !== 'running') return false;
+    if (worldPos) {
+      if (!isFiniteVec3(worldPos)) return false;
+      if (worldPos.distanceTo(this.listenerPos) > maxDistance) return false;
+    }
+    const maxVoices = QUALITY_LIMITS[this.voiceQuality].maxTransients;
+    if (this.activeTransients >= maxVoices) return false;
+
+    const cooldown = ASSET_COOLDOWN_MS[key] ?? 45;
+    const nowMs = performance.now();
+    const prev = this.lastPlayedMs.get(key) ?? 0;
+    if (nowMs - prev < cooldown) return false;
+    this.lastPlayedMs.set(key, nowMs);
+    return true;
+  }
+
+  private trackTransientCleanup(source: AudioScheduledSourceNode, nodesToDisconnect: AudioNode[]): void {
+    this.activeTransients++;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      this.activeTransients = Math.max(0, this.activeTransients - 1);
+      for (const n of nodesToDisconnect) {
+        try {
+          n.disconnect();
+        } catch {
+          // already disconnected
+        }
+      }
+    };
+    source.onended = cleanup;
+    window.setTimeout(cleanup, 1400);
+  }
+
+  public upsertAudioAsset(id: string, asset: ProceduralAudioAsset): void {
+    this.audioAssets[id] = asset;
+    this.cachedNoiseBuffers.delete(id);
+    this.missingAssetLogged.delete(id);
+  }
+
+  public previewAudioAsset(asset: ProceduralAudioAsset): number {
+    this.ensureContext();
+    if (!this.ctx || !this.dryBus || !this.echoInput) return 0;
+    if (this.ctx.state !== 'running') {
+      void this.ctx.resume();
+    }
+
+    const now = this.ctx.currentTime;
+    const g = THREE.MathUtils.clamp(asset.gain || 0.25, 0.02, 1.0);
+
+    if ((asset.kind === 'siren_sweep' || asset.kind === 'siren_hilo') && asset.siren) {
+      const spec = asset.siren;
+      const dur = 1.65;
+      const osc1 = this.ctx.createOscillator();
+      const osc2 = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const gain = this.ctx.createGain();
+      osc1.type = spec.waveform1 ?? 'sawtooth';
+      osc2.type = spec.waveform2 ?? 'triangle';
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(Math.max(80, spec.bandpassFreq || 1150), now);
+      filter.Q.setValueAtTime(Math.max(0.2, spec.bandpassQ || 1.2), now);
+
+      const steps = 48;
+      for (let i = 0; i <= steps; i++) {
+        const t = (i / steps) * dur;
+        let freq = spec.minFreq;
+        if (asset.kind === 'siren_hilo') {
+          const idx = Math.floor(t * (spec.hiloAlternationHz ?? 1.55)) % 2;
+          freq = idx === 0 ? spec.maxFreq : spec.minFreq;
+        } else {
+          const saw = (t * (spec.sweepRateHz || 0.35)) % 1;
+          const tri = saw < 0.45 ? saw / 0.45 : 1 - (saw - 0.45) / 0.55;
+          const shaped = 0.5 - 0.5 * Math.cos(tri * Math.PI);
+          freq = spec.minFreq + shaped * (spec.maxFreq - spec.minFreq);
+        }
+        osc1.frequency.setValueAtTime(Math.max(40, freq), now + t);
+        osc2.frequency.setValueAtTime(Math.max(40, freq * (spec.detuneRatio || 1.004)), now + t);
+      }
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(g, now + 0.04);
+      gain.gain.setValueAtTime(g, now + dur - 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc1.connect(filter);
+      osc2.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.dryBus);
+      gain.connect(this.echoInput);
+      this.trackTransientCleanup(osc1, [osc1, osc2, filter, gain]);
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + dur + 0.02);
+      osc2.stop(now + dur + 0.02);
+      return dur;
+    }
+
+    if (asset.kind === 'chirp_sequence' && asset.chirp) {
+      const dur = Math.max(0.06, asset.chirp.duration || 0.25);
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = asset.chirp.waveform ?? 'triangle';
+      for (const step of asset.chirp.steps) {
+        osc.frequency.setValueAtTime(Math.max(40, step.freq), now + Math.max(0, step.time));
+      }
+      gain.gain.setValueAtTime(Math.max(0.01, g), now);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, asset.chirp.endGain || 0.005), now + dur);
+      osc.connect(gain);
+      gain.connect(this.dryBus);
+      this.trackTransientCleanup(osc, [osc, gain]);
+      osc.start(now);
+      osc.stop(now + dur + 0.02);
+      return dur;
+    }
+
+    if (asset.kind === 'filtered_noise_burst' && asset.noiseBurst) {
+      const nb = asset.noiseBurst;
+      const dur = Math.max(0.04, nb.duration || 0.25);
+      const sampleRate = this.ctx.sampleRate;
+      const len = Math.max(1, Math.floor(sampleRate * dur));
+      const buf = this.ctx.createBuffer(1, len, sampleRate);
+      const data = buf.getChannelData(0);
+      const rand = mulberry32(asset.seed || 1001);
+      const exp = nb.envelope.curveExponent ?? 2.8;
+      for (let i = 0; i < len; i++) {
+        data[i] = (rand() * 2 - 1) * Math.pow(1 - i / len, exp);
+      }
+      const noise = this.ctx.createBufferSource();
+      noise.buffer = buf;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = nb.filterType ?? 'bandpass';
+      filter.frequency.setValueAtTime(Math.max(20, nb.freqStart), now);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(20, nb.freqEnd), now + dur);
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(Math.max(0.01, g), now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.dryBus);
+      gain.connect(this.echoInput);
+      this.trackTransientCleanup(noise, [noise, filter, gain]);
+      noise.start(now);
+      return dur;
+    }
+
+    return 0;
+  }
+
   public playAssetAt(assetId: string, worldPos?: THREE.Vector3): void {
     if (!this.enabled) return;
     if (!this.ctx || this.ctx.state !== 'running' || !this.dryBus || !this.echoInput) return;
@@ -346,6 +593,10 @@ export class JsonAudioSynth {
       return;
     }
 
+    const isGunshot = assetId.startsWith('gunshot_');
+    const maxDist = isGunshot ? 520 : 260;
+    if (!this.canSpawnTransient(assetId, worldPos, maxDist)) return;
+
     const now = this.ctx.currentTime;
 
     if (asset.kind === 'chirp_sequence' && asset.chirp) {
@@ -355,21 +606,21 @@ export class JsonAudioSynth {
       for (const step of asset.chirp.steps) {
         osc.frequency.setValueAtTime(step.freq, now + step.time);
       }
-      gain.gain.setValueAtTime(asset.gain, now);
+      gain.gain.setValueAtTime(Math.max(0.01, asset.gain), now);
       gain.gain.exponentialRampToValueAtTime(
-        asset.chirp.endGain,
+        Math.max(0.001, asset.chirp.endGain),
         now + asset.chirp.duration,
       );
       osc.connect(gain);
       gain.connect(this.dryBus);
+      this.trackTransientCleanup(osc, [osc, gain]);
       osc.start(now);
-      osc.stop(now + asset.chirp.duration + 0.01);
+      osc.stop(now + asset.chirp.duration + 0.015);
       return;
     }
 
     if (asset.kind === 'filtered_noise_burst' && asset.noiseBurst) {
       const nb = asset.noiseBurst;
-      const isGunshot = assetId.startsWith('gunshot_');
       const isRifle = assetId === 'gunshot_rifle';
       const buffer = this.getOrBuildDeterministicBuffer(asset);
       const noise = this.ctx.createBufferSource();
@@ -377,22 +628,29 @@ export class JsonAudioSynth {
 
       const filter = this.ctx.createBiquadFilter();
       filter.type = nb.filterType;
-      filter.frequency.setValueAtTime(nb.freqStart, now);
-      filter.frequency.exponentialRampToValueAtTime(nb.freqEnd, now + nb.duration);
+      filter.frequency.setValueAtTime(Math.max(20, nb.freqStart), now);
+      filter.frequency.exponentialRampToValueAtTime(
+        Math.max(20, nb.freqEnd),
+        now + Math.max(0.02, nb.duration),
+      );
 
+      // Slight gain scaling when many voices overlap avoids harsh compressor ducking
+      const overlapAtten = this.activeTransients > 6 ? 0.72 : 1.0;
       const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(asset.gain, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + nb.duration);
+      gain.gain.setValueAtTime(Math.max(0.005, asset.gain * overlapAtten), now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + Math.max(0.02, nb.duration));
 
       noise.connect(filter);
 
+      const nodesToDisconnect: AudioNode[] = [noise, filter, gain];
       let destinationNode: AudioNode = this.dryBus;
+
       if (worldPos) {
         const panner = this.ctx.createPanner();
-        panner.panningModel = 'HRTF';
+        panner.panningModel = 'equalpower';
         panner.distanceModel = 'inverse';
         panner.refDistance = isGunshot ? 68 : 22;
-        panner.maxDistance = isGunshot ? 520 : 320;
+        panner.maxDistance = maxDist;
         panner.rolloffFactor = isGunshot ? 0.55 : 1.15;
         panner.setPosition(worldPos.x, worldPos.y + 1.3, worldPos.z);
         panner.connect(this.dryBus);
@@ -401,100 +659,109 @@ export class JsonAudioSynth {
         } else {
           panner.connect(this.echoInput);
         }
+        nodesToDisconnect.push(panner);
         destinationNode = panner;
       } else {
         gain.connect(isGunshot && this.gunshotEchoInput ? this.gunshotEchoInput : this.echoInput);
       }
 
       if (isGunshot) {
-        // Soft-saturate gunshot blast for sharp, realistic punch instead of soft filtered noise
         const shaper = this.ctx.createWaveShaper();
         shaper.curve = this.getGunshotShaperCurve();
         filter.connect(shaper);
         shaper.connect(gain);
         gain.connect(destinationNode);
+        nodesToDisconnect.push(shaper);
+
+        // Concussion wave + supersonic snap only on normal/high voice quality or low load
+        if (this.voiceQuality !== 'low' && this.activeTransients < QUALITY_LIMITS[this.voiceQuality].maxTransients - 2) {
+          const thumpOsc = this.ctx.createOscillator();
+          thumpOsc.type = isRifle ? 'sawtooth' : 'triangle';
+          thumpOsc.frequency.setValueAtTime(isRifle ? 245 : 190, now);
+          thumpOsc.frequency.exponentialRampToValueAtTime(42, now + 0.095);
+
+          const thumpGain = this.ctx.createGain();
+          thumpGain.gain.setValueAtTime(asset.gain * overlapAtten * (isRifle ? 0.95 : 0.8), now);
+          thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+          thumpOsc.connect(thumpGain);
+          thumpGain.connect(destinationNode);
+          nodesToDisconnect.push(thumpOsc, thumpGain);
+          thumpOsc.start(now);
+          thumpOsc.stop(now + 0.12);
+
+          const snap = this.ctx.createBufferSource();
+          snap.buffer = buffer;
+          const snapBp = this.ctx.createBiquadFilter();
+          snapBp.type = 'bandpass';
+          snapBp.frequency.setValueAtTime(isRifle ? 4400 : 3400, now);
+          snapBp.Q.value = 0.7;
+          const snapShaper = this.ctx.createWaveShaper();
+          snapShaper.curve = this.getGunshotShaperCurve();
+          const snapGain = this.ctx.createGain();
+          snapGain.gain.setValueAtTime(asset.gain * overlapAtten * (isRifle ? 1.15 : 0.98), now);
+          snapGain.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+
+          snap.connect(snapBp);
+          snapBp.connect(snapShaper);
+          snapShaper.connect(snapGain);
+          snapGain.connect(destinationNode);
+          nodesToDisconnect.push(snap, snapBp, snapShaper, snapGain);
+          snap.start(now);
+          snap.stop(now + 0.055);
+        }
+
+        this.trackTransientCleanup(noise, nodesToDisconnect);
         noise.start(now);
-
-        // 1. Sub/low-mid chest punch (concussion wave)
-        const thumpOsc = this.ctx.createOscillator();
-        thumpOsc.type = isRifle ? 'sawtooth' : 'triangle';
-        thumpOsc.frequency.setValueAtTime(isRifle ? 245 : 190, now);
-        thumpOsc.frequency.exponentialRampToValueAtTime(42, now + 0.095);
-
-        const thumpGain = this.ctx.createGain();
-        thumpGain.gain.setValueAtTime(asset.gain * (isRifle ? 1.05 : 0.88), now);
-        thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
-        thumpOsc.connect(thumpGain);
-        thumpGain.connect(destinationNode);
-        thumpOsc.start(now);
-        thumpOsc.stop(now + 0.12);
-
-        // 2. Razor-sharp high-frequency supersonic snap impulse (0..26ms)
-        const snap = this.ctx.createBufferSource();
-        snap.buffer = buffer;
-        const snapBp = this.ctx.createBiquadFilter();
-        snapBp.type = 'bandpass';
-        snapBp.frequency.setValueAtTime(isRifle ? 4400 : 3400, now);
-        snapBp.Q.value = 0.7;
-        const snapShaper = this.ctx.createWaveShaper();
-        snapShaper.curve = this.getGunshotShaperCurve();
-        const snapGain = this.ctx.createGain();
-        snapGain.gain.setValueAtTime(asset.gain * (isRifle ? 1.35 : 1.15), now);
-        snapGain.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
-
-        snap.connect(snapBp);
-        snapBp.connect(snapShaper);
-        snapShaper.connect(snapGain);
-        snapGain.connect(destinationNode);
-        snap.start(now);
-        snap.stop(now + 0.055);
       } else {
         filter.connect(gain);
         gain.connect(destinationNode);
+        this.trackTransientCleanup(noise, nodesToDisconnect);
         noise.start(now);
       }
     }
   }
 
   public playTireBlowoutAt(worldPos: THREE.Vector3): void {
-    if (!this.enabled) return;
+    if (!this.canSpawnTransient('tire_blowout', worldPos, 320)) return;
     if (!this.ctx || this.ctx.state !== 'running' || !this.dryBus || !this.echoInput) return;
 
     const now = this.ctx.currentTime;
     const panner = this.ctx.createPanner();
-    panner.panningModel = 'HRTF';
+    panner.panningModel = 'equalpower';
     panner.distanceModel = 'inverse';
     panner.refDistance = 26;
-    panner.maxDistance = 360;
+    panner.maxDistance = 320;
     panner.rolloffFactor = 0.95;
     panner.setPosition(worldPos.x, worldPos.y + 0.45, worldPos.z);
     panner.connect(this.dryBus);
     panner.connect(this.echoInput);
 
-    // 1. Sharp rubber carcass pop
     const popOsc = this.ctx.createOscillator();
     popOsc.type = 'triangle';
     popOsc.frequency.setValueAtTime(240, now);
     popOsc.frequency.exponentialRampToValueAtTime(52, now + 0.085);
 
     const popGain = this.ctx.createGain();
-    popGain.gain.setValueAtTime(0.95, now);
+    popGain.gain.setValueAtTime(0.9, now);
     popGain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
     popOsc.connect(popGain);
     popGain.connect(panner);
     popOsc.start(now);
     popOsc.stop(now + 0.11);
 
-    // 2. Pressurized tire hiss burst
-    const dur = 0.48;
-    const sampleRate = this.ctx.sampleRate;
-    const len = Math.floor(sampleRate * dur);
-    const buf = this.ctx.createBuffer(1, len, sampleRate);
-    const ch = buf.getChannelData(0);
-    const rand = mulberry32(419081);
-    for (let i = 0; i < len; i++) {
-      const env = Math.pow(1 - i / len, 1.85);
-      ch[i] = (rand() * 2 - 1) * env;
+    const dur = 0.46;
+    let buf = this.cachedNoiseBuffers.get('__tire_hiss__');
+    if (!buf) {
+      const sampleRate = this.ctx.sampleRate;
+      const len = Math.floor(sampleRate * dur);
+      buf = this.ctx.createBuffer(1, len, sampleRate);
+      const ch = buf.getChannelData(0);
+      const rand = mulberry32(419081);
+      for (let i = 0; i < len; i++) {
+        const env = Math.pow(1 - i / len, 1.85);
+        ch[i] = (rand() * 2 - 1) * env;
+      }
+      this.cachedNoiseBuffers.set('__tire_hiss__', buf);
     }
 
     const hiss = this.ctx.createBufferSource();
@@ -506,12 +773,13 @@ export class JsonAudioSynth {
     bp.Q.value = 0.9;
 
     const hissGain = this.ctx.createGain();
-    hissGain.gain.setValueAtTime(0.55, now);
+    hissGain.gain.setValueAtTime(0.52, now);
     hissGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
 
     hiss.connect(bp);
     bp.connect(hissGain);
     hissGain.connect(panner);
+    this.trackTransientCleanup(hiss, [popOsc, popGain, hiss, bp, hissGain, panner]);
     hiss.start(now);
   }
 

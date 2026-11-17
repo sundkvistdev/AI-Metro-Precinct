@@ -2,6 +2,7 @@ export interface AssetManifest {
   formatVersion: string;
   packName: string;
   config: string;
+  map: string;
   textures: Record<string, string>;
   models: Record<string, string>;
   audio: Record<string, string>;
@@ -54,7 +55,8 @@ export interface EngineConfigAsset {
     treePalette: string[];
     trafficCount: number;
     pedestrianCount: number;
-    civilianVariants: Array<'sedan' | 'hatch' | 'taxi' | 'van'>;
+    civilianVariants: string[];
+    pedestrianModels?: string[];
     civilianColors: string[];
     getawayColors: string[];
     pedestrianShirtColors: string[];
@@ -107,7 +109,7 @@ export interface EngineConfigAsset {
       }
     >;
     chassis: Record<
-      'sedan' | 'suv' | 'van' | 'apc',
+      string,
       {
         modelRef: string;
         wheelRadius: number;
@@ -137,7 +139,7 @@ export interface EngineConfigAsset {
     stationBays: Array<{
       id: string;
       callsign: string;
-      vehicleKind: 'sedan' | 'suv' | 'van' | 'apc';
+      vehicleKind: string;
       liveryId: string;
       weaponKind: 'pistol' | 'rifle';
       isHeavyUnit: boolean;
@@ -299,6 +301,20 @@ export type TextureLayerOp =
       op: 'precinct_sign_plate';
       title: string;
       subtitle: string;
+      bgColor?: string;
+      borderColor?: string;
+      medicalCross?: boolean;
+      titleColor?: string;
+      subtitleColor?: string;
+    }
+  | {
+      op: 'road_sign_plate';
+      shape: 'octagon' | 'triangle' | 'rect' | 'circle';
+      title: string;
+      subtitle?: string;
+      bgColor?: string;
+      borderColor?: string;
+      textColor?: string;
     };
 
 export interface ProceduralTextureAsset {
@@ -330,6 +346,28 @@ export interface ModelMaterialDef {
   roughnessTextureRef?: string;
 }
 
+export type CrashPartRole =
+  | 'bumper'
+  | 'headlight_l'
+  | 'headlight_r'
+  | 'taillight_l'
+  | 'taillight_r'
+  | 'lightbar'
+  | 'wheel'
+  | 'door'
+  | 'trim'
+  | 'sign'
+  | 'roof';
+
+export interface CrashPartSpec {
+  role: CrashPartRole;
+  minStrikeSpeed: number;
+  health: number;
+  radius?: number;
+  isWheel?: boolean;
+  isLightbar?: boolean;
+}
+
 export interface ModelPartDef {
   id: string;
   tag?: string;
@@ -342,15 +380,189 @@ export interface ModelPartDef {
   castShadow?: boolean;
   receiveShadow?: boolean;
   visible?: boolean;
+  crashPart?: CrashPartSpec;
   children?: ModelPartDef[];
+}
+
+export type ModelCategory =
+  | 'vehicle'
+  | 'humanoid'
+  | 'sign'
+  | 'prop'
+  | 'building'
+  | 'custom';
+
+export interface ModelFlagsDef {
+  category?: ModelCategory;
+  collidable?: boolean;
+  destructible?: boolean;
+  castShadow?: boolean;
+  receiveShadow?: boolean;
+  isEmergencyVehicle?: boolean;
+  useBasePaint?: boolean;
+  pedestrianTemplate?: boolean;
+  customTags?: string[];
 }
 
 export interface ProceduralModelAsset {
   format: 'jdata-model-v1';
   id: string;
   seed: number;
+  flags?: ModelFlagsDef;
   materials: Record<string, ModelMaterialDef>;
   parts: ModelPartDef[];
+}
+
+export interface MapRoadNodeDef {
+  id: number;
+  x: number;
+  z: number;
+  label?: string;
+}
+
+export interface MapRoadEdgeDef {
+  from: number;
+  to: number;
+  ctrlX?: number;
+  ctrlZ?: number;
+}
+
+export interface MapZoneDef {
+  id: string;
+  kind: 'apron' | 'park' | 'sidewalk';
+  cx: number;
+  cz: number;
+  width: number;
+  depth: number;
+  height: number;
+  rotationY?: number;
+  color?: string;
+}
+
+export interface MapBuildingDef {
+  id: string;
+  kind: 'building' | 'station' | 'fountain' | 'prop';
+  cx: number;
+  cz: number;
+  width: number;
+  depth: number;
+  height: number;
+  baseY?: number;
+  rotationY?: number;
+  facadeStyle?:
+    | 'storefront'
+    | 'brick'
+    | 'concrete'
+    | 'limestone'
+    | 'office'
+    | 'station_hall'
+    | 'station_glass'
+    | 'trim'
+    | 'fountain'
+    | 'sign'
+    | 'beacon';
+  color?: string;
+  collidable: boolean;
+  groundHeight?: number;
+  hasAwning?: boolean;
+  hasHvac?: boolean;
+}
+
+export interface MapTreeDef {
+  x: number;
+  y: number;
+  z: number;
+  scale?: number;
+}
+
+export interface MapStreetlightDef {
+  x: number;
+  y: number;
+  z: number;
+  hasHalo?: boolean;
+}
+
+export interface MapPedLoopDef {
+  cx: number;
+  cz: number;
+  halfW: number;
+  halfD: number;
+}
+
+export type RoadSignStyle =
+  | 'stop'
+  | 'speed_limit'
+  | 'yield'
+  | 'one_way'
+  | 'street_name'
+  | 'precinct'
+  | 'custom';
+
+export interface MapRoadSignDef {
+  id: string;
+  style: RoadSignStyle;
+  text: string;
+  subtext?: string;
+  x: number;
+  y?: number;
+  z: number;
+  rotationY?: number;
+  height?: number;
+  collidable?: boolean;
+  poleColor?: string;
+  bgColor?: string;
+  textColor?: string;
+  borderColor?: string;
+}
+
+export interface MapDynamicObjectDef {
+  id: string;
+  modelRef: string;
+  x: number;
+  y?: number;
+  z: number;
+  rotationY?: number;
+  scale?: number;
+  collidable?: boolean;
+  hitboxWidth?: number;
+  hitboxDepth?: number;
+  label?: string;
+  flags?: Record<string, boolean | string | number>;
+}
+
+export interface CustomMapAsset {
+  format: 'jdata-map-v1';
+  id: string;
+  version: string;
+  name: string;
+  bounds: {
+    halfSize: number;
+  };
+  surfaceHeights: {
+    terrain: number;
+    road: number;
+    sidewalk: number;
+    apron: number;
+    park: number;
+  };
+  roadNetwork: {
+    roadWidth: number;
+    laneOffset: number;
+    nodes: MapRoadNodeDef[];
+    edges: MapRoadEdgeDef[];
+    extraStrips?: Array<{ x1: number; z1: number; x2: number; z2: number }>;
+  };
+  stationExit?: {
+    apronPoint: [number, number];
+  };
+  zones: MapZoneDef[];
+  buildings: MapBuildingDef[];
+  objects?: MapDynamicObjectDef[];
+  signs?: MapRoadSignDef[];
+  trees: MapTreeDef[];
+  streetlights: MapStreetlightDef[];
+  districts: string[];
+  pedLoops: MapPedLoopDef[];
 }
 
 export interface AudioEnvelopeDef {
@@ -396,6 +608,7 @@ export type AssetIssueSeverity = 'fatal' | 'error';
 export type AssetIssueCategory =
   | 'manifest'
   | 'config'
+  | 'map'
   | 'texture'
   | 'model'
   | 'audio';
@@ -411,6 +624,7 @@ export interface AssetIssue {
 export interface LoadedJsonAssets {
   manifest: AssetManifest;
   config: EngineConfigAsset;
+  map: CustomMapAsset;
   textures: Record<string, ProceduralTextureAsset>;
   models: Record<string, ProceduralModelAsset>;
   audio: Record<string, ProceduralAudioAsset>;

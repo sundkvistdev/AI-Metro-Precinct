@@ -1,15 +1,15 @@
 import * as THREE from 'three';
 import {
-  AmbulanceStatus,
+  CaseAssignmentRole,
   CrimeType,
+  IncidentStatus,
   PoliceLiveryId,
   PoliceVehicleKind,
   SirenPattern,
-  TowTruckStatus,
   UnitStatus,
+  UrgencyLevel,
   WeaponKind,
 } from './types';
-import { AmbulanceRig, TowTruckRig } from './serviceVehicleModels';
 import { CivilianCarRig, HumanoidRig, PoliceCruiserRig } from './vehicleModels';
 import { VehicleDynState } from './vehiclePhysics';
 import { RagdollState } from './vfx';
@@ -81,69 +81,17 @@ export interface PoliceUnit {
   lightPhaseOffset: number;
   lightRateMult: number;
   targetCrimeId: string | null;
+  assignedCaseNumber: number | null;
+  assignedRole: CaseAssignmentRole | null;
   pursuitRole: 'direct' | 'nail_mat';
   officers: [OfficerActor, OfficerActor];
   holdTimer: number;
   stuckTimer: number;
+  impatience: number;
+  reverseTimer: number;
+  reverseSteerDir: 1 | -1;
   towRequested: boolean;
   beingTowed: boolean;
-}
-
-export interface TowTruckActor {
-  id: string;
-  callsign: string;
-  rig: TowTruckRig;
-  pos: THREE.Vector3;
-  yaw: number;
-  speed: number;
-  dyn: VehicleDynState;
-  status: TowTruckStatus;
-  beaconsActive: boolean;
-  targetUnitId: string | null;
-  hookTimer: number;
-  waypoints: THREE.Vector3[];
-  waypointIndex: number;
-  avoidanceSteer: number;
-  stuckTimer: number;
-}
-
-export type CasualtyTarget =
-  | { kind: 'officer'; unitId: string; officerIndex: 0 | 1; key: string }
-  | { kind: 'suspect'; crimeId: string; key: string }
-  | { kind: 'pedestrian'; pedIndex: number; key: string };
-
-export interface ParamedicActor {
-  rig: HumanoidRig;
-  pos: THREE.Vector3;
-  yaw: number;
-  walkPhase: number;
-}
-
-export interface AmbulanceActor {
-  id: string;
-  callsign: string;
-  bayIndex: number;
-  rig: AmbulanceRig;
-  pos: THREE.Vector3;
-  yaw: number;
-  speed: number;
-  dyn: VehicleDynState;
-  status: AmbulanceStatus;
-  lightsActive: boolean;
-  sirensActive: boolean;
-  activeSirenPattern: SirenPattern;
-  sirenModeTimer: number;
-  lightPhaseOffset: number;
-  waypoints: THREE.Vector3[];
-  waypointIndex: number;
-  avoidanceSteer: number;
-  stuckTimer: number;
-  target: CasualtyTarget | null;
-  targetPos: THREE.Vector3;
-  scenePhase: 'walking_to_patient' | 'treating' | 'returning_to_rig';
-  treatTimer: number;
-  paramedics: [ParamedicActor, ParamedicActor];
-  stretcherGroup: THREE.Group;
 }
 
 export type NailMatPhase = 'en_route' | 'deploying' | 'armed' | 'recovering';
@@ -174,12 +122,19 @@ export interface NailMatActor {
 
 export interface ActiveCrime {
   id: string;
+  caseNumber: number;
   type: CrimeType;
   district: string;
+  incidentStatus: IncidentStatus;
+  baseUrgency: number;
+  urgency: number;
+  urgencyLevel: UrgencyLevel;
   pos: THREE.Vector3;
   roadPullOverPos: THREE.Vector3;
   roadPullOverYaw: number;
   nearestNodeId: number;
+  segmentNodeA: number;
+  segmentNodeB: number;
   suspectRig: HumanoidRig;
   suspectPos: THREE.Vector3;
   suspectYaw: number;
@@ -209,12 +164,16 @@ export interface ActiveCrime {
   vehicleTurnApex: THREE.Vector3 | null;
   vehiclePinnedTimer: number;
   vehicleStuckTimer: number;
+  vehicleImpatience: number;
+  vehicleReverseTimer: number;
+  vehicleReverseSteerDir: 1 | -1;
   vehicleImmobilized: boolean;
   vehicleImmobilizeTilt: number;
   vehicleTireBlowoutTimer: number;
   vehicleSmokeTimer: number;
   vehicleSmokeAccum: number;
   assignedUnitId: string | null;
+  assignedUnitIds: string[];
   backupDispatched: boolean;
   heavyDeployed: boolean;
   nailMatAttempts: number;
@@ -239,6 +198,11 @@ export interface CivilianVehicle {
   turnApex: THREE.Vector3 | null;
   lateralYield: number;
   stunTimer: number;
+  impatience: number;
+  patienceRate: number;
+  stuckTimer: number;
+  reverseTimer: number;
+  reverseSteerDir: 1 | -1;
   immobilized: boolean;
   immobilizeTilt: number;
   damageSmokeTimer: number;
@@ -252,10 +216,15 @@ export interface PedestrianActor {
   blockCx: number;
   blockCz: number;
   loopRadius: number;
+  loopRect?: { cx: number; cz: number; halfW: number; halfD: number };
   cornerIdx: number;
   dir: 1 | -1;
   walkPhase: number;
   panicTimer: number;
+  hp: number;
+  maxHp: number;
+  injured: boolean;
+  dead: boolean;
   ragdoll: RagdollState;
 }
 

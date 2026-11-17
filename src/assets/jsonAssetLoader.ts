@@ -3,6 +3,7 @@ import {
   AssetIssue,
   AssetLoadResult,
   AssetManifest,
+  CustomMapAsset,
   EngineConfigAsset,
   LoadedJsonAssets,
   ProceduralAudioAsset,
@@ -14,7 +15,7 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
+export function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
   if (!isObjectRecord(raw)) return false;
   if (raw.format !== 'jdata-config-v1') return false;
   if (!isObjectRecord(raw.world) || !isObjectRecord(raw.simulation) || !isObjectRecord(raw.camera)) {
@@ -52,7 +53,33 @@ function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
   return true;
 }
 
-function validateTextureAsset(raw: unknown): raw is ProceduralTextureAsset {
+export function validateMapAsset(raw: unknown): raw is CustomMapAsset {
+  if (!isObjectRecord(raw)) return false;
+  if (raw.format !== 'jdata-map-v1' || typeof raw.id !== 'string' || typeof raw.name !== 'string') {
+    return false;
+  }
+  if (!isObjectRecord(raw.bounds) || !isObjectRecord(raw.surfaceHeights) || !isObjectRecord(raw.roadNetwork)) {
+    return false;
+  }
+  if (
+    !Array.isArray(raw.roadNetwork.nodes) ||
+    !Array.isArray(raw.roadNetwork.edges) ||
+    raw.roadNetwork.nodes.length === 0 ||
+    !Array.isArray(raw.zones) ||
+    !Array.isArray(raw.buildings) ||
+    !Array.isArray(raw.trees) ||
+    !Array.isArray(raw.streetlights) ||
+    !Array.isArray(raw.districts) ||
+    !Array.isArray(raw.pedLoops)
+  ) {
+    return false;
+  }
+  if (raw.objects !== undefined && !Array.isArray(raw.objects)) return false;
+  if (raw.signs !== undefined && !Array.isArray(raw.signs)) return false;
+  return true;
+}
+
+export function validateTextureAsset(raw: unknown): raw is ProceduralTextureAsset {
   if (!isObjectRecord(raw)) return false;
   return (
     raw.format === 'jdata-texture-v1' &&
@@ -63,23 +90,59 @@ function validateTextureAsset(raw: unknown): raw is ProceduralTextureAsset {
   );
 }
 
-function validateModelAsset(raw: unknown): raw is ProceduralModelAsset {
+export function validateModelAsset(raw: unknown): raw is ProceduralModelAsset {
   if (!isObjectRecord(raw)) return false;
-  return (
-    raw.format === 'jdata-model-v1' &&
-    typeof raw.id === 'string' &&
-    isObjectRecord(raw.materials) &&
-    Array.isArray(raw.parts)
-  );
+  if (
+    raw.format !== 'jdata-model-v1' ||
+    typeof raw.id !== 'string' ||
+    !isObjectRecord(raw.materials) ||
+    !Array.isArray(raw.parts)
+  ) {
+    return false;
+  }
+  if (raw.flags !== undefined && !isObjectRecord(raw.flags)) return false;
+  return true;
 }
 
-function validateAudioAsset(raw: unknown): raw is ProceduralAudioAsset {
+export function validateAudioAsset(raw: unknown): raw is ProceduralAudioAsset {
   if (!isObjectRecord(raw)) return false;
   return (
     raw.format === 'jdata-audio-v1' &&
     typeof raw.id === 'string' &&
     typeof raw.kind === 'string'
   );
+}
+
+export function parseSingleModelJson(text: string): ProceduralModelAsset {
+  const parsed = JSON.parse(text) as unknown;
+  if (!validateModelAsset(parsed)) {
+    throw new Error('JSON file is not a valid jdata-model-v1 model asset.');
+  }
+  return parsed;
+}
+
+export function parseSingleTextureJson(text: string): ProceduralTextureAsset {
+  const parsed = JSON.parse(text) as unknown;
+  if (!validateTextureAsset(parsed)) {
+    throw new Error('JSON file is not a valid jdata-texture-v1 texture asset.');
+  }
+  return parsed;
+}
+
+export function parseSingleAudioJson(text: string): ProceduralAudioAsset {
+  const parsed = JSON.parse(text) as unknown;
+  if (!validateAudioAsset(parsed)) {
+    throw new Error('JSON file is not a valid jdata-audio-v1 audio asset.');
+  }
+  return parsed;
+}
+
+export function parseSingleMapJson(text: string): CustomMapAsset {
+  const parsed = JSON.parse(text) as unknown;
+  if (!validateMapAsset(parsed)) {
+    throw new Error('JSON file is not a valid jdata-map-v1 map asset.');
+  }
+  return parsed;
 }
 
 function logAssetIssue(issue: AssetIssue): void {
@@ -105,6 +168,9 @@ export async function loadJsonAssetBundle(
     manifest = await fetchJsonStrict<AssetManifest>(manifestUrl);
     if (!isObjectRecord(manifest) || typeof manifest.config !== 'string') {
       throw new Error('Manifest missing required "config" JSON reference.');
+    }
+    if (typeof manifest.map !== 'string') {
+      throw new Error('Manifest missing required "map" JSON reference.');
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -149,6 +215,33 @@ export async function loadJsonAssetBundle(
       config: null,
       issues,
       fatalError: `Fatal Engine Config Failure (${manifest.config}): ${msg}`,
+      sourceLabel: manifest.packName || manifestUrl,
+    };
+  }
+
+  let map: CustomMapAsset;
+  try {
+    const rawMap = await fetchJsonStrict<unknown>(manifest.map);
+    if (!validateMapAsset(rawMap)) {
+      throw new Error('Map JSON failed jdata-map-v1 schema validation.');
+    }
+    map = rawMap;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const issue: AssetIssue = {
+      severity: 'fatal',
+      category: 'map',
+      id: 'world_map',
+      path: manifest.map,
+      message: msg,
+    };
+    logAssetIssue(issue);
+    issues.push(issue);
+    return {
+      assets: null,
+      config,
+      issues,
+      fatalError: `Fatal Map Failure (${manifest.map}): ${msg}`,
       sourceLabel: manifest.packName || manifestUrl,
     };
   }
@@ -231,6 +324,7 @@ export async function loadJsonAssetBundle(
     assets: {
       manifest,
       config,
+      map,
       textures,
       models,
       audio,
@@ -269,14 +363,18 @@ function findZipEntry(
     if (direct && !direct.dir) return direct;
   }
 
-  // Fallback: match case-insensitively or by suffix
   const cleanLower = assetPath.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
   const strippedLower = cleanLower.replace(/^jdataassets\//, '');
   let matched: JSZip.JSZipObject | null = null;
   zip.forEach((relativePath, entry) => {
     if (matched || entry.dir) return;
     const norm = relativePath.replace(/\\/g, '/').toLowerCase();
-    if (norm.endsWith(`/${cleanLower}`) || norm === cleanLower || norm.endsWith(`/${strippedLower}`) || norm === strippedLower) {
+    if (
+      norm.endsWith(`/${cleanLower}`) ||
+      norm === cleanLower ||
+      norm.endsWith(`/${strippedLower}`) ||
+      norm === strippedLower
+    ) {
       matched = entry;
     }
   });
@@ -314,7 +412,10 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
   if (!manifestEntry) {
     zip.forEach((relPath, entry) => {
       if (manifestEntry || entry.dir) return;
-      if (relPath.replace(/\\/g, '/').toLowerCase().endsWith('/manifest.json') || relPath.toLowerCase() === 'manifest.json') {
+      if (
+        relPath.replace(/\\/g, '/').toLowerCase().endsWith('/manifest.json') ||
+        relPath.toLowerCase() === 'manifest.json'
+      ) {
         manifestEntry = entry;
         const idx = relPath.lastIndexOf('/');
         manifestDir = idx >= 0 ? relPath.slice(0, idx) : '';
@@ -347,6 +448,9 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
     manifest = JSON.parse(rawText) as AssetManifest;
     if (!isObjectRecord(manifest) || typeof manifest.config !== 'string') {
       throw new Error('Manifest inside ZIP is missing required "config" path.');
+    }
+    if (typeof manifest.map !== 'string') {
+      throw new Error('Manifest inside ZIP is missing required "map" path.');
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -411,6 +515,53 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
       config: null,
       issues,
       fatalError: `Fatal Engine Config Error in "${file.name}": ${msg}`,
+      sourceLabel: `ZIP: ${file.name}`,
+    };
+  }
+
+  let map: CustomMapAsset;
+  const mapEntry = findZipEntry(zip, manifestDir, manifest.map);
+  if (!mapEntry) {
+    const issue: AssetIssue = {
+      severity: 'fatal',
+      category: 'map',
+      id: 'world_map',
+      path: manifest.map,
+      message: `Missing required map file "${manifest.map}" inside ZIP.`,
+    };
+    logAssetIssue(issue);
+    issues.push(issue);
+    return {
+      assets: null,
+      config,
+      issues,
+      fatalError: `Fatal Map Missing in "${file.name}": ${manifest.map}`,
+      sourceLabel: `ZIP: ${file.name}`,
+    };
+  }
+
+  try {
+    const rawMap = JSON.parse(await mapEntry.async('string')) as unknown;
+    if (!validateMapAsset(rawMap)) {
+      throw new Error('Map inside ZIP failed jdata-map-v1 schema validation.');
+    }
+    map = rawMap;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const issue: AssetIssue = {
+      severity: 'fatal',
+      category: 'map',
+      id: 'world_map',
+      path: manifest.map,
+      message: msg,
+    };
+    logAssetIssue(issue);
+    issues.push(issue);
+    return {
+      assets: null,
+      config,
+      issues,
+      fatalError: `Fatal Map Error in "${file.name}": ${msg}`,
       sourceLabel: `ZIP: ${file.name}`,
     };
   }
@@ -489,6 +640,7 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
     assets: {
       manifest,
       config,
+      map,
       textures,
       models,
       audio,
@@ -503,16 +655,19 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
 export async function exportAssetBundleToZip(assets: LoadedJsonAssets): Promise<Blob> {
   const zip = new JSZip();
 
+  const mapRel = `maps/${assets.map.id || 'metro_default'}.json`;
   const exportedManifest: AssetManifest = {
     formatVersion: assets.manifest.formatVersion,
     packName: assets.manifest.packName,
     config: 'engine_config.json',
+    map: mapRel,
     textures: {},
     models: {},
     audio: {},
   };
 
   zip.file('engine_config.json', JSON.stringify(assets.config, null, 2));
+  zip.file(mapRel, JSON.stringify(assets.map, null, 2));
 
   for (const [id, tex] of Object.entries(assets.textures)) {
     const rel = `textures/${id}.json`;

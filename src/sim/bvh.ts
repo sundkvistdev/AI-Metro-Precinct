@@ -5,7 +5,40 @@ export interface ObstacleAABB {
   maxX: number;
   minZ: number;
   maxZ: number;
-  kind: 'building' | 'station' | 'fountain';
+  kind: 'building' | 'station' | 'fountain' | 'prop';
+  cx?: number;
+  cz?: number;
+  halfW?: number;
+  halfD?: number;
+  rotationY?: number;
+}
+
+export function makeObstacleBox(
+  cx: number,
+  cz: number,
+  width: number,
+  depth: number,
+  kind: ObstacleAABB['kind'],
+  rotationY = 0,
+): ObstacleAABB {
+  const halfW = width * 0.5;
+  const halfD = depth * 0.5;
+  const c = Math.abs(Math.cos(rotationY));
+  const s = Math.abs(Math.sin(rotationY));
+  const extX = c * halfW + s * halfD;
+  const extZ = s * halfW + c * halfD;
+  return {
+    minX: cx - extX,
+    maxX: cx + extX,
+    minZ: cz - extZ,
+    maxZ: cz + extZ,
+    kind,
+    cx,
+    cz,
+    halfW,
+    halfD,
+    rotationY,
+  };
 }
 
 interface StaticBVHNode {
@@ -36,10 +69,19 @@ export interface RayBVHResult {
   normalZ: number;
 }
 
+function obstacleToOBB(b: ObstacleAABB): OBB2D {
+  const cx = b.cx ?? (b.minX + b.maxX) * 0.5;
+  const cz = b.cz ?? (b.minZ + b.maxZ) * 0.5;
+  const halfW = b.halfW ?? (b.maxX - b.minX) * 0.5;
+  const halfL = b.halfD ?? (b.maxZ - b.minZ) * 0.5;
+  const yaw = b.rotationY ?? 0;
+  return computeVehicleOBB(cx, cz, yaw, halfW, halfL);
+}
+
 /**
- * Balanced 2D AABB Bounding Volume Hierarchy for static town geometry
- * (buildings, precinct hall, civic fountain). Supports O(log N) circle collision
- * and exact earliest-hit slab raycasting for gunfight LOS and bullet impacts.
+ * Balanced 2D BVH for static town geometry (axis-aligned or rotated buildings,
+ * precinct hall, civic fountain). Supports O(log N) circle collision, exact
+ * vehicle OBB-vs-OBB SAT resolution, and slab raycasting for gunfight LOS & bullets.
  */
 export class StaticObstacleBVH {
   private nodes: StaticBVHNode[] = [];
@@ -139,6 +181,60 @@ export class StaticObstacleBVH {
       if (n.left === -1) {
         for (let i = n.start; i < n.start + n.count; i++) {
           const b = this.items[i];
+          const rot = b.rotationY ?? 0;
+
+          if (Math.abs(rot) > 1e-4 && b.cx !== undefined && b.cz !== undefined && b.halfW !== undefined && b.halfD !== undefined) {
+            const cosR = Math.cos(rot);
+            const sinR = Math.sin(rot);
+            const rx = cosR;
+            const rz = -sinR;
+            const fx = sinR;
+            const fz = cosR;
+            const dcx = pos.x - b.cx;
+            const dcz = pos.z - b.cz;
+            const lx = dcx * rx + dcz * rz;
+            const lz = dcx * fx + dcz * fz;
+
+            const clx = THREE.MathUtils.clamp(lx, -b.halfW, b.halfW);
+            const clz = THREE.MathUtils.clamp(lz, -b.halfD, b.halfD);
+            const ldx = lx - clx;
+            const ldz = lz - clz;
+            const distSq = ldx * ldx + ldz * ldz;
+
+            if (distSq < rSq) {
+              out.collided = true;
+              let lnx = 0;
+              let lnz = 0;
+              let push = 0;
+              if (distSq > 1e-6) {
+                const dist = Math.sqrt(distSq);
+                lnx = ldx / dist;
+                lnz = ldz / dist;
+                push = radius - dist;
+              } else {
+                const dLeft = Math.abs(lx + b.halfW);
+                const dRight = Math.abs(b.halfW - lx);
+                const dTop = Math.abs(lz + b.halfD);
+                const dBot = Math.abs(b.halfD - lz);
+                const minD = Math.min(dLeft, dRight, dTop, dBot);
+                if (minD === dLeft) lnx = -1;
+                else if (minD === dRight) lnx = 1;
+                else if (minD === dTop) lnz = -1;
+                else lnz = 1;
+                push = minD + radius;
+              }
+              const wnx = rx * lnx + fx * lnz;
+              const wnz = rz * lnx + fz * lnz;
+              pos.x += wnx * push;
+              pos.z += wnz * push;
+              out.hitX = b.cx + rx * clx + fx * clz;
+              out.hitZ = b.cz + rz * clx + fz * clz;
+              out.normalX = wnx;
+              out.normalZ = wnz;
+            }
+            continue;
+          }
+
           const closestX = THREE.MathUtils.clamp(pos.x, b.minX, b.maxX);
           const closestZ = THREE.MathUtils.clamp(pos.z, b.minZ, b.maxZ);
           const dx = pos.x - closestX;
@@ -183,6 +279,74 @@ export class StaticObstacleBVH {
               }
               out.hitX = pos.x;
               out.hitZ = pos.z;
+            }
+          }
+        }
+      } else {
+        this.stack[sp++] = n.left;
+        this.stack[sp++] = n.right;
+      }
+    }
+
+    return out;
+  }
+
+  public resolveOBB(
+    pos: THREE.Vector3,
+    yaw: number,
+    halfW: number,
+    halfL: number,
+  ): CircleBVHResult {
+    const out: CircleBVHResult = {
+      collided: false,
+      hitX: pos.x,
+      hitZ: pos.z,
+      normalX: 0,
+      normalZ: 0,
+    };
+    if (this.nodes.length === 0) return out;
+
+    let vehOBB = computeVehicleOBB(pos.x, pos.z, yaw, halfW, halfL);
+    let sp = 0;
+    this.stack[sp++] = 0;
+    let bestOverlap = 0;
+
+    while (sp > 0) {
+      const n = this.nodes[this.stack[--sp]];
+      if (
+        vehOBB.maxX < n.minX ||
+        vehOBB.minX > n.maxX ||
+        vehOBB.maxZ < n.minZ ||
+        vehOBB.minZ > n.maxZ
+      ) {
+        continue;
+      }
+
+      if (n.left === -1) {
+        for (let i = n.start; i < n.start + n.count; i++) {
+          const b = this.items[i];
+          if (
+            vehOBB.maxX < b.minX ||
+            vehOBB.minX > b.maxX ||
+            vehOBB.maxZ < b.minZ ||
+            vehOBB.minZ > b.maxZ
+          ) {
+            continue;
+          }
+          const obsOBB = obstacleToOBB(b);
+          const sat = collideOBB2D(vehOBB, obsOBB);
+          if (sat.hit && sat.overlap > 1e-4) {
+            out.collided = true;
+            // SAT normal points from A (vehicle) to B (obstacle), so push vehicle along -normal
+            pos.x -= sat.normalX * sat.overlap;
+            pos.z -= sat.normalZ * sat.overlap;
+            vehOBB = computeVehicleOBB(pos.x, pos.z, yaw, halfW, halfL);
+            if (sat.overlap >= bestOverlap) {
+              bestOverlap = sat.overlap;
+              out.hitX = sat.contactX;
+              out.hitZ = sat.contactZ;
+              out.normalX = -sat.normalX;
+              out.normalZ = -sat.normalZ;
             }
           }
         }
@@ -300,6 +464,82 @@ export class StaticObstacleBVH {
     b: ObstacleAABB,
     maxT: number,
   ): { t: number; nx: number; nz: number } | null {
+    const rot = b.rotationY ?? 0;
+    if (
+      Math.abs(rot) > 1e-4 &&
+      b.cx !== undefined &&
+      b.cz !== undefined &&
+      b.halfW !== undefined &&
+      b.halfD !== undefined
+    ) {
+      const cosR = Math.cos(rot);
+      const sinR = Math.sin(rot);
+      const rx = cosR;
+      const rz = -sinR;
+      const fx = sinR;
+      const fz = cosR;
+
+      const ox = x0 - b.cx;
+      const oz = z0 - b.cz;
+      const lx0 = ox * rx + oz * rz;
+      const lz0 = ox * fx + oz * fz;
+      const ldx = dx * rx + dz * rz;
+      const ldz = dx * fx + dz * fz;
+
+      let tmin = 0;
+      let tmax = maxT;
+      let lnx = 0;
+      let lnz = 0;
+
+      if (Math.abs(ldx) < 1e-7) {
+        if (lx0 < -b.halfW || lx0 > b.halfW) return null;
+      } else {
+        let t1 = (-b.halfW - lx0) / ldx;
+        let t2 = (b.halfW - lx0) / ldx;
+        let s = -1;
+        if (t1 > t2) {
+          const tmp = t1;
+          t1 = t2;
+          t2 = tmp;
+          s = 1;
+        }
+        if (t1 > tmin) {
+          tmin = t1;
+          lnx = s;
+          lnz = 0;
+        }
+        tmax = Math.min(tmax, t2);
+        if (tmin > tmax) return null;
+      }
+
+      if (Math.abs(ldz) < 1e-7) {
+        if (lz0 < -b.halfD || lz0 > b.halfD) return null;
+      } else {
+        let t1 = (-b.halfD - lz0) / ldz;
+        let t2 = (b.halfD - lz0) / ldz;
+        let s = -1;
+        if (t1 > t2) {
+          const tmp = t1;
+          t1 = t2;
+          t2 = tmp;
+          s = 1;
+        }
+        if (t1 > tmin) {
+          tmin = t1;
+          lnx = 0;
+          lnz = s;
+        }
+        tmax = Math.min(tmax, t2);
+        if (tmin > tmax) return null;
+      }
+
+      return {
+        t: tmin,
+        nx: rx * lnx + fx * lnz,
+        nz: rz * lnx + fz * lnz,
+      };
+    }
+
     let tmin = 0;
     let tmax = maxT;
     let nx = 0;

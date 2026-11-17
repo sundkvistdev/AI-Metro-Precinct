@@ -1,9 +1,5 @@
 import * as THREE from 'three';
-import {
-  AssetIssue,
-  EngineConfigAsset,
-  LoadedJsonAssets,
-} from '../assets/assetTypes';
+import { AssetIssue, CrashPartRole, EngineConfigAsset, LoadedJsonAssets } from '../assets/assetTypes';
 import {
   buildJsonModel,
   buildMagentaCubeModel,
@@ -19,7 +15,11 @@ export interface DetachablePartRef {
   id: string;
   object: THREE.Object3D;
   localOffset: THREE.Vector3;
+  role: CrashPartRole;
   minStrikeSpeed: number;
+  hp: number;
+  maxHp: number;
+  radius: number;
   detached: boolean;
   isLightbar?: boolean;
   isWheel?: boolean;
@@ -27,6 +27,12 @@ export interface DetachablePartRef {
 
 export interface LightbarRig {
   group: THREE.Group;
+  standardShellGroup: THREE.Group;
+  vectorPodsGroup: THREE.Group;
+  miniBeaconGroup: THREE.Group;
+  visorStrobeGroup: THREE.Group;
+  grilleStrobeGroup: THREE.Group;
+  visorStealthActive: boolean;
   detached: boolean;
   headlightLeftDetached: boolean;
   headlightRightDetached: boolean;
@@ -45,6 +51,16 @@ export interface LightbarRig {
   rotatorLeft: THREE.Group;
   rotatorRight: THREE.Group;
   rotatorCenter: THREE.Group;
+  vectorPodBulbs: THREE.Mesh[];
+  trafficAdvisorBulbs: THREE.Mesh[];
+  miniRotatorLeft: THREE.Group;
+  miniRotatorRight: THREE.Group;
+  miniBeaconLeftMat: THREE.MeshPhysicalMaterial;
+  miniBeaconRightMat: THREE.MeshPhysicalMaterial;
+  visorLeftPods: THREE.Mesh[];
+  visorRightPods: THREE.Mesh[];
+  grilleStrobeLeft: THREE.Mesh;
+  grilleStrobeRight: THREE.Mesh;
   rearDeckRed: THREE.Mesh;
   rearDeckBlue: THREE.Mesh;
   leftLensMat: THREE.MeshPhysicalMaterial;
@@ -60,6 +76,8 @@ export interface LightbarRig {
   haloRearRight: THREE.Sprite;
   haloHeadLeft: THREE.Sprite;
   haloHeadRight: THREE.Sprite;
+  haloVisorLeft: THREE.Sprite;
+  haloVisorRight: THREE.Sprite;
 }
 
 export interface PoliceCruiserRig {
@@ -313,71 +331,33 @@ function attachLiveryDecals(
   bodyGroup.add(sideL, sideR, roofPlate, rearPanel);
 }
 
-function collectDetachableParts(
+function collectCrashPartsFromBuilt(
   root: THREE.Group,
-  rules: Array<{ name: string; minStrikeSpeed: number; isWheel?: boolean }>,
+  built: BuiltJsonModel,
 ): DetachablePartRef[] {
   const parts: DetachablePartRef[] = [];
   root.updateMatrixWorld(true);
   const invRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
   const wp = new THREE.Vector3();
 
-  for (const rule of rules) {
-    const obj = root.getObjectByName(rule.name);
-    if (!obj) continue;
-    obj.getWorldPosition(wp).applyMatrix4(invRoot);
+  for (const cp of built.crashParts) {
+    cp.object.getWorldPosition(wp).applyMatrix4(invRoot);
     parts.push({
-      id: rule.name,
-      object: obj,
+      id: cp.id,
+      object: cp.object,
       localOffset: wp.clone(),
-      minStrikeSpeed: rule.minStrikeSpeed,
+      role: cp.spec.role,
+      minStrikeSpeed: cp.spec.minStrikeSpeed,
+      hp: cp.spec.health,
+      maxHp: cp.spec.health,
+      radius: cp.spec.radius ?? 0.45,
       detached: false,
-      isWheel: rule.isWheel,
+      isWheel: cp.spec.isWheel ?? cp.spec.role === 'wheel',
+      isLightbar: cp.spec.isLightbar ?? cp.spec.role === 'lightbar',
     });
   }
   return parts;
 }
-
-const POLICE_DETACH_RULES: Array<{ name: string; minStrikeSpeed: number; isWheel?: boolean }> = [
-  { name: 'mirror_l', minStrikeSpeed: 7.2 },
-  { name: 'mirror_r', minStrikeSpeed: 7.2 },
-  { name: 'antenna', minStrikeSpeed: 7.6 },
-  { name: 'roof_rail_l', minStrikeSpeed: 8.6 },
-  { name: 'roof_rail_r', minStrikeSpeed: 8.6 },
-  { name: 'exhaust_l', minStrikeSpeed: 8.2 },
-  { name: 'exhaust_r', minStrikeSpeed: 8.2 },
-  { name: 'front_bumper', minStrikeSpeed: 9.8 },
-  { name: 'rear_bumper', minStrikeSpeed: 9.8 },
-  { name: 'push_cross_top', minStrikeSpeed: 10.4 },
-  { name: 'push_cross_mid', minStrikeSpeed: 10.4 },
-  { name: 'push_upright_l', minStrikeSpeed: 11.4 },
-  { name: 'push_upright_r', minStrikeSpeed: 11.4 },
-  { name: 'headlight_l', minStrikeSpeed: 9.2 },
-  { name: 'headlight_r', minStrikeSpeed: 9.2 },
-  { name: 'taillight_l', minStrikeSpeed: 9.2 },
-  { name: 'taillight_r', minStrikeSpeed: 9.2 },
-  { name: 'door_left', minStrikeSpeed: 13.8 },
-  { name: 'door_right', minStrikeSpeed: 13.8 },
-  { name: 'wheel_fl', minStrikeSpeed: 15.6, isWheel: true },
-  { name: 'wheel_fr', minStrikeSpeed: 15.6, isWheel: true },
-  { name: 'wheel_rl', minStrikeSpeed: 15.6, isWheel: true },
-  { name: 'wheel_rr', minStrikeSpeed: 15.6, isWheel: true },
-];
-
-const CIVILIAN_DETACH_RULES: Array<{ name: string; minStrikeSpeed: number; isWheel?: boolean }> = [
-  { name: 'sign', minStrikeSpeed: 7.0 },
-  { name: 'f_bump', minStrikeSpeed: 8.8 },
-  { name: 'r_bump', minStrikeSpeed: 8.8 },
-  { name: 'hl_l', minStrikeSpeed: 9.0 },
-  { name: 'hl_r', minStrikeSpeed: 9.0 },
-  { name: 'tl_l', minStrikeSpeed: 9.0 },
-  { name: 'tl_r', minStrikeSpeed: 9.0 },
-  { name: 'roof', minStrikeSpeed: 14.8 },
-  { name: 'w_fl', minStrikeSpeed: 14.8, isWheel: true },
-  { name: 'w_fr', minStrikeSpeed: 14.8, isWheel: true },
-  { name: 'w_rl', minStrikeSpeed: 14.8, isWheel: true },
-  { name: 'w_rr', minStrikeSpeed: 14.8, isWheel: true },
-];
 
 function buildModelOrMagentaCube(
   modelKey: string,
@@ -433,7 +413,7 @@ export function createPoliceCruiser(
   baseColorHex?: number,
   onAssetIssue?: (issue: AssetIssue) => void,
 ): PoliceCruiserRig {
-  const chassis = vehiclesConfig.chassis[vehicleKind];
+  const chassis = vehiclesConfig.chassis[vehicleKind] ?? vehiclesConfig.chassis['sedan'];
   const livery =
     vehiclesConfig.liveries[liveryId] ?? Object.values(vehiclesConfig.liveries)[0];
   const initialBaseColor =
@@ -563,6 +543,10 @@ export function createPoliceCruiser(
   lbGroup.position.set(lbX, lbY, lbZ);
   bodyGroup.add(lbGroup);
 
+  const standardShellGroup = new THREE.Group();
+  standardShellGroup.name = 'lightbar_standard_shell';
+  lbGroup.add(standardShellGroup);
+
   const mountGeo = new THREE.BoxGeometry(0.14, 0.08, 0.24);
   const mountL = new THREE.Mesh(mountGeo, trimMat);
   mountL.position.set(0.54, -0.02, 0);
@@ -572,7 +556,7 @@ export function createPoliceCruiser(
   basePlate.position.set(0, 0.03, 0);
   const centerHousing = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.13, 0.34), trimMat);
   centerHousing.position.set(0, 0.1, 0);
-  lbGroup.add(mountL, mountR, basePlate, centerHousing);
+  standardShellGroup.add(mountL, mountR, basePlate, centerHousing);
 
   const leftLensMat = new THREE.MeshPhysicalMaterial({
     color: 0xc8232c,
@@ -618,7 +602,7 @@ export function createPoliceCruiser(
   const centerDome = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.14, 0.32), centerLensMat);
   centerDome.position.set(0, 0.11, 0);
   centerDome.renderOrder = 3;
-  lbGroup.add(leftDome, rightDome, centerDome);
+  standardShellGroup.add(leftDome, rightDome, centerDome);
 
   const ledLeftPods: THREE.Mesh[] = [];
   const ledRightPods: THREE.Mesh[] = [];
@@ -636,7 +620,7 @@ export function createPoliceCruiser(
       }),
     );
     podL.position.set(offset, 0.105, 0);
-    lbGroup.add(podL);
+    standardShellGroup.add(podL);
     ledLeftPods.push(podL);
 
     const podR = new THREE.Mesh(
@@ -649,7 +633,7 @@ export function createPoliceCruiser(
       }),
     );
     podR.position.set(-offset, 0.105, 0);
-    lbGroup.add(podR);
+    standardShellGroup.add(podR);
     ledRightPods.push(podR);
   }
 
@@ -664,7 +648,7 @@ export function createPoliceCruiser(
       }),
     );
     podC.position.set(offset, 0.105, 0);
-    lbGroup.add(podC);
+    standardShellGroup.add(podC);
     ledCenterPods.push(podC);
   }
 
@@ -686,11 +670,11 @@ export function createPoliceCruiser(
     new THREE.MeshStandardMaterial({ color: 0xfef3c7, emissive: 0xfbbf24, emissiveIntensity: 0.1 }),
   );
   halogenCenterBulb.position.set(0, 0.105, 0);
-  lbGroup.add(halogenLeftBulb, halogenRightBulb, halogenCenterBulb);
+  standardShellGroup.add(halogenLeftBulb, halogenRightBulb, halogenCenterBulb);
 
-  const buildRotator = (xPos: number): THREE.Group => {
+  const buildRotator = (parent: THREE.Group, xPos: number, yPos = 0.105, zPos = 0): THREE.Group => {
     const rot = new THREE.Group();
-    rot.position.set(xPos, 0.105, 0);
+    rot.position.set(xPos, yPos, zPos);
 
     const dish = new THREE.Mesh(
       new THREE.CylinderGeometry(0.058, 0.062, 0.092, 12, 1, true, 0, Math.PI),
@@ -707,13 +691,173 @@ export function createPoliceCruiser(
     bulb.position.z = 0.022;
     rot.add(bulb);
 
-    lbGroup.add(rot);
+    parent.add(rot);
     return rot;
   };
 
-  const rotatorLeft = buildRotator(0.45);
-  const rotatorRight = buildRotator(-0.45);
-  const rotatorCenter = buildRotator(0);
+  const rotatorLeft = buildRotator(standardShellGroup, 0.45);
+  const rotatorRight = buildRotator(standardShellGroup, -0.45);
+  const rotatorCenter = buildRotator(standardShellGroup, 0);
+
+  // 4) Vector V-Pods + rear amber traffic advisor
+  const vectorPodsGroup = new THREE.Group();
+  vectorPodsGroup.name = 'lightbar_vector_pods';
+  vectorPodsGroup.visible = false;
+  lbGroup.add(vectorPodsGroup);
+
+  const vFrameL = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.04, 0.12), trimMat);
+  vFrameL.position.set(0.35, 0.03, 0.04);
+  vFrameL.rotation.y = -0.34;
+  const vFrameR = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.04, 0.12), trimMat);
+  vFrameR.position.set(-0.35, 0.03, 0.04);
+  vFrameR.rotation.y = 0.34;
+  const advisorHousing = new THREE.Mesh(new THREE.BoxGeometry(1.36, 0.07, 0.1), trimMat);
+  advisorHousing.position.set(0, 0.05, -0.18);
+  vectorPodsGroup.add(vFrameL, vFrameR, advisorHousing);
+
+  const vectorPodConfigs: Array<{ x: number; z: number; color: number; emissive: number }> = [
+    { x: 0.66, z: -0.06, color: 0xc8232c, emissive: 0xff2020 },
+    { x: 0.34, z: 0.06, color: 0xc8232c, emissive: 0xff2828 },
+    { x: 0.0, z: 0.18, color: 0xf8fafc, emissive: 0xffffff },
+    { x: -0.34, z: 0.06, color: 0x2558c9, emissive: 0x2070ff },
+    { x: -0.66, z: -0.06, color: 0x2558c9, emissive: 0x2070ff },
+  ];
+  const vectorPodBulbs: THREE.Mesh[] = [];
+  for (const cfg of vectorPodConfigs) {
+    const podHousing = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.12, 0.04, 10), trimMat);
+    podHousing.position.set(cfg.x, 0.06, cfg.z);
+    const dome = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.095, 0.105, 0.12, 10),
+      new THREE.MeshPhysicalMaterial({
+        color: cfg.color,
+        transparent: true,
+        opacity: 0.72,
+        depthWrite: false,
+        clearcoat: 0.65,
+      }),
+    );
+    dome.position.set(cfg.x, 0.13, cfg.z);
+    dome.renderOrder = 3;
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.06, 10, 8),
+      new THREE.MeshStandardMaterial({
+        color: cfg.color,
+        emissive: cfg.emissive,
+        emissiveIntensity: 0.15,
+      }),
+    );
+    bulb.position.set(cfg.x, 0.13, cfg.z);
+    vectorPodsGroup.add(podHousing, dome, bulb);
+    vectorPodBulbs.push(bulb);
+  }
+
+  const trafficAdvisorBulbs: THREE.Mesh[] = [];
+  for (let i = 0; i < 7; i++) {
+    const ax = (i - 3) * 0.18;
+    const isEnd = i === 0 || i === 6;
+    const bulb = new THREE.Mesh(
+      new THREE.BoxGeometry(0.13, 0.045, 0.03),
+      new THREE.MeshStandardMaterial({
+        color: isEnd ? (i === 0 ? 0xef4444 : 0x3b82f6) : 0xf59e0b,
+        emissive: isEnd ? (i === 0 ? 0xff2020 : 0x2070ff) : 0xf59e0b,
+        emissiveIntensity: 0.1,
+      }),
+    );
+    bulb.position.set(ax, 0.055, -0.235);
+    vectorPodsGroup.add(bulb);
+    trafficAdvisorBulbs.push(bulb);
+  }
+
+  // 5) Mini Dual Beacon
+  const miniBeaconGroup = new THREE.Group();
+  miniBeaconGroup.name = 'lightbar_mini_beacon';
+  miniBeaconGroup.visible = false;
+  lbGroup.add(miniBeaconGroup);
+
+  const miniBase = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.04, 0.28), trimMat);
+  miniBase.position.set(0, 0.03, 0);
+  const miniCenterCap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.11, 0.24), chromeMat);
+  miniCenterCap.position.set(0, 0.095, 0);
+  miniBeaconGroup.add(miniBase, miniCenterCap);
+
+  const miniBeaconLeftMat = leftLensMat.clone();
+  const miniBeaconRightMat = rightLensMat.clone();
+  const miniDomeL = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.105, 0.14, 12), miniBeaconLeftMat);
+  miniDomeL.position.set(0.16, 0.11, 0);
+  miniDomeL.renderOrder = 3;
+  const miniDomeR = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.105, 0.14, 12), miniBeaconRightMat);
+  miniDomeR.position.set(-0.16, 0.11, 0);
+  miniDomeR.renderOrder = 3;
+  miniBeaconGroup.add(miniDomeL, miniDomeR);
+  const miniRotatorLeft = buildRotator(miniBeaconGroup, 0.16, 0.105, 0);
+  const miniRotatorRight = buildRotator(miniBeaconGroup, -0.16, 0.105, 0);
+
+  // 6) Interior Visor Stealth Pods + Front Grille Strobes (mounted on bodyGroup)
+  const visorPos =
+    vehicleKind === 'apc'
+      ? [0, 2.02, 1.04]
+      : vehicleKind === 'van'
+      ? [0, 1.98, 1.24]
+      : vehicleKind === 'suv'
+      ? [0, 1.72, 0.56]
+      : [0, 1.37, 0.42];
+  const visorStrobeGroup = new THREE.Group();
+  visorStrobeGroup.name = 'lightbar_visor_stealth';
+  visorStrobeGroup.position.set(visorPos[0], visorPos[1], visorPos[2]);
+  visorStrobeGroup.visible = false;
+  bodyGroup.add(visorStrobeGroup);
+
+  const visorBackL = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.065, 0.08), trimMat);
+  visorBackL.position.set(0.28, 0, -0.02);
+  const visorBackR = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.065, 0.08), trimMat);
+  visorBackR.position.set(-0.28, 0, -0.02);
+  visorStrobeGroup.add(visorBackL, visorBackR);
+
+  const visorLeftPods: THREE.Mesh[] = [];
+  const visorRightPods: THREE.Mesh[] = [];
+  for (const offset of [0.18, 0.36]) {
+    const vpL = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.05, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff1a1a, emissiveIntensity: 0.1 }),
+    );
+    vpL.position.set(offset, 0, 0.03);
+    visorStrobeGroup.add(vpL);
+    visorLeftPods.push(vpL);
+
+    const vpR = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.05, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0x2266ff, emissive: 0x1d70ff, emissiveIntensity: 0.1 }),
+    );
+    vpR.position.set(-offset, 0, 0.03);
+    visorStrobeGroup.add(vpR);
+    visorRightPods.push(vpR);
+  }
+
+  const grillePos =
+    vehicleKind === 'apc'
+      ? [0, 0.92, 2.61]
+      : vehicleKind === 'van'
+      ? [0, 0.78, 2.55]
+      : vehicleKind === 'suv'
+      ? [0, 0.78, 2.45]
+      : [0, 0.65, 2.43];
+  const grilleStrobeGroup = new THREE.Group();
+  grilleStrobeGroup.name = 'lightbar_grille_strobes';
+  grilleStrobeGroup.position.set(grillePos[0], grillePos[1], grillePos[2]);
+  grilleStrobeGroup.visible = false;
+  bodyGroup.add(grilleStrobeGroup);
+
+  const grilleStrobeLeft = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.055, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff2020, emissiveIntensity: 0.1 }),
+  );
+  grilleStrobeLeft.position.set(0.24, 0, 0);
+  const grilleStrobeRight = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.055, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0x2266ff, emissive: 0x2070ff, emissiveIntensity: 0.1 }),
+  );
+  grilleStrobeRight.position.set(-0.24, 0, 0);
+  grilleStrobeGroup.add(grilleStrobeLeft, grilleStrobeRight);
 
   const cookieGeo = new THREE.PlaneGeometry(13.5, 13.5).rotateX(-Math.PI / 2);
   const cookieLeft = new THREE.Mesh(
@@ -783,6 +927,12 @@ export function createPoliceCruiser(
   haloCenter.position.set(0, 0.14, 0);
   lbGroup.add(haloLeft, haloRight, haloCenter);
 
+  const haloVisorLeft = makeHaloSprite(textures.lightHalo, 0xff2b2b, 0.9, 0.65, 0);
+  haloVisorLeft.position.set(0.28, 0, 0.1);
+  const haloVisorRight = makeHaloSprite(textures.lightHalo, 0x2b7fff, 0.9, 0.65, 0);
+  haloVisorRight.position.set(-0.28, 0, 0.1);
+  visorStrobeGroup.add(haloVisorLeft, haloVisorRight);
+
   const haloRearLeft = makeHaloSprite(textures.lightHalo, 0xff2b2b, 0.7, 0.55, 0);
   haloRearLeft.position.set(0.32, rearDeckY, rearDeckZ - 0.08);
   const haloRearRight = makeHaloSprite(textures.lightHalo, 0x2b7fff, 0.7, 0.55, 0);
@@ -808,12 +958,16 @@ export function createPoliceCruiser(
   clickableMesh.userData.unitId = vehiclesConfig.stationBays[unitNumber - 1]?.id ?? `unit-${unitNumber}`;
   root.add(clickableMesh);
 
-  const detachableParts = collectDetachableParts(root, POLICE_DETACH_RULES);
+  const detachableParts = collectCrashPartsFromBuilt(root, built);
   detachableParts.push({
     id: 'roof_lightbar',
     object: lbGroup,
     localOffset: new THREE.Vector3(lbX, lbY, lbZ),
+    role: 'lightbar',
     minStrikeSpeed: 15.2,
+    hp: 42,
+    maxHp: 42,
+    radius: 0.65,
     detached: false,
     isLightbar: true,
   });
@@ -829,6 +983,12 @@ export function createPoliceCruiser(
     setBaseColor,
     lightbar: {
       group: lbGroup,
+      standardShellGroup,
+      vectorPodsGroup,
+      miniBeaconGroup,
+      visorStrobeGroup,
+      grilleStrobeGroup,
+      visorStealthActive: false,
       detached: false,
       headlightLeftDetached: false,
       headlightRightDetached: false,
@@ -847,6 +1007,16 @@ export function createPoliceCruiser(
       rotatorLeft,
       rotatorRight,
       rotatorCenter,
+      vectorPodBulbs,
+      trafficAdvisorBulbs,
+      miniRotatorLeft,
+      miniRotatorRight,
+      miniBeaconLeftMat,
+      miniBeaconRightMat,
+      visorLeftPods,
+      visorRightPods,
+      grilleStrobeLeft,
+      grilleStrobeRight,
       rearDeckRed,
       rearDeckBlue,
       leftLensMat,
@@ -862,27 +1032,31 @@ export function createPoliceCruiser(
       haloRearRight,
       haloHeadLeft,
       haloHeadRight,
+      haloVisorLeft,
+      haloVisorRight,
     },
   };
 }
 
 export function createCivilianCar(
-  variant: 'sedan' | 'hatch' | 'taxi' | 'van',
+  variant: string,
   colorHex: number,
   assets: LoadedJsonAssets,
   textures: TextureRegistry,
   onAssetIssue?: (issue: AssetIssue) => void,
 ): CivilianCarRig {
-  const modelKey =
-    variant === 'sedan'
-      ? 'civilian_sedan'
-      : variant === 'hatch'
-      ? 'civilian_hatch'
-      : variant === 'taxi'
-      ? 'civilian_taxi'
-      : 'civilian_van';
+  const shorthandMap: Record<string, string> = {
+    sedan: 'civilian_sedan',
+    hatch: 'civilian_hatch',
+    taxi: 'civilian_taxi',
+    van: 'civilian_van',
+  };
+  const modelKey = shorthandMap[variant] ?? variant;
 
-  const overrides = variant === 'taxi' ? undefined : { paint: colorHex };
+  const overrides =
+    variant === 'taxi'
+      ? undefined
+      : { paint: colorHex, black_paint: colorHex, white_paint: colorHex };
   const built = buildModelOrMagentaCube(
     modelKey,
     [1.85, 1.45, 4.4],
@@ -894,7 +1068,13 @@ export function createCivilianCar(
   );
   const root = built.root;
 
-  const shadowGeo = new THREE.PlaneGeometry(2.3, 4.6);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const shadowW = THREE.MathUtils.clamp((size.x || 1.9) * 1.18, 1.8, 4.2);
+  const shadowL = THREE.MathUtils.clamp((size.z || 4.3) * 1.05, 3.2, 8.0);
+
+  const shadowGeo = new THREE.PlaneGeometry(shadowW, shadowL);
   shadowGeo.rotateX(-Math.PI / 2);
   const shadowPlane = new THREE.Mesh(
     shadowGeo,
@@ -909,12 +1089,17 @@ export function createCivilianCar(
   root.add(shadowPlane);
 
   const bodyGroup = (built.tags['bodyGroup']?.[0] as THREE.Group) ?? new THREE.Group();
-  const wheels = (built.tags['wheel'] ?? []) as THREE.Group[];
+  const taggedWheels = built.tags['wheel'] ?? [];
+  const frontRear = [
+    ...(built.tags['frontWheel'] ?? []),
+    ...(built.tags['rearWheel'] ?? []),
+  ];
+  const wheels = (taggedWheels.length > 0 ? taggedWheels : frontRear) as THREE.Group[];
   for (const w of wheels) {
     w.rotation.order = 'YXZ';
     w.userData.bentAmount = 0;
   }
-  const detachableParts = collectDetachableParts(root, CIVILIAN_DETACH_RULES);
+  const detachableParts = collectCrashPartsFromBuilt(root, built);
 
   return { root, bodyGroup, wheels, detachableParts };
 }
@@ -925,15 +1110,17 @@ export function createHumanoid(
   textures: TextureRegistry,
   shirtHex?: number,
   onAssetIssue?: (issue: AssetIssue) => void,
+  modelKeyOverride?: string,
 ): HumanoidRig {
   const modelKey =
-    role === 'heavy_officer'
+    modelKeyOverride ??
+    (role === 'heavy_officer'
       ? 'heavy_officer_humanoid'
       : role === 'officer'
       ? 'officer_humanoid'
       : role === 'suspect'
       ? 'suspect_humanoid'
-      : 'pedestrian_humanoid';
+      : 'pedestrian_humanoid');
 
   const overrides =
     role === 'pedestrian' && shirtHex !== undefined ? { shirt: shirtHex } : undefined;

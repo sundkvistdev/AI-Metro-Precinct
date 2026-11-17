@@ -14,6 +14,7 @@ import {
   Users,
   Volume2,
   VolumeX,
+  Wrench,
   X,
 } from 'lucide-react';
 import { LoadedJsonAssets } from '../assets/assetTypes';
@@ -28,8 +29,9 @@ import {
   WeatherCondition,
 } from '../sim/types';
 import { AssetManagerPane } from './AssetManagerPane';
+import { DevToolsPane, DevToolsPaneProps } from './DevToolsPane';
 
-export type SidebarPaneId = 'units' | 'dispatch' | 'environment' | 'assets';
+export type SidebarPaneId = 'units' | 'dispatch' | 'environment' | 'assets' | 'devtools';
 
 export interface SidebarPanelProps {
   snapshot: SimSnapshot;
@@ -43,7 +45,7 @@ export interface SidebarPanelProps {
   onSetSirenPattern: (pattern: SirenPattern) => void;
   onSetDrivingMode: (mode: DrivingMode) => void;
   onSetBackupMode: (mode: BackupMode) => void;
-  onRequestBackup: () => void;
+  onRequestBackup: (crimeId?: string) => void;
   onDeployNailMat: () => void;
   onSetWeather: (weather: WeatherCondition) => void;
   onSetCameraMode: (mode: CameraMode) => void;
@@ -54,11 +56,15 @@ export interface SidebarPanelProps {
   onTriggerPursuit: () => void;
   onToggleMount: () => void;
   onToggleAudio: () => void;
+  onSetAudioVolume: (volume: number) => void;
   onToggleSimSpeed: () => void;
+  onSetDebrisObstacles: (enabled: boolean) => void;
+  onSetCrashIntensity: (intensity: number) => void;
   onLoadZipPack: (file: File) => void;
   onExportZipPack: () => void;
   onReloadDefaultPack: () => void;
   onOpenErrorDialog: () => void;
+  devTools: DevToolsPaneProps;
 }
 
 const STATUS_LABELS: Record<UnitStatus, string> = {
@@ -78,6 +84,7 @@ const PANE_META: Record<SidebarPaneId, { title: string; icon: React.ReactNode }>
   dispatch: { title: 'Dispatch & Tactics', icon: <ShieldAlert className="h-4 w-4" /> },
   environment: { title: 'Vehicle & World', icon: <Siren className="h-4 w-4" /> },
   assets: { title: 'Asset Manager', icon: <FolderArchive className="h-4 w-4" /> },
+  devtools: { title: 'Dev Tools', icon: <Wrench className="h-4 w-4" /> },
 };
 
 export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
@@ -104,11 +111,15 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
     onTriggerPursuit,
     onToggleMount,
     onToggleAudio,
+    onSetAudioVolume,
     onToggleSimSpeed,
+    onSetDebrisObstacles,
+    onSetCrashIntensity,
     onLoadZipPack,
     onExportZipPack,
     onReloadDefaultPack,
     onOpenErrorDialog,
+    devTools,
   } = props;
 
   const selectedUnit =
@@ -169,6 +180,12 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
               {badge && (
                 <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 bg-amber-400" />
               )}
+              {id === 'devtools' &&
+                (devTools.state?.dirtyMap ||
+                  devTools.state?.dirtyModel ||
+                  devTools.state?.dirtyTextures) && (
+                  <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 bg-sky-400" />
+                )}
             </button>
           );
         })}
@@ -176,7 +193,11 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
 
       {/* Collapsible active pane */}
       {activePane && (
-        <aside className="pointer-events-auto ui-panel w-[296px] max-h-[calc(100vh-58px)] flex flex-col shadow-xl">
+        <aside
+          className={`pointer-events-auto ui-panel max-h-[calc(100vh-58px)] flex flex-col shadow-xl ${
+            activePane === 'devtools' ? 'w-[420px]' : 'w-[296px]'
+          }`}
+        >
           <div className="flex items-center justify-between border-b border-zinc-600 bg-zinc-700/75 px-2.5 py-1.5">
             <span className="font-display text-xs font-semibold tracking-wider uppercase text-zinc-100">
               {PANE_META[activePane].title}
@@ -202,6 +223,8 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                         ? `${unit.downedOfficers} KIA`
                         : unit.immobilized && unit.mounted
                         ? 'Disabled'
+                        : unit.reversing
+                        ? 'Reversing'
                         : unit.fleeingOfficers > 0 && unit.status !== UnitStatus.Retreating
                         ? 'Panicking'
                         : !unit.mounted && unit.freeRoam && !unit.targetCrimeId
@@ -213,7 +236,7 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                         key={unit.id}
                         type="button"
                         onClick={() => onSelectUnit(unit.id)}
-                        className={`w-full flex items-center justify-between gap-2 border px-2 py-1 text-xs transition-colors cursor-pointer rounded-none ${
+                        className={`w-full flex items-center justify-between gap-1.5 border px-2 py-1 text-xs transition-colors cursor-pointer rounded-none ${
                           selected
                             ? 'border-blue-400 bg-blue-600/90 text-white'
                             : unit.isHeavyUnit
@@ -221,7 +244,7 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                             : 'border-zinc-600 bg-zinc-700/50 text-zinc-100 hover:bg-zinc-600'
                         }`}
                       >
-                        <span className="flex items-center gap-1.5 font-medium whitespace-nowrap">
+                        <span className="flex items-center gap-1 font-medium whitespace-nowrap truncate">
                           <span>{unit.callsign}</span>
                           {unit.weaponKind === 'rifle' && (
                             <span
@@ -236,13 +259,23 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                               {unit.isHeavyUnit ? 'HEAVY' : 'AR'}
                             </span>
                           )}
+                          {unit.assignedCaseNumber !== null && (
+                            <span
+                              className={`text-[10px] font-mono-tabular ${
+                                selected ? 'text-blue-100' : 'text-zinc-400'
+                              }`}
+                            >
+                              #{unit.assignedCaseNumber}
+                            </span>
+                          )}
                         </span>
 
                         <span
                           className={`font-mono-tabular text-[11px] whitespace-nowrap ${
                             unit.downedOfficers > 0 || unit.immobilized
                               ? 'text-red-300'
-                              : unit.fleeingOfficers > 0 ||
+                              : unit.reversing ||
+                                unit.fleeingOfficers > 0 ||
                                 unit.status === UnitStatus.Retreating ||
                                 unit.status === UnitStatus.DeployingSpikes
                               ? 'text-amber-300'
@@ -253,6 +286,9 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                         >
                           {statusText}
                           {unit.speedKmh > 0 ? ` ${unit.speedKmh}km/h` : ''}
+                          {unit.mounted && unit.impatience >= 35
+                            ? ` · IMP${unit.impatience}%`
+                            : ''}
                           {!unit.mounted && unit.downedOfficers === 0
                             ? ` · M${unit.morale}%`
                             : ''}
@@ -267,6 +303,14 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                     <div className="flex items-center justify-between font-mono-tabular text-[11px] text-zinc-300">
                       <span>{selectedUnit.vehicleKind.toUpperCase()}</span>
                       <span>{selectedUnit.liveryLabel}</span>
+                    </div>
+                    <div className="flex items-center justify-between font-mono-tabular text-[11px] text-zinc-400">
+                      <span>
+                        {selectedUnit.assignedCaseNumber !== null
+                          ? `Case #${selectedUnit.assignedCaseNumber} (${selectedUnit.assignedRole ?? 'assigned'})`
+                          : 'Unassigned'}
+                      </span>
+                      <span>Impatience {selectedUnit.impatience}%</span>
                     </div>
 
                     <div className="grid grid-cols-2 gap-1">
@@ -369,7 +413,7 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                   <button
                     type="button"
                     disabled={!canRequestBackup}
-                    onClick={onRequestBackup}
+                    onClick={() => onRequestBackup()}
                     className={`flex items-center justify-center gap-1 border px-2 py-1.5 font-medium whitespace-nowrap shrink-0 rounded-none ${
                       canRequestBackup
                         ? 'border-blue-400/70 bg-blue-600/40 text-blue-100 hover:bg-blue-600/60 cursor-pointer'
@@ -392,6 +436,123 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                     <TriangleAlert className="h-3.5 w-3.5" />
                     Nail Mat
                   </button>
+                </div>
+
+                <div className="ui-subpanel p-2 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+                    <span>Active Cases</span>
+                    <span className="font-mono-tabular text-zinc-400">
+                      {snapshot.activeCrimes.length}
+                    </span>
+                  </div>
+                  {snapshot.activeCrimes.length === 0 ? (
+                    <div className="text-[11px] text-zinc-400">
+                      No active incidents. Dispatch standby patrol or trigger a call.
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {snapshot.activeCrimes.map((crime) => {
+                        const urgColor =
+                          crime.urgencyLevel === 'critical'
+                            ? 'bg-red-500'
+                            : crime.urgencyLevel === 'high'
+                            ? 'bg-orange-500'
+                            : crime.urgencyLevel === 'medium'
+                            ? 'bg-amber-400'
+                            : 'bg-sky-400';
+                        const urgBadge =
+                          crime.urgencyLevel === 'critical'
+                            ? 'border-red-400/80 bg-red-600/80 text-white'
+                            : crime.urgencyLevel === 'high'
+                            ? 'border-orange-400/80 bg-orange-600/70 text-white'
+                            : crime.urgencyLevel === 'medium'
+                            ? 'border-amber-400/70 bg-amber-600/40 text-amber-100'
+                            : 'border-zinc-500 bg-zinc-700 text-zinc-200';
+                        const caseCanBackup = hasStandbyUnit && crime.suspectAlive;
+
+                        return (
+                          <div
+                            key={crime.id}
+                            className="border border-zinc-600 bg-zinc-800/75 p-1.5 space-y-1 rounded-none"
+                          >
+                            <div className="flex items-center justify-between gap-1 text-[11px]">
+                              <span className="font-medium text-zinc-100 truncate">
+                                <span className="font-mono-tabular text-zinc-300">
+                                  #{crime.caseNumber}
+                                </span>{' '}
+                                {crime.type}
+                              </span>
+                              <span
+                                className={`shrink-0 border px-1 text-[10px] font-mono-tabular font-semibold uppercase ${urgBadge}`}
+                              >
+                                {crime.urgencyLevel} {crime.urgency}
+                              </span>
+                            </div>
+
+                            <div className="h-1 w-full bg-zinc-700">
+                              <div
+                                className={`h-full ${urgColor}`}
+                                style={{ width: `${crime.urgency}%` }}
+                              />
+                            </div>
+
+                            <div className="flex items-center justify-between gap-1 text-[10px] font-mono-tabular text-zinc-300">
+                              <span>
+                                {crime.district} · {crime.incidentStatus.replace('_', ' ')}
+                              </span>
+                              <span>
+                                {!crime.suspectAlive
+                                  ? 'Neutralized'
+                                  : crime.inVehiclePursuit
+                                  ? `Veh ${crime.vehicleHp}%`
+                                  : `HP ${crime.suspectHp}%`}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-1 pt-0.5">
+                              <div className="flex flex-wrap gap-1">
+                                {crime.assignedUnits.length > 0 ? (
+                                  crime.assignedUnits.map((u) => (
+                                    <button
+                                      key={u.unitId}
+                                      type="button"
+                                      onClick={() => onSelectUnit(u.unitId)}
+                                      className={`border px-1 py-0 text-[10px] font-mono-tabular cursor-pointer rounded-none ${
+                                        u.unitId === snapshot.selectedUnitId
+                                          ? 'border-blue-400 bg-blue-600 text-white'
+                                          : 'border-zinc-500 bg-zinc-700 text-zinc-200 hover:bg-zinc-600'
+                                      }`}
+                                      title={`${u.callsign} (${u.role})`}
+                                    >
+                                      {u.callsign}
+                                      {u.reversing ? ' REV' : ''}
+                                    </button>
+                                  ))
+                                ) : (
+                                  <span className="text-[10px] text-amber-300">
+                                    Awaiting unit
+                                  </span>
+                                )}
+                              </div>
+
+                              <button
+                                type="button"
+                                disabled={!caseCanBackup}
+                                onClick={() => onRequestBackup(crime.id)}
+                                className={`shrink-0 border px-1.5 py-0 text-[10px] font-medium rounded-none ${
+                                  caseCanBackup
+                                    ? 'border-blue-400/70 bg-blue-600/35 text-blue-100 hover:bg-blue-600/60 cursor-pointer'
+                                    : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                                }`}
+                              >
+                                +Backup
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="ui-subpanel p-2 space-y-1.5">
@@ -497,6 +658,9 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                       { mode: LightbarMode.LED, label: 'LED' },
                       { mode: LightbarMode.FlashingHalogen, label: 'Halogen' },
                       { mode: LightbarMode.RotatingHalogen, label: 'Rotator' },
+                      { mode: LightbarMode.VectorPods, label: 'Vector V' },
+                      { mode: LightbarMode.VisorStealth, label: 'Visor' },
+                      { mode: LightbarMode.MiniBeacon, label: 'Mini Pod' },
                     ].map((item) => (
                       <button
                         key={item.mode}
@@ -636,6 +800,53 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                     Speed {snapshot.simSpeed}x
                   </button>
                 </div>
+
+                <div className="ui-subpanel p-2 space-y-2">
+                  <label className="block space-y-1">
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-zinc-300">Audio Volume</span>
+                      <span className="font-mono-tabular text-zinc-100">
+                        {Math.round(snapshot.audioVolume * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={Math.round(snapshot.audioVolume * 100)}
+                      onChange={(e) => onSetAudioVolume(Number(e.target.value) / 100)}
+                      className="sharp-slider w-full"
+                    />
+                  </label>
+
+                  <label className="block space-y-1">
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-zinc-300">Crash Intensity</span>
+                      <span className="font-mono-tabular text-zinc-100">
+                        {Math.round(snapshot.crashIntensity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={50}
+                      max={150}
+                      step={10}
+                      value={Math.round(snapshot.crashIntensity * 100)}
+                      onChange={(e) => onSetCrashIntensity(Number(e.target.value) / 100)}
+                      className="sharp-slider w-full"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between text-[11px] text-zinc-300 cursor-pointer">
+                    <span>Debris Road Hitboxes</span>
+                    <input
+                      type="checkbox"
+                      checked={snapshot.debrisObstacles}
+                      onChange={(e) => onSetDebrisObstacles(e.target.checked)}
+                    />
+                  </label>
+                </div>
               </div>
             )}
 
@@ -650,6 +861,8 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                 onOpenErrorDialog={onOpenErrorDialog}
               />
             )}
+
+            {activePane === 'devtools' && <DevToolsPane {...devTools} />}
           </div>
         </aside>
       )}

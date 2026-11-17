@@ -271,21 +271,83 @@ function renderLayer(
       ctx.fillText(layer.subtitle, textCenterX, 100);
       break;
     }
+    case 'road_sign_plate': {
+      const bg = layer.bgColor ?? '#dc2626';
+      const border = layer.borderColor ?? '#ffffff';
+      const fg = layer.textColor ?? '#ffffff';
+      ctx.clearRect(0, 0, width, height);
+      const cx = width * 0.5;
+      const cy = height * 0.5;
+      const r = Math.min(width, height) * 0.44;
+
+      ctx.save();
+      ctx.beginPath();
+      if (layer.shape === 'octagon') {
+        for (let i = 0; i < 8; i++) {
+          const ang = (i * Math.PI) / 4 + Math.PI / 8;
+          const px = cx + Math.cos(ang) * r;
+          const py = cy + Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+      } else if (layer.shape === 'triangle') {
+        ctx.moveTo(cx - r, cy - r * 0.78);
+        ctx.lineTo(cx + r, cy - r * 0.78);
+        ctx.lineTo(cx, cy + r * 0.92);
+        ctx.closePath();
+      } else if (layer.shape === 'circle') {
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      } else {
+        ctx.rect(8, 8, width - 16, height - 16);
+      }
+      ctx.fillStyle = bg;
+      ctx.fill();
+      ctx.lineWidth = Math.max(6, Math.round(Math.min(width, height) * 0.045));
+      ctx.strokeStyle = border;
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = fg;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const hasSub = Boolean(layer.subtitle && layer.subtitle.trim().length > 0);
+      const titleFontSize = Math.round(
+        Math.min(width, height) * (layer.title.length > 7 ? 0.16 : 0.24),
+      );
+      ctx.font = `900 ${titleFontSize}px sans-serif`;
+      ctx.fillText(layer.title, cx, hasSub ? cy - titleFontSize * 0.38 : cy);
+      if (hasSub && layer.subtitle) {
+        const subFontSize = Math.max(14, Math.round(titleFontSize * 0.58));
+        ctx.font = `700 ${subFontSize}px monospace`;
+        ctx.fillText(layer.subtitle, cx, cy + subFontSize * 0.95);
+      }
+      break;
+    }
   }
+}
+
+export function renderJsonTextureToCanvas(
+  asset: ProceduralTextureAsset,
+  targetCanvas?: HTMLCanvasElement,
+): HTMLCanvasElement {
+  const canvas = targetCanvas ?? document.createElement('canvas');
+  canvas.width = Math.max(16, Math.min(2048, asset.width));
+  canvas.height = Math.max(16, Math.min(2048, asset.height));
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const layer of asset.layers) {
+    renderLayer(ctx, asset, layer);
+  }
+  return canvas;
 }
 
 export function renderJsonTexture(
   asset: ProceduralTextureAsset,
   maxDeviceAnisotropy: number,
 ): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = asset.width;
-  canvas.height = asset.height;
-  const ctx = canvas.getContext('2d')!;
-
-  for (const layer of asset.layers) {
-    renderLayer(ctx, asset, layer);
-  }
+  const canvas = renderJsonTextureToCanvas(asset);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace =
