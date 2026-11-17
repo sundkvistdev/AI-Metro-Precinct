@@ -5,6 +5,10 @@
     --font-display: 'Chakra Petch', sans-serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --ui-bg: #272b33;
+    --ui-surface: #323741;
+    --ui-surface-hover: #3d4350;
+    --ui-border: #4c5362;
   }
 
   html,
@@ -16,6 +20,7 @@
     padding: 0;
     overflow: hidden;
     font-family: var(--font-sans);
+    background-color: var(--ui-bg);
   }
 }
 
@@ -26,4 +31,45 @@
 .font-mono-tabular {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+.ui-panel {
+  background-color: rgba(39, 43, 51, 0.94);
+  border: 1px solid var(--ui-border);
+  border-radius: 0;
+}
+
+.ui-subpanel {
+  background-color: rgba(50, 55, 65, 0.9);
+  border: 1px solid #454b59;
+  border-radius: 0;
+}
+
+input[type='range'].sharp-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #4b5262;
+  border-radius: 0;
+  outline: none;
+}
+
+input[type='range'].sharp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 14px;
+  background: #e4e4e7;
+  border: 1px solid #18181b;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+input[type='range'].sharp-slider::-moz-range-thumb {
+  width: 10px;
+  height: 14px;
+  background: #e4e4e7;
+  border: 1px solid #18181b;
+  border-radius: 0;
+  cursor: pointer;
 }

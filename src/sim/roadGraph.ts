@@ -1,56 +1,77 @@
 import * as THREE from 'three';
-import { PoliceLiveryId, PoliceVehicleKind, WeaponKind } from './types';
+import { EngineConfigAsset } from '../assets/assetTypes';
 
-/**
- * 400m x 400m Small Town Grid (-200..+200)
- * 5 North-South Avenues and 5 East-West Streets at:
- * [-150, -75, 0, 75, 150]
- * Road width = 14m (±7m), lane center offset = 3.5m from road center.
- * Sidewalk ring = 7m..11m from road center (4m wide sidewalk).
- */
-export const ROAD_COORDS = [-150, -75, 0, 75, 150] as const;
-export const ROAD_WIDTH = 14;
-export const LANE_OFFSET = 3.5;
-export const SIDEWALK_WIDTH = 4.0;
-export const TOWN_HALF_SIZE = 200;
+export type WorldConfig = EngineConfigAsset['world'];
 
-const BLOCK_CENTERS = [-112.5, -37.5, 37.5, 112.5] as const;
-const BLOCK_HALF = (75 - ROAD_WIDTH) * 0.5; // 30.5m
+export function getSurfaceHeight(x: number, z: number, world: WorldConfig): number {
+  const {
+    roadCoords,
+    roadWidth,
+    townHalfSize,
+    blockCenters,
+    apronBounds,
+    parkBlock,
+    surfaceHeights,
+  } = world;
+  const blockHalf = (75 - roadWidth) * 0.5;
+  const roadHalf = roadWidth * 0.5;
 
-/**
- * Exact surface elevation at world (x, z) matching townBuilder slab/apron/road geometry
- * so dismounted officers, suspects, pedestrians, ragdolls, and parked units never sink.
- */
-export function getSurfaceHeight(x: number, z: number): number {
-  if (Math.abs(x) <= TOWN_HALF_SIZE && Math.abs(z) <= TOWN_HALF_SIZE) {
-    for (let i = 0; i < ROAD_COORDS.length; i++) {
-      const c = ROAD_COORDS[i];
-      if (Math.abs(x - c) <= ROAD_WIDTH * 0.5 || Math.abs(z - c) <= ROAD_WIDTH * 0.5) {
-        return 0.035;
+  if (Math.abs(x) <= townHalfSize && Math.abs(z) <= townHalfSize) {
+    for (let i = 0; i < roadCoords.length; i++) {
+      const c = roadCoords[i];
+      if (Math.abs(x - c) <= roadHalf || Math.abs(z - c) <= roadHalf) {
+        return surfaceHeights.road;
       }
     }
 
-    // Station concrete apron: BoxGeometry(24, 0.18, 58) centered at (-93, 0.09, -36)
-    if (x >= -105 && x <= -81 && z >= -65 && z <= -7) {
-      return 0.18;
+    if (
+      x >= apronBounds.minX &&
+      x <= apronBounds.maxX &&
+      z >= apronBounds.minZ &&
+      z <= apronBounds.maxZ
+    ) {
+      return surfaceHeights.apron;
     }
 
-    // Civic park inner lawn at block (2, 2) centered at (37.5, 37.5), half = 26.5
-    if (Math.abs(x - 37.5) <= 26.5 && Math.abs(z - 37.5) <= 26.5) {
-      return 0.21;
+    if (
+      Math.abs(x - parkBlock.centerX) <= parkBlock.innerHalf &&
+      Math.abs(z - parkBlock.centerZ) <= parkBlock.innerHalf
+    ) {
+      return surfaceHeights.park;
     }
 
-    for (let bx = 0; bx < BLOCK_CENTERS.length; bx++) {
-      if (Math.abs(x - BLOCK_CENTERS[bx]) <= BLOCK_HALF) {
-        for (let bz = 0; bz < BLOCK_CENTERS.length; bz++) {
-          if (Math.abs(z - BLOCK_CENTERS[bz]) <= BLOCK_HALF) {
-            return 0.14;
+    for (let bx = 0; bx < blockCenters.length; bx++) {
+      if (Math.abs(x - blockCenters[bx]) <= blockHalf) {
+        for (let bz = 0; bz < blockCenters.length; bz++) {
+          if (Math.abs(z - blockCenters[bz]) <= blockHalf) {
+            return surfaceHeights.sidewalk;
           }
         }
       }
     }
   }
-  return 0.0;
+  return surfaceHeights.terrain;
+}
+
+export function pruneLeadingWaypoints(
+  pos: THREE.Vector3,
+  yaw: number,
+  waypoints: THREE.Vector3[],
+): void {
+  const fwdX = Math.sin(yaw);
+  const fwdZ = Math.cos(yaw);
+  while (waypoints.length > 1) {
+    const wp = waypoints[0];
+    const dx = wp.x - pos.x;
+    const dz = wp.z - pos.z;
+    const dist = Math.hypot(dx, dz);
+    const dot = dx * fwdX + dz * fwdZ;
+    if (dist < 5.5 || (dist < 20 && dot < 2.0)) {
+      waypoints.shift();
+    } else {
+      break;
+    }
+  }
 }
 
 export interface RoadNode {
@@ -62,19 +83,6 @@ export interface RoadNode {
   neighbors: number[];
 }
 
-export interface StationBay {
-  id: string;
-  callsign: string;
-  vehicleKind: PoliceVehicleKind;
-  liveryId: PoliceLiveryId;
-  weaponKind: WeaponKind;
-  isHeavyUnit: boolean;
-  parkPos: THREE.Vector3;
-  parkYaw: number;
-  exitRoadNodeId: number;
-  exitPoint: THREE.Vector3;
-}
-
 export interface CrimeSpot {
   x: number;
   z: number;
@@ -84,119 +92,15 @@ export interface CrimeSpot {
   roadPullOverYaw: number;
 }
 
-export const STATION_BOUNDS = {
-  minX: -138,
-  maxX: -88,
-  minZ: -63,
-  maxZ: -13,
-  centerX: -113,
-  centerZ: -38,
-};
-
-export const STATION_BAYS: StationBay[] = [
-  {
-    id: 'unit-1',
-    callsign: 'UNIT 101',
-    vehicleKind: 'sedan',
-    liveryId: 'classic_bw',
-    weaponKind: 'pistol',
-    isHeavyUnit: false,
-    parkPos: new THREE.Vector3(-92, 0.18, -58),
-    parkYaw: Math.PI / 2,
-    exitRoadNodeId: 6,
-    exitPoint: new THREE.Vector3(-75, 0.035, -58),
-  },
-  {
-    id: 'unit-2',
-    callsign: 'UNIT 102',
-    vehicleKind: 'suv',
-    liveryId: 'navy_silver',
-    weaponKind: 'rifle',
-    isHeavyUnit: false,
-    parkPos: new THREE.Vector3(-92, 0.18, -50),
-    parkYaw: Math.PI / 2,
-    exitRoadNodeId: 6,
-    exitPoint: new THREE.Vector3(-75, 0.035, -50),
-  },
-  {
-    id: 'unit-3',
-    callsign: 'UNIT 103',
-    vehicleKind: 'sedan',
-    liveryId: 'forest_cream',
-    weaponKind: 'pistol',
-    isHeavyUnit: false,
-    parkPos: new THREE.Vector3(-92, 0.18, -42),
-    parkYaw: Math.PI / 2,
-    exitRoadNodeId: 7,
-    exitPoint: new THREE.Vector3(-75, 0.035, -42),
-  },
-  {
-    id: 'unit-4',
-    callsign: 'UNIT 104',
-    vehicleKind: 'suv',
-    liveryId: 'slate_cobalt',
-    weaponKind: 'rifle',
-    isHeavyUnit: false,
-    parkPos: new THREE.Vector3(-92, 0.18, -34),
-    parkYaw: Math.PI / 2,
-    exitRoadNodeId: 7,
-    exitPoint: new THREE.Vector3(-75, 0.035, -34),
-  },
-  {
-    id: 'unit-5',
-    callsign: 'VAN 205',
-    vehicleKind: 'van',
-    liveryId: 'transport_blue',
-    weaponKind: 'pistol',
-    isHeavyUnit: false,
-    parkPos: new THREE.Vector3(-92, 0.18, -26),
-    parkYaw: Math.PI / 2,
-    exitRoadNodeId: 7,
-    exitPoint: new THREE.Vector3(-75, 0.035, -26),
-  },
-  {
-    id: 'unit-6',
-    callsign: 'SWAT 301',
-    vehicleKind: 'van',
-    liveryId: 'tactical_swat',
-    weaponKind: 'rifle',
-    isHeavyUnit: true,
-    parkPos: new THREE.Vector3(-92, 0.18, -18),
-    parkYaw: Math.PI / 2,
-    exitRoadNodeId: 7,
-    exitPoint: new THREE.Vector3(-75, 0.035, -18),
-  },
-  {
-    id: 'unit-7',
-    callsign: 'APC 401',
-    vehicleKind: 'apc',
-    liveryId: 'tactical_swat',
-    weaponKind: 'rifle',
-    isHeavyUnit: true,
-    parkPos: new THREE.Vector3(-92, 0.18, -10),
-    parkYaw: Math.PI / 2,
-    exitRoadNodeId: 7,
-    exitPoint: new THREE.Vector3(-75, 0.035, -10),
-  },
-];
-
-export const DISTRICTS = [
-  'North Market',
-  'Civic Plaza',
-  'Oakwood Flats',
-  'Station Row',
-  'Midtown Arcade',
-  'Eastgate Lofts',
-  'South Commerce',
-  'Harbor Terrace',
-];
-
 export class TownRoadGraph {
+  public readonly world: WorldConfig;
   public readonly nodes: RoadNode[] = [];
   public readonly gridToNode = new Map<string, number>();
 
-  constructor() {
-    const n = ROAD_COORDS.length;
+  constructor(world: WorldConfig) {
+    this.world = world;
+    const coords = world.roadCoords;
+    const n = coords.length;
     for (let gx = 0; gx < n; gx++) {
       for (let gz = 0; gz < n; gz++) {
         const id = this.nodes.length;
@@ -204,8 +108,8 @@ export class TownRoadGraph {
           id,
           gx,
           gz,
-          x: ROAD_COORDS[gx],
-          z: ROAD_COORDS[gz],
+          x: coords[gx],
+          z: coords[gz],
           neighbors: [],
         });
         this.gridToNode.set(`${gx},${gz}`, id);
@@ -252,9 +156,13 @@ export class TownRoadGraph {
     point: THREE.Vector3;
     nearestNode: RoadNode;
   } {
-    let bestRoadX = ROAD_COORDS[0] as number;
+    const coords = this.world.roadCoords;
+    const minCoord = coords[0];
+    const maxCoord = coords[coords.length - 1];
+
+    let bestRoadX = coords[0];
     let minDx = Infinity;
-    for (const rx of ROAD_COORDS) {
+    for (const rx of coords) {
       const d = Math.abs(x - rx);
       if (d < minDx) {
         minDx = d;
@@ -262,9 +170,9 @@ export class TownRoadGraph {
       }
     }
 
-    let bestRoadZ = ROAD_COORDS[0] as number;
+    let bestRoadZ = coords[0];
     let minDz = Infinity;
-    for (const rz of ROAD_COORDS) {
+    for (const rz of coords) {
       const d = Math.abs(z - rz);
       if (d < minDz) {
         minDz = d;
@@ -274,8 +182,8 @@ export class TownRoadGraph {
 
     const pt =
       minDx <= minDz
-        ? new THREE.Vector3(bestRoadX, 0, THREE.MathUtils.clamp(z, -150, 150))
-        : new THREE.Vector3(THREE.MathUtils.clamp(x, -150, 150), 0, bestRoadZ);
+        ? new THREE.Vector3(bestRoadX, 0, THREE.MathUtils.clamp(z, minCoord, maxCoord))
+        : new THREE.Vector3(THREE.MathUtils.clamp(x, minCoord, maxCoord), 0, bestRoadZ);
 
     return {
       point: pt,
@@ -351,7 +259,7 @@ export class TownRoadGraph {
         : [new THREE.Vector3(nodePath[0].x, 0, nodePath[0].z)];
     }
 
-    const offset = aggressive ? LANE_OFFSET * 0.78 : LANE_OFFSET;
+    const offset = aggressive ? this.world.laneOffset * 0.78 : this.world.laneOffset;
     const waypoints: THREE.Vector3[] = [];
 
     for (let i = 0; i < nodePath.length - 1; i++) {
@@ -402,43 +310,66 @@ export class TownRoadGraph {
 
   public generateRandomCrimeSpot(rng: () => number = Math.random): CrimeSpot {
     const candidates: CrimeSpot[] = [];
+    const { roadCoords, roadWidth, laneOffset, districts, stationBounds } = this.world;
 
-    for (let gx = 0; gx < ROAD_COORDS.length; gx++) {
-      for (let gz = 0; gz < ROAD_COORDS.length; gz++) {
-        if (gx < ROAD_COORDS.length - 1) {
-          const x1 = ROAD_COORDS[gx];
-          const x2 = ROAD_COORDS[gx + 1];
-          const z = ROAD_COORDS[gz];
+    for (let gx = 0; gx < roadCoords.length; gx++) {
+      for (let gz = 0; gz < roadCoords.length; gz++) {
+        if (gx < roadCoords.length - 1) {
+          const x1 = roadCoords[gx];
+          const x2 = roadCoords[gx + 1];
+          const z = roadCoords[gz];
           const midX = (x1 + x2) * 0.5 + (rng() - 0.5) * 26;
           const side = rng() < 0.5 ? 1 : -1;
-          const crimeZ = z + side * (ROAD_WIDTH * 0.5 + 2.4);
-          if (!(midX > -145 && midX < -70 && crimeZ > -70 && crimeZ < -5)) {
-            const roadPullOverPos = new THREE.Vector3(midX, 0, z + side * (LANE_OFFSET + 1.0));
+          const crimeZ = z + side * (roadWidth * 0.5 + 2.4);
+          if (
+            !(
+              midX > stationBounds.minX - 7 &&
+              midX < stationBounds.maxX + 18 &&
+              crimeZ > stationBounds.minZ - 7 &&
+              crimeZ < stationBounds.maxZ + 8
+            )
+          ) {
+            const roadPullOverPos = new THREE.Vector3(
+              midX,
+              0,
+              z + side * (laneOffset + 1.0),
+            );
             const nearest = side > 0 ? this.getNodeAt(gx, gz) : this.getNodeAt(gx + 1, gz);
             candidates.push({
               x: midX,
               z: crimeZ,
-              district: DISTRICTS[(gx * 3 + gz * 5) % DISTRICTS.length],
+              district: districts[(gx * 3 + gz * 5) % districts.length],
               nearestNodeId: nearest.id,
               roadPullOverPos,
               roadPullOverYaw: side > 0 ? Math.PI / 2 : -Math.PI / 2,
             });
           }
         }
-        if (gz < ROAD_COORDS.length - 1) {
-          const x = ROAD_COORDS[gx];
-          const z1 = ROAD_COORDS[gz];
-          const z2 = ROAD_COORDS[gz + 1];
+        if (gz < roadCoords.length - 1) {
+          const x = roadCoords[gx];
+          const z1 = roadCoords[gz];
+          const z2 = roadCoords[gz + 1];
           const midZ = (z1 + z2) * 0.5 + (rng() - 0.5) * 26;
           const side = rng() < 0.5 ? 1 : -1;
-          const crimeX = x + side * (ROAD_WIDTH * 0.5 + 2.4);
-          if (!(crimeX > -145 && crimeX < -70 && midZ > -70 && midZ < -5)) {
-            const roadPullOverPos = new THREE.Vector3(x + side * (LANE_OFFSET + 1.0), 0, midZ);
+          const crimeX = x + side * (roadWidth * 0.5 + 2.4);
+          if (
+            !(
+              crimeX > stationBounds.minX - 7 &&
+              crimeX < stationBounds.maxX + 18 &&
+              midZ > stationBounds.minZ - 7 &&
+              midZ < stationBounds.maxZ + 8
+            )
+          ) {
+            const roadPullOverPos = new THREE.Vector3(
+              x + side * (laneOffset + 1.0),
+              0,
+              midZ,
+            );
             const nearest = side < 0 ? this.getNodeAt(gx, gz) : this.getNodeAt(gx, gz + 1);
             candidates.push({
               x: crimeX,
               z: midZ,
-              district: DISTRICTS[(gx * 5 + gz * 2 + 1) % DISTRICTS.length],
+              district: districts[(gx * 5 + gz * 2 + 1) % districts.length],
               nearestNodeId: nearest.id,
               roadPullOverPos,
               roadPullOverYaw: side < 0 ? 0 : Math.PI,

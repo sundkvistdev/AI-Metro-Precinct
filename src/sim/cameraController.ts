@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EngineConfigAsset } from '../assets/assetTypes';
 import { PoliceUnit } from './simActors';
 import { CameraMode } from './types';
+
+export type CameraConfig = EngineConfigAsset['camera'];
 
 const _v1 = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
@@ -24,6 +27,7 @@ export class SimCameraController {
   public readonly controls: OrbitControls;
   public mode: CameraMode = CameraMode.Overview;
 
+  private config: CameraConfig;
   private domElement: HTMLElement;
   private callbacks: CameraControllerCallbacks;
   private cameraNeedsSnap = false;
@@ -41,24 +45,31 @@ export class SimCameraController {
     container: HTMLElement,
     domElement: HTMLElement,
     isSoftwareGl: boolean,
+    initialConfig: CameraConfig,
     callbacks: CameraControllerCallbacks,
   ) {
     this.domElement = domElement;
+    this.config = initialConfig;
     this.callbacks = callbacks;
 
     const aspect =
       (container.clientWidth || window.innerWidth) /
       (container.clientHeight || window.innerHeight);
-    this.camera = new THREE.PerspectiveCamera(50, aspect, 0.4, 900);
-    this.camera.position.set(-148, 62, 54);
+    this.camera = new THREE.PerspectiveCamera(
+      initialConfig.fov,
+      aspect,
+      initialConfig.near,
+      initialConfig.far,
+    );
+    this.camera.position.set(...initialConfig.overviewPos);
 
     this.controls = new OrbitControls(this.camera, domElement);
     this.controls.enableDamping = !isSoftwareGl;
     this.controls.dampingFactor = 0.08;
     this.controls.maxPolarAngle = Math.PI * 0.485;
-    this.controls.minDistance = 4;
-    this.controls.maxDistance = 340;
-    this.controls.target.set(-35, 0, -15);
+    this.controls.minDistance = initialConfig.minDistance;
+    this.controls.maxDistance = initialConfig.maxDistance;
+    this.controls.target.set(...initialConfig.overviewTarget);
     this.controls.addEventListener('start', () => {
       this.userOrbiting = true;
     });
@@ -73,6 +84,16 @@ export class SimCameraController {
     window.addEventListener('pointermove', this.handlePointerMove);
     window.addEventListener('pointerup', this.handlePointerUp);
     domElement.addEventListener('wheel', this.handleWheel, { passive: false });
+  }
+
+  public applyConfig(cfg: CameraConfig): void {
+    this.config = cfg;
+    this.camera.fov = cfg.fov;
+    this.camera.near = cfg.near;
+    this.camera.far = cfg.far;
+    this.camera.updateProjectionMatrix();
+    this.controls.minDistance = cfg.minDistance;
+    this.controls.maxDistance = cfg.maxDistance;
   }
 
   public resize(width: number, height: number): void {
@@ -111,8 +132,8 @@ export class SimCameraController {
   public resetView(): void {
     this.mode = CameraMode.Overview;
     this.controls.enabled = true;
-    this.controls.target.set(-35, 0, -15);
-    this.camera.position.set(-148, 62, 54);
+    this.controls.target.set(...this.config.overviewTarget);
+    this.camera.position.set(...this.config.overviewPos);
     this.controls.update();
   }
 
@@ -158,7 +179,7 @@ export class SimCameraController {
       this.camera.getWorldDirection(_fwd);
       _right.crossVectors(_fwd, this.camera.up).normalize();
 
-      const flySpeed = 38 * speedMult * dt;
+      const flySpeed = this.config.freeFlySpeed * speedMult * dt;
       if (moveFwd !== 0) this.camera.position.addScaledVector(_fwd, moveFwd * flySpeed);
       if (moveRight !== 0) this.camera.position.addScaledVector(_right, moveRight * flySpeed);
       if (moveVert !== 0) this.camera.position.y += moveVert * flySpeed * 0.75;
@@ -178,7 +199,7 @@ export class SimCameraController {
         _right.crossVectors(_fwd, this.camera.up).normalize();
 
         const altScale = THREE.MathUtils.clamp(this.camera.position.y / 45, 0.45, 2.2);
-        const panSpeed = 48 * altScale * speedMult * dt;
+        const panSpeed = this.config.overviewPanSpeed * altScale * speedMult * dt;
 
         if (moveFwd !== 0) {
           this.camera.position.addScaledVector(_fwd, moveFwd * panSpeed);

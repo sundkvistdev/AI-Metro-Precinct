@@ -9,6 +9,49 @@ export interface BuiltJsonModel {
   root: THREE.Group;
   materials: Record<string, THREE.Material>;
   tags: Record<string, THREE.Object3D[]>;
+  isFallbackCube?: boolean;
+}
+
+export function buildMagentaCubeModel(
+  modelId: string,
+  size: [number, number, number] = [1.5, 1.5, 1.5],
+): BuiltJsonModel {
+  const root = new THREE.Group();
+  root.name = `missing_model_${modelId}`;
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xff00ff,
+    emissive: 0x660066,
+    emissiveIntensity: 0.45,
+    roughness: 0.65,
+    metalness: 0.0,
+  });
+
+  const cube = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), mat);
+  cube.position.y = size[1] * 0.5;
+  cube.castShadow = true;
+  cube.receiveShadow = true;
+  root.add(cube);
+
+  return {
+    root,
+    materials: { fallbackMagenta: mat },
+    tags: {},
+    isFallbackCube: true,
+  };
+}
+
+function resolveTextureOrFallback(
+  ref: string | undefined,
+  textureMap: Record<string, THREE.Texture>,
+  fallbackTexture?: THREE.Texture,
+  onMissingTexture?: (ref: string) => void,
+): THREE.Texture | undefined {
+  if (!ref) return undefined;
+  const found = textureMap[ref];
+  if (found) return found;
+  onMissingTexture?.(ref);
+  return fallbackTexture;
 }
 
 function buildMaterial(
@@ -17,6 +60,8 @@ function buildMaterial(
   colorOverrides?: Record<string, number>,
   matKey?: string,
   textureOverrides?: Record<string, string>,
+  fallbackTexture?: THREE.Texture,
+  onMissingTexture?: (ref: string) => void,
 ): THREE.Material {
   const colorVal =
     matKey && colorOverrides && colorOverrides[matKey] !== undefined
@@ -27,10 +72,18 @@ function buildMaterial(
     matKey && textureOverrides && textureOverrides[matKey]
       ? textureOverrides[matKey]
       : def.textureRef;
-  const mapTex = texRef ? textureMap[texRef] : undefined;
-  const emissiveMapTex = def.emissiveTextureRef
-    ? textureMap[def.emissiveTextureRef]
-    : undefined;
+  const mapTex = resolveTextureOrFallback(
+    texRef,
+    textureMap,
+    fallbackTexture,
+    onMissingTexture,
+  );
+  const emissiveMapTex = resolveTextureOrFallback(
+    def.emissiveTextureRef,
+    textureMap,
+    fallbackTexture,
+    onMissingTexture,
+  );
 
   if (def.type === 'basic') {
     return new THREE.MeshBasicMaterial({
@@ -106,7 +159,7 @@ function buildPart(
 
     const mat =
       (part.materialRef && materials[part.materialRef]) ||
-      new THREE.MeshStandardMaterial({ color: 0xffffff });
+      new THREE.MeshStandardMaterial({ color: 0xff00ff });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = Boolean(part.castShadow);
     mesh.receiveShadow = Boolean(part.receiveShadow);
@@ -143,13 +196,23 @@ export function buildJsonModel(
   textureMap: Record<string, THREE.Texture>,
   colorOverrides?: Record<string, number>,
   textureOverrides?: Record<string, string>,
+  fallbackTexture?: THREE.Texture,
+  onMissingTexture?: (ref: string) => void,
 ): BuiltJsonModel {
   const root = new THREE.Group();
   root.name = asset.id;
 
   const materials: Record<string, THREE.Material> = {};
   for (const [key, def] of Object.entries(asset.materials)) {
-    materials[key] = buildMaterial(def, textureMap, colorOverrides, key, textureOverrides);
+    materials[key] = buildMaterial(
+      def,
+      textureMap,
+      colorOverrides,
+      key,
+      textureOverrides,
+      fallbackTexture,
+      onMissingTexture,
+    );
   }
 
   const tags: Record<string, THREE.Object3D[]> = {};

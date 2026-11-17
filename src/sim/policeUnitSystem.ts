@@ -1,6 +1,11 @@
 import * as THREE from 'three';
-import { LoadedJsonAssets } from '../assets/assetTypes';
+import {
+  AssetIssue,
+  EngineConfigAsset,
+  LoadedJsonAssets,
+} from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
+import { TextureRegistry } from '../assets/textureRegistry';
 import { StaticObstacleBVH } from './bvh';
 import { CombatSystem } from './combatSystem';
 import {
@@ -8,12 +13,13 @@ import {
   computeAvoidanceSteerAndSpeed,
   computePurePursuitLookahead,
 } from './drivingAvoidance';
+import { updateLightbarVisuals } from './lightbarSystem';
 import {
   getSurfaceHeight,
-  LANE_OFFSET,
-  STATION_BAYS,
+  pruneLeadingWaypoints,
   TownRoadGraph,
 } from './roadGraph';
+import { SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
   CivilianVehicle,
@@ -21,20 +27,15 @@ import {
   PedestrianActor,
   PoliceUnit,
 } from './simActors';
-import { ProceduralTexturePack } from './textures';
 import {
   DrivingMode,
   LightbarMode,
   UnitStatus,
   WeatherCondition,
 } from './types';
+import { createHumanoid, createPoliceCruiser } from './vehicleModels';
 import {
-  createHumanoid,
-  createPoliceCruiser,
-  updateLightbarVisuals,
-  VEHICLE_BASE_COLOR_PALETTE,
-} from './vehicleModels';
-import {
+  applyVehicleWheelVisuals,
   createVehicleDynState,
   normalizeAngle,
   stepVehicleDynamics,
@@ -54,93 +55,57 @@ export function resetOfficerPose(off: OfficerActor, yaw: number): void {
   if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
 }
 
-export function applyVehicleWheelVisuals(
-  wheels: THREE.Group[],
-  frontWheels: THREE.Group[] | undefined,
-  speed: number,
-  steerAngle: number,
-  radius: number,
-  dt: number,
-): void {
-  const baseSpin = (speed * dt) / radius;
-  for (const w of wheels) {
-    const bent = (w.userData.bentAmount as number) || 0;
-    w.rotation.z = bent;
-    const spinScale = bent !== 0 ? Math.max(0.35, 1 - Math.abs(bent) * 2.2) : 1;
-    w.rotation.x += baseSpin * spinScale;
-  }
-  if (frontWheels) {
-    for (const fw of frontWheels) {
-      fw.rotation.y = steerAngle;
-    }
-  }
-}
-
-export function pruneLeadingWaypoints(
-  pos: THREE.Vector3,
-  yaw: number,
-  waypoints: THREE.Vector3[],
-): void {
-  const fwdX = Math.sin(yaw);
-  const fwdZ = Math.cos(yaw);
-  while (waypoints.length > 1) {
-    const wp = waypoints[0];
-    const dx = wp.x - pos.x;
-    const dz = wp.z - pos.z;
-    const dist = Math.hypot(dx, dz);
-    const dot = dx * fwdX + dz * fwdZ;
-    if (dist < 5.5 || (dist < 20 && dot < 2.0)) {
-      waypoints.shift();
-    } else {
-      break;
-    }
-  }
-}
-
 export function spawnPoliceUnits(
-  scene: THREE.Scene,
+  hierarchy: SceneWorldHierarchy,
+  config: EngineConfigAsset,
   assets: LoadedJsonAssets,
-  textures: ProceduralTexturePack,
+  textures: TextureRegistry,
   isSoftwareGl: boolean,
   rng: () => number,
   clickables: THREE.Object3D[],
+  onAssetIssue?: (issue: AssetIssue) => void,
 ): PoliceUnit[] {
   const units: PoliceUnit[] = [];
+  const palette = config.vehicles.paintPalette;
+  const stationBays = config.vehicles.stationBays;
 
-  STATION_BAYS.forEach((bay, idx) => {
-    const baseSwatch =
-      VEHICLE_BASE_COLOR_PALETTE[
-        Math.floor(Math.random() * VEHICLE_BASE_COLOR_PALETTE.length)
-      ];
-    const baseColorHex = baseSwatch.hex;
+  stationBays.forEach((bay, idx) => {
+    const baseSwatch = palette[Math.floor(rng() * palette.length)] ?? palette[0];
+    const baseColorHex = parseInt(baseSwatch.color.replace('#', ''), 16);
+    const parkPos = new THREE.Vector3(...bay.parkPos);
+
     const rig = createPoliceCruiser(
       idx + 1,
       bay.vehicleKind,
       bay.liveryId,
+      config.vehicles,
       assets,
       textures,
       isSoftwareGl,
       baseColorHex,
+      onAssetIssue,
     );
-    rig.root.position.copy(bay.parkPos);
+    rig.root.position.copy(parkPos);
     rig.root.rotation.y = bay.parkYaw;
-    scene.add(rig.root);
+    hierarchy.entities.police.add(rig.root);
     clickables.push(rig.clickableMesh);
 
     const maxHp = bay.vehicleKind === 'apc' ? 185 : bay.isHeavyUnit ? 160 : 100;
     const maxArmor = bay.vehicleKind === 'apc' ? 150 : bay.isHeavyUnit ? 120 : 45;
-    const magSize = bay.weaponKind === 'rifle' ? 28 : 12;
+    const magSize = config.weapons[bay.weaponKind].magSize;
 
     const makeOfficer = (offsetZ: number, strafeSign: 1 | -1): OfficerActor => {
       const oRig = createHumanoid(
         bay.isHeavyUnit ? 'heavy_officer' : 'officer',
         assets,
         textures,
+        undefined,
+        onAssetIssue,
       );
       oRig.root.visible = false;
-      scene.add(oRig.root);
-      const startPos = bay.parkPos.clone().add(new THREE.Vector3(0, 0, offsetZ));
-      startPos.y = getSurfaceHeight(startPos.x, startPos.z);
+      hierarchy.entities.police.add(oRig.root);
+      const startPos = parkPos.clone().add(new THREE.Vector3(0, 0, offsetZ));
+      startPos.y = getSurfaceHeight(startPos.x, startPos.z, config.world);
       return {
         rig: oRig,
         pos: startPos,
@@ -170,28 +135,13 @@ export function spawnPoliceUnits(
       };
     };
 
-    const wheelRadius =
-      bay.vehicleKind === 'apc'
-        ? 0.48
-        : bay.vehicleKind === 'suv'
-        ? 0.4
-        : bay.vehicleKind === 'van'
-        ? 0.38
-        : 0.36;
-    const halfW =
-      bay.vehicleKind === 'apc' ? 1.12 : bay.vehicleKind === 'sedan' ? 0.99 : 1.03;
-    const halfL =
-      bay.vehicleKind === 'apc' ? 2.62 : bay.vehicleKind === 'van' ? 2.5 : 2.38;
+    const chassis = config.vehicles.chassis[bay.vehicleKind];
     const mass =
-      bay.vehicleKind === 'apc'
-        ? 2.65
-        : bay.vehicleKind === 'van'
-        ? 1.95
+      bay.isHeavyUnit && bay.vehicleKind === 'van'
+        ? chassis.mass
         : bay.isHeavyUnit
-        ? 1.85
-        : bay.vehicleKind === 'suv'
-        ? 1.65
-        : 1.4;
+        ? Math.max(chassis.mass, 1.85)
+        : chassis.mass;
 
     units.push({
       id: bay.id,
@@ -202,12 +152,12 @@ export function spawnPoliceUnits(
       baseColorHex,
       isHeavyUnit: bay.isHeavyUnit,
       weaponKind: bay.weaponKind,
-      wheelRadius,
-      halfW,
-      halfL,
+      wheelRadius: chassis.wheelRadius,
+      halfW: chassis.halfW,
+      halfL: chassis.halfL,
       mass,
       rig,
-      pos: bay.parkPos.clone(),
+      pos: parkPos.clone(),
       yaw: bay.parkYaw,
       speed: 0,
       dyn: createVehicleDynState(),
@@ -243,12 +193,17 @@ export function routeUnitToStation(
   unit: PoliceUnit,
   retreatMode: boolean,
   roadGraph: TownRoadGraph,
+  config: EngineConfigAsset,
 ): void {
+  const { laneOffset, roadCoords, surfaceHeights } = config.world;
+  const bay = config.vehicles.stationBays[unit.bayIndex];
+  const exitRoadX = roadCoords[1] ?? -75;
+
   unit.lightsActive = retreatMode;
   unit.sirensActive = retreatMode;
   unit.status = retreatMode ? UnitStatus.Retreating : UnitStatus.Returning;
   unit.avoidanceSteer = 0;
-  const bay = STATION_BAYS[unit.bayIndex];
+
   const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z);
   const pathN = roadGraph.findNodePath(entry.nearestNode.id, 6);
   const pathS = roadGraph.findNodePath(entry.nearestNode.id, 7);
@@ -259,8 +214,8 @@ export function routeUnitToStation(
   }
   wps.push(...roadGraph.buildLaneWaypoints(chosenPath, undefined, retreatMode));
   pruneLeadingWaypoints(unit.pos, unit.yaw, wps);
-  wps.push(new THREE.Vector3(-75 - LANE_OFFSET, 0.035, bay.parkPos.z));
-  wps.push(bay.parkPos.clone());
+  wps.push(new THREE.Vector3(exitRoadX - laneOffset, surfaceHeights.road, bay.parkPos[2]));
+  wps.push(new THREE.Vector3(...bay.parkPos));
   unit.waypoints = wps;
   unit.waypointIndex = 0;
 }
@@ -269,12 +224,17 @@ export function dispatchNearestUnit(
   crime: ActiveCrime,
   units: PoliceUnit[],
   roadGraph: TownRoadGraph,
+  config: EngineConfigAsset,
   drivingMode: DrivingMode,
   audio: JsonAudioSynth | null,
   isBackup = false,
   allowHeavy = false,
   specificUnitId?: string,
 ): boolean {
+  const { laneOffset, roadCoords, surfaceHeights, apronBounds } = config.world;
+  const exitRoadX = roadCoords[1] ?? -75;
+  const apronThresholdX = apronBounds.maxX + 1;
+
   const mountedAvailable = units.filter(
     (u) =>
       (allowHeavy ? u.isHeavyUnit : !u.isHeavyUnit) &&
@@ -344,15 +304,15 @@ export function dispatchNearestUnit(
   best.repathTimer = 0.75;
   best.avoidanceSteer = 0;
 
-  const bay = STATION_BAYS[best.bayIndex];
+  const bay = config.vehicles.stationBays[best.bayIndex];
   const isAggro = drivingMode === DrivingMode.Aggressive || best.isHeavyUnit;
   const wps: THREE.Vector3[] = [];
   const targetNodeId = crime.inVehiclePursuit ? crime.vehicleNextNodeId : crime.nearestNodeId;
 
   let routeStartNodeId: number;
-  if (best.pos.x < -80) {
-    const laneExitX = -75 + (crime.pos.z > best.pos.z ? -LANE_OFFSET : LANE_OFFSET);
-    wps.push(new THREE.Vector3(laneExitX, 0.035, bay.parkPos.z));
+  if (best.pos.x < apronThresholdX) {
+    const laneExitX = exitRoadX + (crime.pos.z > best.pos.z ? -laneOffset : laneOffset);
+    wps.push(new THREE.Vector3(laneExitX, surfaceHeights.road, bay.parkPos[2]));
     const pathN = roadGraph.findNodePath(6, targetNodeId);
     const pathS = roadGraph.findNodePath(7, targetNodeId);
     routeStartNodeId = pathN.length <= pathS.length ? 6 : 7;
@@ -377,7 +337,7 @@ export function dispatchNearestUnit(
 
   const nodePath = roadGraph.findNodePath(routeStartNodeId, targetNodeId);
   wps.push(...roadGraph.buildLaneWaypoints(nodePath, pullSpot, isAggro));
-  if (best.pos.x >= -80) {
+  if (best.pos.x >= apronThresholdX) {
     pruneLeadingWaypoints(best.pos, best.yaw, wps);
   }
 
@@ -388,77 +348,11 @@ export function dispatchNearestUnit(
   return true;
 }
 
-/**
- * Call backup ONLY on real officer duress/casualty, unit retreat, or prolonged active engagement
- * (never while the first cruiser is still driving calmly to the call).
- */
-export function shouldCallBackup(crime: ActiveCrime, units: PoliceUnit[]): boolean {
-  if (!crime.suspectAlive || crime.backupDispatched) return false;
-  const primary = crime.assignedUnitId
-    ? units.find((u) => u.id === crime.assignedUnitId)
-    : undefined;
-
-  if (!primary || primary.status === UnitStatus.Retreating) {
-    return true;
-  }
-
-  const officerUnderDuress = primary.officers.some(
-    (o) => o.hp <= 55 || o.ragdoll.active || o.cowardiceState === 'fleeing',
-  );
-  if (officerUnderDuress) return true;
-
-  if (crime.inVehiclePursuit) {
-    if (primary.damageSmokeTimer > 0 || primary.immobilized) return true;
-    return crime.engagedSec > 11.5 && crime.vehicleHp > 55 && crime.vehiclePinnedTimer <= 0.1;
-  }
-
-  return crime.engagedSec > 16.5 && crime.suspectHp > 50;
-}
-
-/**
- * Heavy tactical (SWAT 301) triggers ONLY when things go genuinely bad:
- * officer KIA/downed, a unit routed/retreating, >= 2 fleeing/critical officers, or prolonged fierce gunfight.
- */
-export function shouldDeployHeavyUnit(
-  crime: ActiveCrime,
-  units: PoliceUnit[],
-): boolean {
-  if (!crime.suspectAlive || crime.heavyDeployed) return false;
-
-  const swatAvailable = units.some(
-    (u) =>
-      u.isHeavyUnit &&
-      !u.immobilized &&
-      (u.status === UnitStatus.AtStation || u.status === UnitStatus.Returning),
-  );
-  if (!swatAvailable) return false;
-
-  let downedTotal = 0;
-  let fleeingOrCriticalTotal = 0;
-  let retreatingUnits = 0;
-
-  for (const u of units) {
-    if (u.isHeavyUnit) continue;
-    if (u.status === UnitStatus.Retreating) retreatingUnits++;
-    for (const o of u.officers) {
-      if (o.hp <= 0) downedTotal++;
-      if (o.cowardiceState === 'fleeing' || o.hp < 40) fleeingOrCriticalTotal++;
-    }
-  }
-
-  if (downedTotal > 0 || retreatingUnits > 0 || fleeingOrCriticalTotal >= 2) {
-    return true;
-  }
-  if (!crime.inVehiclePursuit && crime.engagedSec > 26.0 && crime.suspectHp > 38) {
-    return true;
-  }
-  return false;
-}
-
 export function dismountUnit(
   unit: PoliceUnit,
   cowardiceLevel: number,
   staticBvh: StaticObstacleBVH,
+  config: EngineConfigAsset,
   rng: () => number,
   freeRoam = false,
 ): void {
@@ -477,9 +371,8 @@ export function dismountUnit(
     unit.lightsActive = false;
     unit.sirensActive = false;
   } else {
-    // At crime scene: usually cut audible siren while leaving emergency lights active
     unit.lightsActive = true;
-    unit.sirensActive = rng() < 0.14;
+    unit.sirensActive = rng() < config.simulation.sirenKeepOnAtSceneChance;
   }
 
   const rightX = Math.cos(unit.yaw);
@@ -487,7 +380,6 @@ export function dismountUnit(
   const fwdX = Math.sin(unit.yaw);
   const fwdZ = Math.cos(unit.yaw);
 
-  // Spawn right at left/right door sills crouched so Dismounting animation steps them cleanly outward
   const sillOffsets: [number, number][] = [
     [0.92, 0.25],
     [-0.92, 0.25],
@@ -500,12 +392,12 @@ export function dismountUnit(
       unit.pos.z + rightZ * lx + fwdZ * lz,
     );
     staticBvh.resolveCircle(off.pos, 0.45);
-    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, config.world);
 
     off.yaw = idx === 0 ? unit.yaw + Math.PI * 0.45 : unit.yaw - Math.PI * 0.45;
     if (off.hp <= 0) off.hp = off.maxHp;
     if (off.armor <= 0) off.armor = off.maxArmor;
-    off.ammo = off.weaponKind === 'rifle' ? 28 : 12;
+    off.ammo = config.weapons[off.weaponKind].magSize;
     off.reloadTimer = 0;
     off.ragdoll.active = false;
     off.roamTarget = null;
@@ -532,10 +424,11 @@ export function dismountUnit(
 export interface PoliceUnitUpdateContext {
   units: PoliceUnit[];
   crimes: ActiveCrime[];
-  civilianCars: CivilianVehicle[];
   pedestrians: PedestrianActor[];
+  allVehicles: AvoidanceVehicleProxy[];
   roadGraph: TownRoadGraph;
   staticBvh: StaticObstacleBVH;
+  config: EngineConfigAsset;
   combat: CombatSystem;
   vfx: SimVfxManager;
   audio: JsonAudioSynth | null;
@@ -596,10 +489,11 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
   const {
     units,
     crimes,
-    civilianCars,
     pedestrians,
+    allVehicles,
     roadGraph,
     staticBvh,
+    config,
     combat,
     vfx,
     audio,
@@ -611,11 +505,12 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
     rng,
   } = ctx;
 
+  const world = config.world;
+  const apronThresholdX = world.apronBounds.maxX + 1;
   const isAggro = drivingMode === DrivingMode.Aggressive;
   const gripScale = weather === WeatherCondition.Rain ? 0.68 : 1.0;
   const haloBoost =
     weather === WeatherCondition.Rain || weather === WeatherCondition.HeavyFog ? 1.35 : 1.0;
-  const allVehicles = buildAllVehicleProxies(units, civilianCars, crimes);
 
   for (const unit of units) {
     updateLightbarVisuals(
@@ -652,7 +547,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       );
       for (const off of unit.officers) {
         if (off.ragdoll.active) {
-          stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, dt);
+          stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
         }
       }
       unit.rig.root.position.copy(unit.pos);
@@ -674,7 +569,6 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         ? crimes.find((c) => c.id === unit.targetCrimeId)
         : undefined;
 
-      // Immobilized cruiser stops accelerating, tilts on its broken axle, and dismounts if responding
       if (unit.immobilized) {
         const yawState = { yaw: unit.yaw, speed: unit.speed };
         stepVehicleDynamics(
@@ -703,7 +597,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         );
         unit.pos.y = THREE.MathUtils.damp(
           unit.pos.y,
-          getSurfaceHeight(unit.pos.x, unit.pos.z),
+          getSurfaceHeight(unit.pos.x, unit.pos.z, world),
           12,
           dt,
         );
@@ -712,7 +606,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           unit.speed < 1.3 &&
           (unit.status === UnitStatus.Responding || unit.status === UnitStatus.Pursuing)
         ) {
-          dismountUnit(unit, cowardiceLevel, staticBvh, rng, false);
+          dismountUnit(unit, cowardiceLevel, staticBvh, config, rng, false);
         }
         unit.rig.root.position.copy(unit.pos);
         unit.rig.root.rotation.y = unit.yaw;
@@ -722,18 +616,17 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       if (isPursuit && crime && !crime.inVehiclePursuit) {
         if (crime.suspectAlive) {
           if (unit.pos.distanceToSquared(crime.suspectPos) < 22 * 22) {
-            dismountUnit(unit, cowardiceLevel, staticBvh, rng);
+            dismountUnit(unit, cowardiceLevel, staticBvh, config, rng);
             continue;
           }
           unit.status = UnitStatus.Responding;
           unit.repathTimer = 0;
         } else {
           unit.targetCrimeId = null;
-          routeUnitToStation(unit, false, roadGraph);
+          routeUnitToStation(unit, false, roadGraph, config);
         }
       }
 
-      // Only dynamically repath active vehicle pursuits (or when waypoint list is empty), never rebuild stationary paths every second!
       if (
         (isPursuit || (unit.status === UnitStatus.Responding && unit.waypoints.length === 0)) &&
         crime &&
@@ -759,9 +652,9 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             const leadDist = distNow < 8 ? 0 : Math.min(8.5, distNow * 0.35);
             const leadX = crime.vehiclePos.x + Math.sin(crime.vehicleYaw) * leadDist;
             const leadZ = crime.vehiclePos.z + Math.cos(crime.vehicleYaw) * leadDist;
-            unit.waypoints = [new THREE.Vector3(leadX, 0.035, leadZ)];
+            unit.waypoints = [new THREE.Vector3(leadX, world.surfaceHeights.road, leadZ)];
             unit.waypointIndex = 0;
-          } else if (unit.pos.x > -80) {
+          } else if (unit.pos.x > apronThresholdX) {
             const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z);
             const goalNodeId = crime.inVehiclePursuit
               ? crime.vehicleNextNodeId
@@ -779,22 +672,17 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         }
       }
 
-      const chassisScale =
-        unit.vehicleKind === 'apc'
-          ? 0.78
-          : unit.vehicleKind === 'van'
-          ? 0.84
-          : unit.vehicleKind === 'suv'
-          ? 0.94
-          : 1.0;
-      const baseCruise = (isAggro || unit.isHeavyUnit ? 18.8 : isRetreat ? 16.8 : 12.6) * chassisScale;
+      const chassis = config.vehicles.chassis[unit.vehicleKind];
+      const baseCruise =
+        (isAggro || unit.isHeavyUnit ? 18.8 : isRetreat ? 16.8 : 12.6) * chassis.chassisScale;
       const maxCruise =
-        isPursuit || isSpikeIntercept ? Math.max(baseCruise, 21.4 * chassisScale) : baseCruise;
-      const maxAccel = (isAggro || isPursuit || isSpikeIntercept ? 9.8 : 6.0) * chassisScale;
+        isPursuit || isSpikeIntercept
+          ? Math.max(baseCruise, 21.4 * chassis.chassisScale)
+          : baseCruise;
+      const maxAccel = (isAggro || isPursuit || isSpikeIntercept ? 9.8 : 6.0) * chassis.chassisScale;
       const maxBrake = 11.8;
       const maxSteerRate =
-        (isAggro || isPursuit || isSpikeIntercept ? 2.55 : 1.85) *
-        (unit.vehicleKind === 'apc' ? 0.82 : unit.vehicleKind === 'van' ? 0.88 : 1.0);
+        (isAggro || isPursuit || isSpikeIntercept ? 2.55 : 1.85) * chassis.maxSteerScale;
 
       if (unit.waypointIndex >= unit.waypoints.length) {
         if (unit.status === UnitStatus.Responding) {
@@ -805,20 +693,19 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
               crime.assignedUnitId = null;
             }
             unit.targetCrimeId = null;
-            routeUnitToStation(unit, true, roadGraph);
+            routeUnitToStation(unit, true, roadGraph, config);
           } else {
-            dismountUnit(unit, cowardiceLevel, staticBvh, rng, false);
+            dismountUnit(unit, cowardiceLevel, staticBvh, config, rng, false);
           }
         } else if (unit.status === UnitStatus.Pursuing) {
           unit.repathTimer = 0;
         } else if (unit.status === UnitStatus.DeployingSpikes) {
-          // Hold stationary until nailMatSystem triggers dismount on arrival
           unit.speed = 0;
           unit.dyn.vx = 0;
           unit.dyn.vz = 0;
         } else {
-          const bay = STATION_BAYS[unit.bayIndex];
-          unit.pos.copy(bay.parkPos);
+          const bay = config.vehicles.stationBays[unit.bayIndex];
+          unit.pos.set(...bay.parkPos);
           unit.yaw = bay.parkYaw;
           unit.speed = 0;
           unit.dyn.vx = 0;
@@ -851,7 +738,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           unit.officers.forEach((o) => {
             o.hp = o.maxHp;
             o.armor = o.maxArmor;
-            o.ammo = o.weaponKind === 'rifle' ? 28 : 12;
+            o.ammo = config.weapons[o.weaponKind].magSize;
             o.morale = 100;
             o.cowardiceState = 'steady';
             o.ragdoll.active = false;
@@ -875,7 +762,6 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         ) {
           unit.waypointIndex++;
         } else {
-          // Pure pursuit lookahead for smooth cornering + avoid oscillating on close points
           const lookDist = isFinalWp ? dist : 8.5 + Math.min(4.5, unit.speed * 0.25);
           const aim = computePurePursuitLookahead(
             unit.pos,
@@ -952,7 +838,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           unit.speed = yawState.speed;
           unit.pos.y = THREE.MathUtils.damp(
             unit.pos.y,
-            getSurfaceHeight(unit.pos.x, unit.pos.z),
+            getSurfaceHeight(unit.pos.x, unit.pos.z, world),
             12,
             dt,
           );
@@ -984,7 +870,6 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       const fwdX = Math.sin(unit.yaw);
       const fwdZ = Math.cos(unit.yaw);
 
-      // Subtle door-exit suspension rock on vehicle chassis
       const targetTilt = unit.immobilized
         ? unit.immobilizeTilt
         : Math.sin(p * Math.PI) * 0.038;
@@ -1005,7 +890,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           unit.pos.z + rightZ * lat + fwdZ * fwd,
         );
         staticBvh.resolveCircle(off.pos, 0.45);
-        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
 
         off.yaw =
           unit.yaw + sideSign * THREE.MathUtils.lerp(Math.PI * 0.48, 0.25, ease);
@@ -1134,7 +1019,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
 
         if (off.hp <= 0) {
           if (off.ragdoll.active) {
-            stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, dt);
+            stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
           }
           if (!forceBoard) {
             allBack = false;
@@ -1147,12 +1032,12 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         }
 
         if (off.ragdoll.active) {
-          stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, dt);
+          stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
           off.ragdoll.recoverTimer -= dt * (unit.mountTimer > 2.5 ? 2.2 : 1.0);
           if (off.ragdoll.recoverTimer <= 0 || forceBoard) {
             off.ragdoll.active = false;
             off.hp = Math.max(off.hp, 40);
-            off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+            off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
             resetOfficerPose(off, off.yaw);
           } else {
             allBack = false;
@@ -1163,7 +1048,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         const sideSign = idx === 0 ? 1 : -1;
         const doorX = unit.pos.x + Math.cos(unit.yaw) * (1.3 * sideSign);
         const doorZ = unit.pos.z - Math.sin(unit.yaw) * (1.3 * sideSign);
-        _tmpDoorPos.set(doorX, getSurfaceHeight(doorX, doorZ), doorZ);
+        _tmpDoorPos.set(doorX, getSurfaceHeight(doorX, doorZ, world), doorZ);
         staticBvh.resolveCircle(_tmpDoorPos, 0.45);
         const doorShifted =
           Math.hypot(_tmpDoorPos.x - doorX, _tmpDoorPos.z - doorZ) > 0.35;
@@ -1181,7 +1066,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
 
           off.pos.x = THREE.MathUtils.lerp(off.pos.x, cabinTargetX, Math.min(1, dt * 8));
           off.pos.z = THREE.MathUtils.lerp(off.pos.z, cabinTargetZ, Math.min(1, dt * 8));
-          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
           off.yaw = unit.yaw;
           off.rig.torso.position.y = THREE.MathUtils.lerp(
             off.rig.torsoBaseY,
@@ -1199,7 +1084,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
 
           if (b >= 1 || forceBoard) {
             off.rig.root.visible = false;
-            off.ammo = off.weaponKind === 'rifle' ? 28 : 12;
+            off.ammo = config.weapons[off.weaponKind].magSize;
             off.reloadTimer = 0;
             off.roamTarget = null;
             resetOfficerPose(off, unit.yaw);
@@ -1244,7 +1129,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             staticBvh.resolveCircle(off.pos, 0.45);
           }
 
-          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
 
           const stepDx = off.pos.x - prevX;
           const stepDz = off.pos.z - prevZ;
@@ -1269,7 +1154,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           off.boardTimer = 0;
         } else {
           off.rig.root.visible = false;
-          off.ammo = off.weaponKind === 'rifle' ? 28 : 12;
+          off.ammo = config.weapons[off.weaponKind].magSize;
           off.reloadTimer = 0;
           off.roamTarget = null;
           resetOfficerPose(off, unit.yaw);
@@ -1291,7 +1176,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         unit.officers.forEach((off) => {
           off.rig.root.visible = false;
           off.ragdoll.active = false;
-          off.ammo = off.weaponKind === 'rifle' ? 28 : 12;
+          off.ammo = config.weapons[off.weaponKind].magSize;
           off.reloadTimer = 0;
           off.roamTarget = null;
           off.mountPhase = 'walk';
@@ -1301,7 +1186,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
 
         if (isPanicRetreat) {
           unit.targetCrimeId = null;
-          routeUnitToStation(unit, true, roadGraph);
+          routeUnitToStation(unit, true, roadGraph, config);
         } else {
           const currCrime = unit.targetCrimeId
             ? crimes.find((c) => c.id === unit.targetCrimeId)
@@ -1324,9 +1209,9 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             unit.targetCrimeId = null;
             const pending = crimes.find((c) => c.suspectAlive && !c.assignedUnitId);
             if (pending) {
-              dispatchNearestUnit(pending, units, roadGraph, drivingMode, audio);
+              dispatchNearestUnit(pending, units, roadGraph, config, drivingMode, audio);
             } else {
-              routeUnitToStation(unit, false, roadGraph);
+              routeUnitToStation(unit, false, roadGraph, config);
             }
           }
         }

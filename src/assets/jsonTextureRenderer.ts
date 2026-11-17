@@ -242,20 +242,33 @@ function renderLayer(
       break;
     }
     case 'precinct_sign_plate': {
-      ctx.fillStyle = '#0f172a';
+      ctx.fillStyle = layer.bgColor ?? '#0f172a';
       ctx.fillRect(0, 0, width, height);
-      ctx.strokeStyle = '#3b82f6';
+      ctx.strokeStyle = layer.borderColor ?? '#3b82f6';
       ctx.lineWidth = 6;
       ctx.strokeRect(6, 6, width - 12, height - 12);
 
-      ctx.fillStyle = '#f8fafc';
-      ctx.font = 'bold 44px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(layer.title, width * 0.5, 68);
+      const textCenterX = layer.medicalCross ? width * 0.55 : width * 0.5;
+      if (layer.medicalCross) {
+        const cx = 62;
+        const cy = height * 0.5;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 38, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#dc2626';
+        ctx.fillRect(cx - 11, cy - 27, 22, 54);
+        ctx.fillRect(cx - 27, cy - 11, 54, 22);
+      }
 
-      ctx.fillStyle = '#93c5fd';
+      ctx.fillStyle = layer.titleColor ?? '#f8fafc';
+      ctx.font = 'bold 42px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(layer.title, textCenterX, 66);
+
+      ctx.fillStyle = layer.subtitleColor ?? '#93c5fd';
       ctx.font = '600 18px monospace';
-      ctx.fillText(layer.subtitle, width * 0.5, 100);
+      ctx.fillText(layer.subtitle, textCenterX, 100);
       break;
     }
   }

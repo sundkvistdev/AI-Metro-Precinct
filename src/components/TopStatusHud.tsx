@@ -1,80 +1,106 @@
 import React from 'react';
+import { AlertTriangle, LogOut } from 'lucide-react';
 import { SimSnapshot } from '../sim/types';
 
-interface TopStatusHudProps {
+export interface TopStatusHudProps {
   snapshot: SimSnapshot;
+  onOpenErrorDialog: () => void;
+  onReturnToMenu: () => void;
 }
 
-export const TopStatusHud: React.FC<TopStatusHudProps> = ({ snapshot }) => {
+export const TopStatusHud: React.FC<TopStatusHudProps> = ({
+  snapshot,
+  onOpenErrorDialog,
+  onReturnToMenu,
+}) => {
+  const issueCount = snapshot.assetIssues.length;
+
   return (
-    <div className="flex flex-wrap items-start justify-between gap-4">
-      <div className="pointer-events-auto rounded-xl border border-slate-800 bg-slate-950/92 px-4 py-2.5 shadow-lg">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h1 className="font-display text-base font-semibold tracking-wide text-slate-100">
-            Metro Precinct 04
-          </h1>
-          <span className="text-xs text-slate-400">
-            400m Town Grid · Midrise Mixed Zoning
+    <div className="flex items-start justify-between gap-2">
+      <div className="pointer-events-auto ui-panel px-2.5 py-1.5 shadow-md">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs">
+          <span className="font-display text-sm font-semibold tracking-wide text-zinc-100 uppercase">
+            Metro Precinct
           </span>
-        </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-300 font-mono-tabular">
-          <span>Active Calls: {snapshot.activeCrimes.length}</span>
-          <span aria-hidden="true" className="text-slate-600">·</span>
-          <span>Neutralized: {snapshot.neutralizedCount}</span>
-          <span aria-hidden="true" className="text-slate-600">·</span>
-          <span>Traffic: {snapshot.civilianCarCount} cars</span>
-          <span aria-hidden="true" className="text-slate-600">·</span>
-          <span>Peds: {snapshot.pedestrianCount}</span>
+          <span aria-hidden="true" className="text-zinc-500">·</span>
+          <span className="font-mono-tabular text-zinc-200">
+            Calls {snapshot.activeCrimes.length}
+          </span>
+          <span aria-hidden="true" className="text-zinc-500">·</span>
+          <span className="font-mono-tabular text-zinc-200">
+            Neutralized {snapshot.neutralizedCount}
+          </span>
+          <span aria-hidden="true" className="text-zinc-500">·</span>
+          <span className="font-mono-tabular text-zinc-300">
+            Traffic {snapshot.civilianCarCount}
+          </span>
+          <span aria-hidden="true" className="text-zinc-500">·</span>
+          <span className="font-mono-tabular text-zinc-300">
+            Peds {snapshot.pedestrianCount}
+          </span>
           {snapshot.activeNailMats > 0 && (
             <>
-              <span aria-hidden="true" className="text-slate-600">·</span>
-              <span className="text-amber-300">
-                Nail Mats: {snapshot.activeNailMats}
-              </span>
-            </>
-          )}
-          {snapshot.assetsLoaded && (
-            <>
-              <span aria-hidden="true" className="text-slate-600">·</span>
-              <span className="text-slate-400">
-                Assets: {snapshot.assetCounts.textures} tex, {snapshot.assetCounts.models} models, {snapshot.assetCounts.audio} audio
+              <span aria-hidden="true" className="text-zinc-500">·</span>
+              <span className="font-mono-tabular text-amber-300">
+                Spikes {snapshot.activeNailMats}
               </span>
             </>
           )}
         </div>
       </div>
 
-      {snapshot.activeCrimes.length > 0 && (
-        <div className="pointer-events-auto rounded-xl border border-red-900/70 bg-slate-950/92 px-4 py-2.5 shadow-lg max-w-lg">
-          <div className="text-xs font-medium text-red-400">
-            Active Incident Dispatch
+      <div className="flex items-start gap-1.5">
+        {snapshot.activeCrimes.length > 0 && (
+          <div className="pointer-events-auto ui-panel border-red-400/50 px-2.5 py-1.5 shadow-md max-w-md">
+            <div className="space-y-0.5">
+              {snapshot.activeCrimes.slice(0, 3).map((crime) => (
+                <div
+                  key={crime.id}
+                  className="flex items-center justify-between gap-3 text-[11px] text-zinc-100 font-mono-tabular"
+                >
+                  <span className="truncate">
+                    {crime.type} ({crime.suspectWeaponKind}) · {crime.district}
+                  </span>
+                  <span className="shrink-0 text-zinc-300">
+                    {!crime.suspectAlive
+                      ? 'Down'
+                      : crime.inVehiclePursuit
+                      ? `Car ${crime.vehicleHp}%`
+                      : `HP ${crime.suspectHp}%`}
+                    {crime.assignedUnitCallsign ? ` · ${crime.assignedUnitCallsign}` : ''}
+                    {crime.backupCount > 0 ? ` · +${crime.backupCount}` : ''}
+                    {crime.heavyDeployed ? ' · SWAT' : ''}
+                    {crime.apcDeployed ? ' · APC' : ''}
+                    {crime.nailMatDeployed ? ' · Spikes' : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="mt-1 space-y-1">
-            {snapshot.activeCrimes.slice(0, 3).map((crime) => (
-              <div
-                key={crime.id}
-                className="flex items-center justify-between gap-4 text-xs text-slate-200 font-mono-tabular"
-              >
-                <span className="truncate">
-                  {crime.type} ({crime.suspectWeaponKind}) · {crime.district}
-                </span>
-                <span className="shrink-0 text-slate-400">
-                  {!crime.suspectAlive
-                    ? 'Neutralized'
-                    : crime.inVehiclePursuit
-                    ? `Car ${crime.vehicleHp}%`
-                    : `HP ${crime.suspectHp}%`}
-                  {crime.assignedUnitCallsign ? ` · ${crime.assignedUnitCallsign}` : ''}
-                  {crime.backupCount > 0 ? ` · +${crime.backupCount} Unit` : ''}
-                  {crime.heavyDeployed ? ' · +SWAT' : ''}
-                  {crime.apcDeployed ? ' · +APC' : ''}
-                  {crime.nailMatDeployed ? ' · +Nail Mat' : ''}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        )}
+
+        {issueCount > 0 && (
+          <button
+            type="button"
+            onClick={onOpenErrorDialog}
+            className="pointer-events-auto flex items-center gap-1 border border-amber-400/70 bg-zinc-700/95 px-2 py-1.5 text-xs font-medium text-amber-200 hover:bg-zinc-600 cursor-pointer whitespace-nowrap shrink-0 rounded-none"
+            title="Inspect asset load issues"
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            {issueCount}
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={onReturnToMenu}
+          className="pointer-events-auto flex items-center gap-1 border border-zinc-500 bg-zinc-700/95 px-2.5 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer whitespace-nowrap shrink-0 rounded-none"
+          title="Return to Main Menu"
+        >
+          <LogOut className="h-3.5 w-3.5" />
+          Menu
+        </button>
+      </div>
     </div>
   );
 };

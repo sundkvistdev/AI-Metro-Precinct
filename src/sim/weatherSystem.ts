@@ -1,10 +1,14 @@
 import * as THREE from 'three';
+import { EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { TownEnvironmentHandles } from './townBuilder';
 import { WeatherCondition } from './types';
 
+export type WeatherPresetsConfig = EngineConfigAsset['weatherPresets'];
+
 export class WeatherSystem {
   private scene: THREE.Scene;
+  private atmosphereGroup: THREE.Group;
   private renderer: THREE.WebGLRenderer;
   private rng: () => number;
 
@@ -21,11 +25,13 @@ export class WeatherSystem {
 
   constructor(
     scene: THREE.Scene,
+    atmosphereGroup: THREE.Group,
     renderer: THREE.WebGLRenderer,
     isSoftwareGl: boolean,
     rng: () => number,
   ) {
     this.scene = scene;
+    this.atmosphereGroup = atmosphereGroup;
     this.renderer = renderer;
     this.rng = rng;
 
@@ -34,8 +40,6 @@ export class WeatherSystem {
     this.scene.fog = this.fogExp;
 
     this.hemiLight = new THREE.HemisphereLight(0x93c5fd, 0x263240, 0.85);
-    this.scene.add(this.hemiLight);
-
     this.sunLight = new THREE.DirectionalLight(0xfff1d6, 1.85);
     this.sunLight.position.set(110, 145, 85);
     this.sunLight.castShadow = !isSoftwareGl;
@@ -49,16 +53,18 @@ export class WeatherSystem {
     this.sunLight.shadow.camera.bottom = -d;
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.025;
-    this.scene.add(this.sunLight);
 
     this.rimLight = new THREE.DirectionalLight(0x60a5fa, 0.55);
     this.rimLight.position.set(-120, 65, -110);
-    this.scene.add(this.rimLight);
 
-    this.buildRainSystem();
+    // Lights stay on scene root so clearAllLayers doesn't strip core rig lights; rain particles live in atmosphereGroup
+    this.scene.add(this.hemiLight, this.sunLight, this.rimLight);
+    this.ensureRainLines();
   }
 
-  private buildRainSystem(): void {
+  public ensureRainLines(): void {
+    if (this.rainLines && this.rainLines.parent === this.atmosphereGroup) return;
+
     const count = this.rainDropCount;
     const positions = new Float32Array(count * 6);
     for (let i = 0; i < count; i++) {
@@ -85,80 +91,44 @@ export class WeatherSystem {
     this.rainLines = new THREE.LineSegments(geo, mat);
     this.rainLines.visible = false;
     this.rainLines.frustumCulled = false;
-    this.scene.add(this.rainLines);
+    this.atmosphereGroup.add(this.rainLines);
   }
 
   public applyWeather(
     weather: WeatherCondition,
+    presets: WeatherPresetsConfig,
     envHandles: TownEnvironmentHandles | null,
     audio: JsonAudioSynth | null,
   ): void {
     this.currentWeather = weather;
+    this.ensureRainLines();
 
-    let skyHex = 0x162233;
-    let fogDensity = 0.0024;
-    let sunIntensity = 1.85;
-    let sunColor = 0xfff1d6;
-    let hemiIntensity = 0.85;
-    let rimIntensity = 0.55;
-    let exposure = 1.12;
-    let roadRoughness = 0.88;
-    let roadMetalness = 0.05;
-    let sidewalkRoughness = 0.88;
-    let rainIntensity = 0;
-
-    if (weather === WeatherCondition.Overcast) {
-      skyHex = 0x263242;
-      fogDensity = 0.0042;
-      sunIntensity = 0.95;
-      sunColor = 0xcbd5e1;
-      hemiIntensity = 1.05;
-      rimIntensity = 0.45;
-      exposure = 1.02;
-    } else if (weather === WeatherCondition.Rain) {
-      skyHex = 0x121b28;
-      fogDensity = 0.0056;
-      sunIntensity = 0.65;
-      sunColor = 0x94a3b8;
-      hemiIntensity = 0.72;
-      rimIntensity = 0.65;
-      exposure = 1.05;
-      roadRoughness = 0.24;
-      roadMetalness = 0.22;
-      sidewalkRoughness = 0.34;
-      rainIntensity = 1.0;
-    } else if (weather === WeatherCondition.HeavyFog) {
-      skyHex = 0x3b4758;
-      fogDensity = 0.0115;
-      sunIntensity = 0.55;
-      sunColor = 0xdbeafe;
-      hemiIntensity = 0.9;
-      rimIntensity = 0.3;
-      exposure = 0.98;
-    }
+    const preset = presets[weather];
+    const skyHex = parseInt(preset.skyColor.replace('#', ''), 16);
+    const sunHex = parseInt(preset.sunColor.replace('#', ''), 16);
 
     this.skyColor.setHex(skyHex);
     this.fogExp.color.setHex(skyHex);
-    this.fogExp.density = fogDensity;
-    this.sunLight.intensity = sunIntensity;
-    this.sunLight.color.setHex(sunColor);
-    this.hemiLight.intensity = hemiIntensity;
-    this.rimLight.intensity = rimIntensity;
-    this.renderer.toneMappingExposure = exposure;
+    this.fogExp.density = preset.fogDensity;
+    this.sunLight.intensity = preset.sunIntensity;
+    this.sunLight.color.setHex(sunHex);
+    this.hemiLight.intensity = preset.hemiIntensity;
+    this.rimLight.intensity = preset.rimIntensity;
+    this.renderer.toneMappingExposure = preset.exposure;
 
     if (envHandles) {
       for (const m of envHandles.roadMaterials) {
-        m.roughness = roadRoughness;
-        m.metalness = roadMetalness;
+        m.roughness = preset.roadRoughness;
+        m.metalness = preset.roadMetalness;
       }
-      envHandles.sidewalkMaterial.roughness = sidewalkRoughness;
-      envHandles.apronMaterial.roughness = roadRoughness;
+      envHandles.sidewalkMaterial.roughness = preset.sidewalkRoughness;
+      envHandles.apronMaterial.roughness = preset.roadRoughness;
     }
 
     if (this.rainLines) {
-      this.rainLines.visible = rainIntensity > 0;
+      this.rainLines.visible = preset.rainIntensity > 0;
     }
-    audio?.setRainIntensity(rainIntensity);
+    audio?.setRainIntensity(preset.rainIntensity);
   }
 
   public update(dt: number, cameraPos: THREE.Vector3, camForward: THREE.Vector3): void {

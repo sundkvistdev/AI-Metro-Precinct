@@ -1,6 +1,7 @@
 {
-  "formatVersion": "1.1.0",
+  "formatVersion": "1.2.0",
   "packName": "metro_precinct_core",
+  "config": "/jdataassets/engine_config.json",
   "textures": {
     "asphalt_road_v": "/jdataassets/textures/asphalt_road_v.json",
     "asphalt_road_h": "/jdataassets/textures/asphalt_road_h.json",

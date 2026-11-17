@@ -29,10 +29,17 @@ export class JsonAudioSynth {
 
   private audioAssets: Record<string, ProceduralAudioAsset>;
   private cachedNoiseBuffers = new Map<string, AudioBuffer>();
+  private missingAssetLogged = new Set<string>();
 
   constructor(audioAssets: Record<string, ProceduralAudioAsset>, defaultEnabled = true) {
     this.audioAssets = audioAssets;
     this.enabled = defaultEnabled;
+  }
+
+  public setAudioAssets(audioAssets: Record<string, ProceduralAudioAsset>): void {
+    this.audioAssets = audioAssets;
+    this.cachedNoiseBuffers.clear();
+    this.missingAssetLogged.clear();
   }
 
   private getGunshotShaperCurve(): Float32Array<ArrayBuffer> {
@@ -331,7 +338,13 @@ export class JsonAudioSynth {
     if (!this.ctx || this.ctx.state !== 'running' || !this.dryBus || !this.echoInput) return;
 
     const asset = this.audioAssets[assetId];
-    if (!asset) return;
+    if (!asset) {
+      if (!this.missingAssetLogged.has(assetId)) {
+        this.missingAssetLogged.add(assetId);
+        console.error(`[MISSING AUDIO] Audio asset "${assetId}" missing from pack.`);
+      }
+      return;
+    }
 
     const now = this.ctx.currentTime;
 

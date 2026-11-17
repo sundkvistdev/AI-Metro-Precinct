@@ -1,0 +1,85 @@
+{
+  "format": "jdata-model-v1",
+  "id": "paramedic_humanoid",
+  "seed": 900309,
+  "materials": {
+    "skin": { "type": "standard", "color": "#d8b193", "roughness": 0.7 },
+    "boot": { "type": "standard", "color": "#15181e", "roughness": 0.85 },
+    "jacket": { "type": "standard", "color": "#0284c7", "roughness": 0.65 },
+    "pants": { "type": "standard", "color": "#0f172a", "roughness": 0.84 },
+    "hivis": { "type": "standard", "color": "#facc15", "emissive": "#eab308", "emissiveIntensity": 0.25, "roughness": 0.4 },
+    "white_patch": { "type": "standard", "color": "#f8fafc", "roughness": 0.4 },
+    "med_red": { "type": "standard", "color": "#dc2626", "roughness": 0.45 },
+    "trauma_bag": { "type": "standard", "color": "#ea580c", "roughness": 0.55 },
+    "cap": { "type": "standard", "color": "#0369a1", "roughness": 0.58 }
+  },
+  "parts": [
+    {
+      "id": "left_leg",
+      "tag": "leftLeg",
+      "kind": "group",
+      "position": [0.11, 0.88, 0],
+      "children": [
+        { "id": "l_thigh", "kind": "box", "dimensions": [0.16, 0.72, 0.18], "position": [0, -0.36, 0], "materialRef": "pants", "castShadow": true },
+        { "id": "l_boot", "kind": "box", "dimensions": [0.17, 0.16, 0.25], "position": [0, -0.8, 0.03], "materialRef": "boot", "castShadow": true }
+      ]
+    },
+    {
+      "id": "right_leg",
+      "tag": "rightLeg",
+      "kind": "group",
+      "position": [-0.11, 0.88, 0],
+      "children": [
+        { "id": "r_thigh", "kind": "box", "dimensions": [0.16, 0.72, 0.18], "position": [0, -0.36, 0], "materialRef": "pants", "castShadow": true },
+        { "id": "r_boot", "kind": "box", "dimensions": [0.17, 0.16, 0.25], "position": [0, -0.8, 0.03], "materialRef": "boot", "castShadow": true }
+      ]
+    },
+    {
+      "id": "torso",
+      "tag": "torso",
+      "kind": "group",
+      "position": [0, 0.88, 0],
+      "children": [
+        { "id": "chest", "kind": "box", "dimensions": [0.43, 0.58, 0.25], "position": [0, 0.29, 0], "materialRef": "jacket", "castShadow": true },
+        { "id": "hivis_band_low", "kind": "box", "dimensions": [0.445, 0.06, 0.265], "position": [0, 0.16, 0], "materialRef": "hivis" },
+        { "id": "hivis_band_high", "kind": "box", "dimensions": [0.445, 0.06, 0.265], "position": [0, 0.42, 0], "materialRef": "hivis" },
+        { "id": "back_patch", "kind": "box", "dimensions": [0.18, 0.18, 0.02], "position": [0, 0.32, -0.13], "materialRef": "white_patch" },
+        { "id": "back_cross_v", "kind": "box", "dimensions": [0.05, 0.14, 0.025], "position": [0, 0.32, -0.135], "materialRef": "med_red" },
+        { "id": "back_cross_h", "kind": "box", "dimensions": [0.14, 0.05, 0.025], "position": [0, 0.32, -0.135], "materialRef": "med_red" },
+        { "id": "neck", "kind": "cylinder", "dimensions": [0.065, 0.075, 0.11], "position": [0, 0.62, 0], "radiusSegments": 10, "materialRef": "skin" },
+        {
+          "id": "head",
+          "tag": "head",
+          "kind": "group",
+          "position": [0, 0.77, 0],
+          "children": [
+            { "id": "skull", "kind": "sphere", "dimensions": [0.135, 12, 10], "materialRef": "skin", "castShadow": true },
+            { "id": "cap_crown", "kind": "cylinder", "dimensions": [0.14, 0.138, 0.08], "position": [0, 0.09, 0], "radiusSegments": 12, "materialRef": "cap" },
+            { "id": "cap_brim", "kind": "box", "dimensions": [0.21, 0.02, 0.12], "position": [0, 0.055, 0.12], "materialRef": "cap" }
+          ]
+        },
+        {
+          "id": "left_arm",
+          "tag": "leftArm",
+          "kind": "group",
+          "position": [0.27, 0.52, 0],
+          "children": [
+            { "id": "l_sleeve", "kind": "box", "dimensions": [0.125, 0.46, 0.13], "position": [0, -0.21, 0], "materialRef": "jacket", "castShadow": true },
+            { "id": "l_hand", "kind": "box", "dimensions": [0.1, 0.11, 0.1], "position": [0, -0.47, 0], "materialRef": "white_patch" }
+          ]
+        },
+        {
+          "id": "right_arm",
+          "tag": "rightArm",
+          "kind": "group",
+          "position": [-0.27, 0.52, 0],
+          "children": [
+            { "id": "r_sleeve", "kind": "box", "dimensions": [0.125, 0.46, 0.13], "position": [0, -0.21, 0], "materialRef": "jacket", "castShadow": true },
+            { "id": "r_hand", "kind": "box", "dimensions": [0.1, 0.11, 0.1], "position": [0, -0.47, 0], "materialRef": "white_patch" },
+            { "id": "med_kit", "kind": "box", "dimensions": [0.14, 0.2, 0.28], "position": [-0.06, -0.54, 0.02], "materialRef": "trauma_bag", "castShadow": true }
+          ]
+        }
+      ]
+    }
+  ]
+}

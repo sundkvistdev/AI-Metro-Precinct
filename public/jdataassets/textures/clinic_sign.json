@@ -1,0 +1,21 @@
+{
+  "format": "jdata-texture-v1",
+  "id": "clinic_sign",
+  "seed": 800412,
+  "width": 512,
+  "height": 128,
+  "colorSpace": "srgb",
+  "anisotropy": 8,
+  "layers": [
+    {
+      "op": "precinct_sign_plate",
+      "title": "METRO CLINIC",
+      "subtitle": "24H TRAUMA · EMS DISPATCH",
+      "bgColor": "#0f172a",
+      "borderColor": "#ef4444",
+      "titleColor": "#f8fafc",
+      "subtitleColor": "#fca5a5",
+      "medicalCross": true
+    }
+  ]
+}

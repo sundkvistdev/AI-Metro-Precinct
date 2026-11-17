@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
+import { TextureRegistry } from '../assets/textureRegistry';
 import { StaticObstacleBVH } from './bvh';
-import { getSurfaceHeight } from './roadGraph';
-import { ProceduralTexturePack } from './textures';
+import { getSurfaceHeight, WorldConfig } from './roadGraph';
 import { HumanoidRig } from './vehicleModels';
 
 export interface RagdollState {
@@ -49,13 +49,14 @@ export function stepRagdollPhysics(
   pos: THREE.Vector3,
   rig: HumanoidRig,
   bvh: StaticObstacleBVH,
+  world: WorldConfig,
   dt: number,
 ): void {
   rag.vel.y -= 23.0 * dt;
   pos.addScaledVector(rag.vel, dt);
   bvh.resolveCircle(pos, 0.45);
 
-  const groundY = getSurfaceHeight(pos.x, pos.z) + 0.16;
+  const groundY = getSurfaceHeight(pos.x, pos.z, world) + 0.16;
   if (pos.y <= groundY) {
     pos.y = groundY;
     if (rag.vel.y < -1.8) {
@@ -119,14 +120,11 @@ interface BloodPool {
 
 const _vPos = new THREE.Vector3();
 
-/**
- * Manages velocity-scaled impact sparks, blood splatter & ground pools,
- * volumetric crash/engine smoke, and 3D crash audio.
- */
 export class SimVfxManager {
-  private scene: THREE.Scene;
+  private vfxGroup: THREE.Group;
   private rng: () => number;
-  private textures: ProceduralTexturePack | null = null;
+  private textures: TextureRegistry | null = null;
+  private world: WorldConfig | null = null;
 
   private sparks: ImpactSpark[] = [];
   private smokePuffs: SmokePuff[] = [];
@@ -142,13 +140,14 @@ export class SimVfxManager {
   private bloodDarkMat = new THREE.MeshBasicMaterial({ color: 0x7f1d1d });
   private bloodPoolGeo = new THREE.CircleGeometry(0.55, 14).rotateX(-Math.PI / 2);
 
-  constructor(scene: THREE.Scene, rng: () => number) {
-    this.scene = scene;
+  constructor(vfxGroup: THREE.Group, rng: () => number) {
+    this.vfxGroup = vfxGroup;
     this.rng = rng;
   }
 
-  public setTextures(textures: ProceduralTexturePack): void {
+  public configure(textures: TextureRegistry, world: WorldConfig): void {
     this.textures = textures;
+    this.world = world;
   }
 
   public spawnBloodImpact(
@@ -171,7 +170,7 @@ export class SimVfxManager {
       const vy = (1.2 + this.rng() * 3.4) * Math.max(0.7, intensity * 0.85);
       const vz = dirZ * (3.2 + this.rng() * 4.5) + (this.rng() - 0.5) * 3.8;
       mesh.lookAt(x + vx, y + vy, z + vz);
-      this.scene.add(mesh);
+      this.vfxGroup.add(mesh);
       this.bloodDrops.push({
         mesh,
         vel: new THREE.Vector3(vx, vy, vz),
@@ -190,9 +189,10 @@ export class SimVfxManager {
   }
 
   public spawnBloodPool(x: number, z: number, scale = 0.85): void {
+    if (!this.world) return;
     if (this.bloodPools.length >= 48) {
       const oldest = this.bloodPools.shift()!;
-      this.scene.remove(oldest.mesh);
+      this.vfxGroup.remove(oldest.mesh);
       (oldest.mesh.material as THREE.Material).dispose();
     }
     const mat = new THREE.MeshBasicMaterial({
@@ -204,11 +204,11 @@ export class SimVfxManager {
       polygonOffsetFactor: -2,
     });
     const mesh = new THREE.Mesh(this.bloodPoolGeo, mat);
-    mesh.position.set(x, getSurfaceHeight(x, z) + 0.022, z);
+    mesh.position.set(x, getSurfaceHeight(x, z, this.world) + 0.022, z);
     mesh.rotation.y = this.rng() * Math.PI * 2;
     mesh.scale.set(scale * 0.3, 1, scale * 0.25);
     mesh.renderOrder = 2;
-    this.scene.add(mesh);
+    this.vfxGroup.add(mesh);
     this.bloodPools.push({
       mesh,
       life: 28,
@@ -236,7 +236,7 @@ export class SimVfxManager {
       const vy = (2.4 + this.rng() * 6.5) * Math.max(0.7, speedScale * 0.85);
       const vz = biasZ * 0.45 + (this.rng() - 0.5) * 11 * speedScale;
       mesh.lookAt(x + vx, y + vy, z + vz);
-      this.scene.add(mesh);
+      this.vfxGroup.add(mesh);
       this.sparks.push({
         mesh,
         vel: new THREE.Vector3(vx, vy, vz),
@@ -256,7 +256,9 @@ export class SimVfxManager {
     riseSpeed = 2.4,
   ): void {
     if (!this.textures || this.smokePuffs.length > 190) return;
-    const tone = Math.round(THREE.MathUtils.lerp(185, 48, THREE.MathUtils.clamp(darkness, 0, 1)));
+    const tone = Math.round(
+      THREE.MathUtils.lerp(185, 48, THREE.MathUtils.clamp(darkness, 0, 1)),
+    );
     const colorHex = (tone << 16) | (tone << 8) | tone;
     const mat = new THREE.SpriteMaterial({
       map: this.textures.lightHalo,
@@ -274,7 +276,7 @@ export class SimVfxManager {
     );
     sprite.scale.set(scale, scale, 1);
     sprite.renderOrder = 4;
-    this.scene.add(sprite);
+    this.vfxGroup.add(sprite);
 
     const maxLife = 1.2 + this.rng() * 1.1;
     this.smokePuffs.push({
@@ -328,6 +330,8 @@ export class SimVfxManager {
   }
 
   public update(dt: number): void {
+    const world = this.world;
+
     for (let i = this.sparks.length - 1; i >= 0; i--) {
       const sp = this.sparks[i];
       sp.life -= dt;
@@ -342,7 +346,7 @@ export class SimVfxManager {
       const s = Math.max(0.2, sp.life / sp.maxLife);
       sp.mesh.scale.setScalar(s);
       if (sp.life <= 0) {
-        this.scene.remove(sp.mesh);
+        this.vfxGroup.remove(sp.mesh);
         this.sparks.splice(i, 1);
       }
     }
@@ -352,14 +356,16 @@ export class SimVfxManager {
       bd.life -= dt;
       bd.vel.y -= 22 * dt;
       bd.mesh.position.addScaledVector(bd.vel, dt);
-      const ground = getSurfaceHeight(bd.mesh.position.x, bd.mesh.position.z) + 0.025;
+      const ground =
+        (world ? getSurfaceHeight(bd.mesh.position.x, bd.mesh.position.z, world) : 0.04) +
+        0.025;
       if (bd.mesh.position.y <= ground) {
         bd.mesh.position.y = ground;
         bd.vel.set(0, 0, 0);
         bd.mesh.scale.set(1.5, 0.25, 1.5);
       }
       if (bd.life <= 0) {
-        this.scene.remove(bd.mesh);
+        this.vfxGroup.remove(bd.mesh);
         this.bloodDrops.splice(i, 1);
       }
     }
@@ -371,10 +377,13 @@ export class SimVfxManager {
       const spread = THREE.MathUtils.clamp(0.32 + age * 0.7, 0.32, 1.0);
       bp.mesh.scale.set(bp.targetScale * spread, 1, bp.targetScale * spread * 0.88);
       if (bp.life < 6) {
-        (bp.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, (bp.life / 6) * 0.84);
+        (bp.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(
+          0,
+          (bp.life / 6) * 0.84,
+        );
       }
       if (bp.life <= 0) {
-        this.scene.remove(bp.mesh);
+        this.vfxGroup.remove(bp.mesh);
         (bp.mesh.material as THREE.Material).dispose();
         this.bloodPools.splice(i, 1);
       }
@@ -384,7 +393,7 @@ export class SimVfxManager {
       const pf = this.smokePuffs[i];
       pf.life -= dt;
       if (pf.life <= 0) {
-        this.scene.remove(pf.sprite);
+        this.vfxGroup.remove(pf.sprite);
         pf.sprite.material.dispose();
         this.smokePuffs.splice(i, 1);
         continue;
@@ -399,7 +408,25 @@ export class SimVfxManager {
     }
   }
 
+  public clearActiveParticles(): void {
+    for (const sp of this.sparks) this.vfxGroup.remove(sp.mesh);
+    for (const bd of this.bloodDrops) this.vfxGroup.remove(bd.mesh);
+    for (const bp of this.bloodPools) {
+      this.vfxGroup.remove(bp.mesh);
+      (bp.mesh.material as THREE.Material).dispose();
+    }
+    for (const pf of this.smokePuffs) {
+      this.vfxGroup.remove(pf.sprite);
+      pf.sprite.material.dispose();
+    }
+    this.sparks = [];
+    this.bloodDrops = [];
+    this.bloodPools = [];
+    this.smokePuffs = [];
+  }
+
   public dispose(): void {
+    this.clearActiveParticles();
     this.sparkGeo.dispose();
     this.sparkHotMat.dispose();
     this.sparkWarmMat.dispose();
@@ -407,15 +434,5 @@ export class SimVfxManager {
     this.bloodBrightMat.dispose();
     this.bloodDarkMat.dispose();
     this.bloodPoolGeo.dispose();
-    for (const bp of this.bloodPools) {
-      (bp.mesh.material as THREE.Material).dispose();
-    }
-    for (const pf of this.smokePuffs) {
-      pf.sprite.material.dispose();
-    }
-    this.bloodDrops = [];
-    this.bloodPools = [];
-    this.smokePuffs = [];
-    this.sparks = [];
   }
 }

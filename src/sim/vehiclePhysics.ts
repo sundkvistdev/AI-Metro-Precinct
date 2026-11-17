@@ -17,6 +17,28 @@ export function normalizeAngle(a: number): number {
   return r;
 }
 
+export function applyVehicleWheelVisuals(
+  wheels: THREE.Group[],
+  frontWheels: THREE.Group[] | undefined,
+  speed: number,
+  steerAngle: number,
+  radius: number,
+  dt: number,
+): void {
+  const baseSpin = (speed * dt) / radius;
+  for (const w of wheels) {
+    const bent = (w.userData.bentAmount as number) || 0;
+    w.rotation.z = bent;
+    const spinScale = bent !== 0 ? Math.max(0.35, 1 - Math.abs(bent) * 2.2) : 1;
+    w.rotation.x += baseSpin * spinScale;
+  }
+  if (frontWheels) {
+    for (const fw of frontWheels) {
+      fw.rotation.y = steerAngle;
+    }
+  }
+}
+
 export interface VehicleDynState {
   vx: number;
   vz: number;
@@ -51,10 +73,6 @@ export interface VehicleDriveCommand {
   mass: number;
 }
 
-/**
- * Deliberate, weighty 2D rigid-body vehicle dynamics with separate velocity vector,
- * tire slip / lateral grip, speed-sensitive steering, and suspension pitch/roll.
- */
 export function stepVehicleDynamics(
   pos: THREE.Vector3,
   yawRef: { yaw: number; speed: number },
@@ -71,7 +89,6 @@ export function stepVehicleDynamics(
   let vForward = dyn.vx * fx + dyn.vz * fz;
   let vLateral = dyn.vx * rx + dyn.vz * rz;
 
-  // Engine throttle / deliberate braking curve
   const speedErr = cmd.targetSpeed - vForward;
   let longAccel = 0;
   if (speedErr > 0.15) {
@@ -80,14 +97,12 @@ export function stepVehicleDynamics(
     longAccel = Math.max(-cmd.maxBrake, speedErr * 2.8);
   }
 
-  // Rolling drag
   const drag = vForward * 0.18;
   vForward += (longAccel - drag) * dt;
   if (cmd.targetSpeed <= 0.05 && Math.abs(vForward) < 0.25) {
     vForward = 0;
   }
 
-  // Speed-sensitive damped steering (smooth tracking without high-speed S-swerving)
   const yawDiff = normalizeAngle(cmd.desiredYaw - yawRef.yaw);
   const speedAuthority = THREE.MathUtils.clamp(Math.abs(vForward) / 2.2, 0.22, 1.0);
   const highSpeedLimit = 1.0 / (1.0 + Math.abs(vForward) * 0.048);
@@ -96,11 +111,9 @@ export function stepVehicleDynamics(
     speedAuthority *
     highSpeedLimit;
 
-  // Blend steering omega against any crash-induced spin angular velocity
   dyn.omega = THREE.MathUtils.damp(dyn.omega, targetOmega, 9.2, dt);
   yawRef.yaw = normalizeAngle(yawRef.yaw + dyn.omega * dt);
 
-  // Lateral tire friction (wet streets reduce grip cleanly)
   vLateral *= Math.exp(-cmd.lateralGrip * dt);
 
   const nfx = Math.sin(yawRef.yaw);
@@ -115,7 +128,6 @@ export function stepVehicleDynamics(
   pos.x += dyn.vx * dt;
   pos.z += dyn.vz * dt;
 
-  // Front wheel visual angle
   dyn.steerAngle = THREE.MathUtils.damp(
     dyn.steerAngle,
     THREE.MathUtils.clamp(yawDiff * 0.55, -0.42, 0.42),
@@ -123,7 +135,6 @@ export function stepVehicleDynamics(
     dt,
   );
 
-  // 2nd-order spring-damper suspension for pitch (squat/dive) and roll (cornering lean)
   const targetPitch = THREE.MathUtils.clamp(-longAccel * 0.0052, -0.055, 0.06);
   const centripetal = vForward * dyn.omega;
   const targetRoll = THREE.MathUtils.clamp(-centripetal * 0.0042, -0.085, 0.085);
@@ -168,21 +179,16 @@ export interface VehicleCollisionEntry {
 
 const _worldPos = new THREE.Vector3();
 
-/**
- * Resolves vehicle-to-vehicle OBB SAT collisions pruned by DynamicVehicleBVH,
- * transferring linear & angular momentum, spawning velocity-scaled sparks/smoke,
- * and detaching physical vehicle parts on large impacts.
- */
 export class VehicleCrashPhysicsSystem {
-  private scene: THREE.Scene;
+  private debrisGroup: THREE.Group;
   private rng: () => number;
   private vehicleBvh = new DynamicVehicleBVH();
   private cooldowns = new Map<string, number>();
   private debris: DetachedPartDebris[] = [];
   private obbs: OBB2D[] = [];
 
-  constructor(scene: THREE.Scene, rng: () => number) {
-    this.scene = scene;
+  constructor(debrisGroup: THREE.Group, rng: () => number) {
+    this.debrisGroup = debrisGroup;
     this.rng = rng;
   }
 
@@ -199,14 +205,12 @@ export class VehicleCrashPhysicsSystem {
       else this.cooldowns.set(k, next);
     }
 
-    // 1. Static BVH obstacle collision response for every vehicle
     for (const v of vehicles) {
       const res = staticBvh.resolveCircle(v.pos, 1.52);
       if (res.collided) {
         const vn = v.dyn.vx * res.normalX + v.dyn.vz * res.normalZ;
         if (vn < 0) {
           const strikeSpeed = -vn;
-          // Reflect normal velocity with low concrete restitution
           v.dyn.vx -= 1.32 * vn * res.normalX;
           v.dyn.vz -= 1.32 * vn * res.normalZ;
           v.dyn.vx *= 0.65;
@@ -231,7 +235,6 @@ export class VehicleCrashPhysicsSystem {
       }
     }
 
-    // 2. Dynamic BVH broadphase + exact 2D OBB SAT narrowphase
     this.obbs.length = vehicles.length;
     for (let i = 0; i < vehicles.length; i++) {
       const v = vehicles[i];
@@ -251,7 +254,6 @@ export class VehicleCrashPhysicsSystem {
       const shareA = b.mass / totalMass;
       const shareB = a.mass / totalMass;
 
-      // Positional separation
       const sep = sat.overlap * 0.72;
       a.pos.x -= sat.normalX * sep * shareA;
       a.pos.z -= sat.normalZ * sep * shareA;
@@ -263,7 +265,6 @@ export class VehicleCrashPhysicsSystem {
       const pairKey = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
       if (this.cooldowns.has(pairKey)) return;
 
-      // Relative velocity at contact point (including yaw angular velocity r x omega)
       const rAx = sat.contactX - a.pos.x;
       const rAz = sat.contactZ - a.pos.z;
       const rBx = sat.contactX - b.pos.x;
@@ -278,14 +279,16 @@ export class VehicleCrashPhysicsSystem {
       const relVz = vBz - vAz;
       const velAlongNormal = relVx * sat.normalX + relVz * sat.normalZ;
 
-      if (velAlongNormal > 0.25) return; // Separating
+      if (velAlongNormal > 0.25) return;
 
-      const strikeSpeed = Math.max(-velAlongNormal, Math.hypot(a.dyn.vx - b.dyn.vx, a.dyn.vz - b.dyn.vz) * 0.45);
+      const strikeSpeed = Math.max(
+        -velAlongNormal,
+        Math.hypot(a.dyn.vx - b.dyn.vx, a.dyn.vz - b.dyn.vz) * 0.45,
+      );
       if (strikeSpeed < 2.0) return;
 
       this.cooldowns.set(pairKey, 0.34);
 
-      // Rigid-body rotational inertia approx for sedan rectangle
       const invInertiaA = 1 / (a.mass * 2.2);
       const invInertiaB = 1 / (b.mass * 2.2);
       const rACrossN = rAx * sat.normalZ - rAz * sat.normalX;
@@ -307,7 +310,6 @@ export class VehicleCrashPhysicsSystem {
       b.dyn.vx += jx * invMassB;
       b.dyn.vz += jz * invMassB;
 
-      // Torque-induced yaw spin (PIT maneuver spin on off-center rear/front strikes)
       a.dyn.omega = THREE.MathUtils.clamp(
         a.dyn.omega - rACrossN * impulseMag * invInertiaA * 0.85,
         -6.5,
@@ -319,7 +321,6 @@ export class VehicleCrashPhysicsSystem {
         6.5,
       );
 
-      // Suspension crash jolt
       a.dyn.pitchVel += (this.rng() - 0.5) * strikeSpeed * 0.06;
       b.dyn.pitchVel += (this.rng() - 0.5) * strikeSpeed * 0.06;
       a.dyn.rollVel += (this.rng() - 0.5) * strikeSpeed * 0.08;
@@ -338,7 +339,6 @@ export class VehicleCrashPhysicsSystem {
         audio,
       );
 
-      // Part detachment on heavy collisions
       this.tryDetachParts(a, sat.contactX, sat.contactZ, -sat.normalX, -sat.normalZ, strikeSpeed);
       this.tryDetachParts(b, sat.contactX, sat.contactZ, sat.normalX, sat.normalZ, strikeSpeed);
 
@@ -357,7 +357,6 @@ export class VehicleCrashPhysicsSystem {
   ): void {
     if (strikeSpeed < 7.2 || veh.detachableParts.length === 0) return;
 
-    // Convert contact point to local vehicle space
     const dx = contactX - veh.pos.x;
     const dz = contactZ - veh.pos.z;
     const fx = Math.sin(veh.yaw);
@@ -374,7 +373,6 @@ export class VehicleCrashPhysicsSystem {
       const ddz = p.localOffset.z - localZ;
       const distSq = ddx * ddx + ddz * ddz;
 
-      // Wheels can suffer bent axle / broken rotation on impacts near that corner
       if (p.isWheel) {
         if (strikeSpeed >= 8.2 && distSq < 1.85) {
           const sign = p.localOffset.x >= 0 ? 1 : -1;
@@ -388,7 +386,6 @@ export class VehicleCrashPhysicsSystem {
       }
 
       if (strikeSpeed < p.minStrikeSpeed) continue;
-      // Only break off parts near impact zone (or top roof accessories on huge crashes)
       if (distSq < 4.4 || (strikeSpeed >= 15.0 && distSq < 8.5)) {
         candidates.push({ part: p, distSq });
       }
@@ -437,7 +434,6 @@ export class VehicleCrashPhysicsSystem {
         }
       }
 
-      // Detached lights / lamps must never continue glowing as debris
       if (
         part.isLightbar ||
         part.id.startsWith('headlight') ||
@@ -473,9 +469,8 @@ export class VehicleCrashPhysicsSystem {
         }
       }
 
-      // Preserve exact world position/orientation while reparenting to scene
       part.object.updateMatrixWorld(true);
-      this.scene.attach(part.object);
+      this.debrisGroup.attach(part.object);
       part.object.getWorldPosition(_worldPos);
 
       const blast = 3.2 + strikeSpeed * 0.42;
@@ -496,7 +491,7 @@ export class VehicleCrashPhysicsSystem {
 
       if (this.debris.length > 55) {
         const oldest = this.debris.shift()!;
-        this.scene.remove(oldest.object);
+        this.debrisGroup.remove(oldest.object);
       }
     }
   }
@@ -506,7 +501,7 @@ export class VehicleCrashPhysicsSystem {
       const d = this.debris[i];
       d.life -= dt;
       if (d.life <= 0) {
-        this.scene.remove(d.object);
+        this.debrisGroup.remove(d.object);
         this.debris.splice(i, 1);
         continue;
       }
@@ -542,11 +537,15 @@ export class VehicleCrashPhysicsSystem {
     }
   }
 
-  public dispose(): void {
+  public clearDebris(): void {
     for (const d of this.debris) {
-      this.scene.remove(d.object);
+      this.debrisGroup.remove(d.object);
     }
     this.debris = [];
     this.cooldowns.clear();
+  }
+
+  public dispose(): void {
+    this.clearDebris();
   }
 }

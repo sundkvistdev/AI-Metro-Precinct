@@ -1,124 +1,19 @@
 import * as THREE from 'three';
-import { LoadedJsonAssets } from '../assets/assetTypes';
-import { buildJsonModel } from '../assets/jsonModelBuilder';
-import { ProceduralTexturePack } from './textures';
 import {
-  LightbarMode,
-  PoliceLiveryId,
-  PoliceVehicleKind,
-} from './types';
+  AssetIssue,
+  EngineConfigAsset,
+  LoadedJsonAssets,
+} from '../assets/assetTypes';
+import {
+  buildJsonModel,
+  buildMagentaCubeModel,
+  BuiltJsonModel,
+} from '../assets/jsonModelBuilder';
+import { TextureRegistry } from '../assets/textureRegistry';
+import { PoliceLiveryId, PoliceVehicleKind } from './types';
 
-export interface BaseColorSwatch {
-  id: string;
-  label: string;
-  hex: number;
-}
-
-export const VEHICLE_BASE_COLOR_PALETTE: BaseColorSwatch[] = [
-  { id: 'obsidian', label: 'Obsidian', hex: 0x111827 },
-  { id: 'pearl', label: 'Fleet White', hex: 0xe2e8f0 },
-  { id: 'navy', label: 'Patrol Navy', hex: 0x1e3a8a },
-  { id: 'pine', label: 'Sheriff Green', hex: 0x14532d },
-  { id: 'slate', label: 'Steel Slate', hex: 0x475569 },
-  { id: 'cobalt', label: 'Cobalt Blue', hex: 0x1d4ed8 },
-  { id: 'maroon', label: 'Burgundy', hex: 0x7f1d1d },
-  { id: 'sand', label: 'Desert Tan', hex: 0x8b7355 },
-];
-
-export interface PoliceLiverySpec {
-  id: PoliceLiveryId;
-  label: string;
-  agencyLabel: string;
-  callsignNum: string;
-  primaryPaint: number;
-  secondaryPaint: number;
-  stripeHex: string;
-  accentHex: string;
-  chevronPrimary: string;
-  chevronSecondary: string;
-  doorTextureRef: string;
-}
-
-export const POLICE_LIVERIES: Record<PoliceLiveryId, PoliceLiverySpec> = {
-  classic_bw: {
-    id: 'classic_bw',
-    label: 'Black & White',
-    agencyLabel: 'METRO PD',
-    callsignNum: '101',
-    primaryPaint: 0x10141c,
-    secondaryPaint: 0xf1f5f9,
-    stripeHex: '#2563eb',
-    accentHex: '#facc15',
-    chevronPrimary: '#facc15',
-    chevronSecondary: '#0f172a',
-    doorTextureRef: 'police_door_decal',
-  },
-  navy_silver: {
-    id: 'navy_silver',
-    label: 'Navy & Silver',
-    agencyLabel: 'INTERCEPTOR',
-    callsignNum: '102',
-    primaryPaint: 0x1e3a8a,
-    secondaryPaint: 0xe2e8f0,
-    stripeHex: '#38bdf8',
-    accentHex: '#ffffff',
-    chevronPrimary: '#fbbf24',
-    chevronSecondary: '#1e3a8a',
-    doorTextureRef: 'police_door_decal_navy',
-  },
-  forest_cream: {
-    id: 'forest_cream',
-    label: 'Sheriff Green',
-    agencyLabel: 'COUNTY SHERIFF',
-    callsignNum: '103',
-    primaryPaint: 0x14532d,
-    secondaryPaint: 0xfef3c7,
-    stripeHex: '#d97706',
-    accentHex: '#fef08a',
-    chevronPrimary: '#f59e0b',
-    chevronSecondary: '#14532d',
-    doorTextureRef: 'police_door_decal_forest',
-  },
-  slate_cobalt: {
-    id: 'slate_cobalt',
-    label: 'Tactical Cobalt',
-    agencyLabel: 'HIGHWAY K9',
-    callsignNum: '104',
-    primaryPaint: 0x334155,
-    secondaryPaint: 0x1d4ed8,
-    stripeHex: '#f8fafc',
-    accentHex: '#38bdf8',
-    chevronPrimary: '#f97316',
-    chevronSecondary: '#1e293b',
-    doorTextureRef: 'police_door_decal_slate',
-  },
-  transport_blue: {
-    id: 'transport_blue',
-    label: 'Transport Blue',
-    agencyLabel: 'CORRECTIONS',
-    callsignNum: '205',
-    primaryPaint: 0x1d4ed8,
-    secondaryPaint: 0xf8fafc,
-    stripeHex: '#0f172a',
-    accentHex: '#facc15',
-    chevronPrimary: '#ef4444',
-    chevronSecondary: '#f8fafc',
-    doorTextureRef: 'police_door_decal_transport',
-  },
-  tactical_swat: {
-    id: 'tactical_swat',
-    label: 'SWAT Tactical',
-    agencyLabel: 'METRO SWAT',
-    callsignNum: '301',
-    primaryPaint: 0x0f172a,
-    secondaryPaint: 0x1e293b,
-    stripeHex: '#94a3b8',
-    accentHex: '#ef4444',
-    chevronPrimary: '#dc2626',
-    chevronSecondary: '#0f172a',
-    doorTextureRef: 'police_door_decal_swat',
-  },
-};
+export type VehiclesConfig = EngineConfigAsset['vehicles'];
+export type PoliceLiverySpec = VehiclesConfig['liveries'][string];
 
 export interface DetachablePartRef {
   id: string;
@@ -199,6 +94,15 @@ export interface HumanoidRig {
   threatRing: THREE.Mesh | null;
 }
 
+const liveryTexCache = new Map<string, THREE.CanvasTexture>();
+
+export function disposeLiveryTextureCache(): void {
+  for (const tex of liveryTexCache.values()) {
+    tex.dispose();
+  }
+  liveryTexCache.clear();
+}
+
 function makeHaloSprite(
   texture: THREE.CanvasTexture,
   colorHex: number,
@@ -227,22 +131,27 @@ function unitCallsignNum(livery: PoliceLiverySpec, unitNum: number): string {
   return livery.callsignNum;
 }
 
-function makeLiveryStripeTexture(livery: PoliceLiverySpec, unitNum: number): THREE.CanvasTexture {
+function getLiveryStripeTexture(
+  livery: PoliceLiverySpec,
+  unitNum: number,
+): THREE.CanvasTexture {
+  const callsign = unitCallsignNum(livery, unitNum);
+  const key = `stripe:${livery.id}:${callsign}`;
+  const existing = liveryTexCache.get(key);
+  if (existing) return existing;
+
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 96;
   const ctx = canvas.getContext('2d')!;
 
   ctx.clearRect(0, 0, 512, 96);
-  // Crisp lower rocker beltline stripe placed below door emblem so zero overlap occurs
   ctx.fillStyle = livery.stripeHex;
   ctx.fillRect(0, 30, 512, 34);
   ctx.fillStyle = livery.accentHex;
   ctx.fillRect(0, 20, 512, 8);
   ctx.fillRect(0, 66, 512, 6);
 
-  // Diagonal slashes near rear quarter
-  ctx.fillStyle = livery.accentHex;
   for (let i = 0; i < 3; i++) {
     ctx.beginPath();
     const x = 356 + i * 30;
@@ -254,28 +163,37 @@ function makeLiveryStripeTexture(livery: PoliceLiverySpec, unitNum: number): THR
     ctx.fill();
   }
 
-  // Unit callsign lettering on quarter rocker
   ctx.strokeStyle = 'rgba(9, 13, 20, 0.9)';
   ctx.lineWidth = 4;
   ctx.font = 'bold 24px sans-serif';
   ctx.textBaseline = 'middle';
-  const label = `${livery.agencyLabel} · ${unitCallsignNum(livery, unitNum)}`;
+  const label = `${livery.agencyLabel} · ${callsign}`;
   ctx.strokeText(label, 22, 48);
   ctx.fillStyle = '#ffffff';
   ctx.fillText(label, 22, 48);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  liveryTexCache.set(key, tex);
   return tex;
 }
 
-function makeRoofCallsignTexture(livery: PoliceLiverySpec, unitNum: number): THREE.CanvasTexture {
+function getRoofCallsignTexture(
+  livery: PoliceLiverySpec,
+  unitNum: number,
+): THREE.CanvasTexture {
+  const callsign = unitCallsignNum(livery, unitNum);
+  const key = `roof:${livery.id}:${callsign}`;
+  const existing = liveryTexCache.get(key);
+  if (existing) return existing;
+
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
 
-  const darkPlate = livery.secondaryPaint === 0x1e293b;
+  const secHex = parseInt(livery.secondaryPaint.replace('#', ''), 16);
+  const darkPlate = secHex === 0x1e293b;
   ctx.fillStyle = darkPlate ? '#0f172a' : '#f8fafc';
   ctx.fillRect(0, 0, 256, 256);
 
@@ -287,7 +205,7 @@ function makeRoofCallsignTexture(livery: PoliceLiverySpec, unitNum: number): THR
   ctx.font = '900 104px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(unitCallsignNum(livery, unitNum), 128, 116);
+  ctx.fillText(callsign, 128, 116);
 
   ctx.fillStyle = livery.stripeHex;
   ctx.font = 'bold 24px sans-serif';
@@ -295,10 +213,15 @@ function makeRoofCallsignTexture(livery: PoliceLiverySpec, unitNum: number): THR
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  liveryTexCache.set(key, tex);
   return tex;
 }
 
-function makeRearChevronTexture(livery: PoliceLiverySpec): THREE.CanvasTexture {
+function getRearChevronTexture(livery: PoliceLiverySpec): THREE.CanvasTexture {
+  const key = `chevron:${livery.id}`;
+  const existing = liveryTexCache.get(key);
+  if (existing) return existing;
+
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 64;
@@ -328,18 +251,19 @@ function makeRearChevronTexture(livery: PoliceLiverySpec): THREE.CanvasTexture {
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  liveryTexCache.set(key, tex);
   return tex;
 }
 
 function attachLiveryDecals(
   bodyGroup: THREE.Group,
   livery: PoliceLiverySpec,
-  vehicleKind: PoliceVehicleKind,
+  chassis: VehiclesConfig['chassis'][PoliceVehicleKind],
   unitNumber: number,
 ): void {
-  const stripeTex = makeLiveryStripeTexture(livery, unitNumber);
-  const roofTex = makeRoofCallsignTexture(livery, unitNumber);
-  const chevronTex = makeRearChevronTexture(livery);
+  const stripeTex = getLiveryStripeTexture(livery, unitNumber);
+  const roofTex = getRoofCallsignTexture(livery, unitNumber);
+  const chevronTex = getRearChevronTexture(livery);
 
   const stripeMat = new THREE.MeshStandardMaterial({
     map: stripeTex,
@@ -351,55 +275,15 @@ function attachLiveryDecals(
     polygonOffsetFactor: -1,
   });
 
-  // Position side rocker stripe below the door emblem planes so decals never collide or overlap
-  const sideX =
-    vehicleKind === 'apc'
-      ? 1.125
-      : vehicleKind === 'van'
-      ? 1.045
-      : vehicleKind === 'suv'
-      ? 0.995
-      : 1.005;
-  const sideY =
-    vehicleKind === 'apc'
-      ? 0.88
-      : vehicleKind === 'van'
-      ? 0.64
-      : vehicleKind === 'suv'
-      ? 0.67
-      : 0.59;
-  const sideZ =
-    vehicleKind === 'apc' ? -0.15 : vehicleKind === 'van' ? -0.05 : -0.1;
-  const stripeW =
-    vehicleKind === 'apc' ? 4.4 : vehicleKind === 'van' ? 4.45 : 3.95;
-  const stripeH =
-    vehicleKind === 'apc' ? 0.16 : vehicleKind === 'van' ? 0.13 : 0.12;
-
-  const sideL = new THREE.Mesh(new THREE.PlaneGeometry(stripeW, stripeH), stripeMat);
-  sideL.position.set(sideX, sideY, sideZ);
+  const sideGeo = new THREE.PlaneGeometry(chassis.stripeW, chassis.stripeH);
+  const sideL = new THREE.Mesh(sideGeo, stripeMat);
+  sideL.position.set(chassis.sideDecalX, chassis.sideDecalY, chassis.sideDecalZ);
   sideL.rotation.y = Math.PI / 2;
 
-  const sideR = new THREE.Mesh(new THREE.PlaneGeometry(stripeW, stripeH), stripeMat);
-  sideR.position.set(-sideX, sideY, sideZ);
+  const sideR = new THREE.Mesh(sideGeo, stripeMat);
+  sideR.position.set(-chassis.sideDecalX, chassis.sideDecalY, chassis.sideDecalZ);
   sideR.rotation.y = -Math.PI / 2;
 
-  // Roof aerial callsign plate
-  const roofY =
-    vehicleKind === 'apc'
-      ? 2.295
-      : vehicleKind === 'van'
-      ? 2.115
-      : vehicleKind === 'suv'
-      ? 1.815
-      : 1.535;
-  const roofZ =
-    vehicleKind === 'apc'
-      ? -1.96
-      : vehicleKind === 'van'
-      ? -0.75
-      : vehicleKind === 'suv'
-      ? -1.12
-      : -0.78;
   const roofPlate = new THREE.Mesh(
     new THREE.PlaneGeometry(1.18, 0.95),
     new THREE.MeshStandardMaterial({
@@ -411,25 +295,8 @@ function attachLiveryDecals(
     }),
   );
   roofPlate.rotation.x = -Math.PI / 2;
-  roofPlate.position.set(0, roofY, roofZ);
+  roofPlate.position.set(0, chassis.roofPlateY, chassis.roofPlateZ);
 
-  // Rear high-visibility safety chevron bumper/tailgate panel
-  const rearY =
-    vehicleKind === 'apc'
-      ? 0.92
-      : vehicleKind === 'van'
-      ? 0.78
-      : vehicleKind === 'suv'
-      ? 0.74
-      : 0.72;
-  const rearZ =
-    vehicleKind === 'apc'
-      ? -2.578
-      : vehicleKind === 'van'
-      ? -2.445
-      : vehicleKind === 'suv'
-      ? -2.385
-      : -2.358;
   const rearPanel = new THREE.Mesh(
     new THREE.PlaneGeometry(1.58, 0.24),
     new THREE.MeshStandardMaterial({
@@ -441,7 +308,7 @@ function attachLiveryDecals(
     }),
   );
   rearPanel.rotation.y = Math.PI;
-  rearPanel.position.set(0, rearY, rearZ);
+  rearPanel.position.set(0, chassis.rearChevronY, chassis.rearChevronZ);
 
   bodyGroup.add(sideL, sideR, roofPlate, rearPanel);
 }
@@ -512,33 +379,71 @@ const CIVILIAN_DETACH_RULES: Array<{ name: string; minStrikeSpeed: number; isWhe
   { name: 'w_rr', minStrikeSpeed: 14.8, isWheel: true },
 ];
 
-/**
- * Police vehicle (Sedan Cruiser, Interceptor SUV, Transport/SWAT Van, or Tactical APC) built from JSON models
- * + non-overlapping door/rocker/roof/chevron liveries + changeable unified base color + 3-mode roof lightbar.
- */
+function buildModelOrMagentaCube(
+  modelKey: string,
+  fallbackSize: [number, number, number],
+  assets: LoadedJsonAssets,
+  textures: TextureRegistry,
+  colorOverrides?: Record<string, number>,
+  textureOverrides?: Record<string, string>,
+  onAssetIssue?: (issue: AssetIssue) => void,
+): BuiltJsonModel {
+  const modelDef = assets.models[modelKey];
+  if (!modelDef) {
+    console.error(`[MISSING MODEL] "${modelKey}" not found; spawning magenta cube fallback.`);
+    onAssetIssue?.({
+      severity: 'error',
+      category: 'model',
+      id: modelKey,
+      path: assets.manifest.models[modelKey] ?? modelKey,
+      message: 'Model missing from pack (magenta cube fallback rendered)',
+    });
+    return buildMagentaCubeModel(modelKey, fallbackSize);
+  }
+
+  return buildJsonModel(
+    modelDef,
+    textures.byId,
+    colorOverrides,
+    textureOverrides,
+    textures.magentaFallback,
+    (missingTexRef) => {
+      console.error(
+        `[MISSING MODEL TEXTURE] Model "${modelKey}" references missing texture "${missingTexRef}".`,
+      );
+      onAssetIssue?.({
+        severity: 'error',
+        category: 'texture',
+        id: missingTexRef,
+        path: `model:${modelKey}`,
+        message: `Texture "${missingTexRef}" referenced by "${modelKey}" is missing (magenta texture fallback applied)`,
+      });
+    },
+  );
+}
+
 export function createPoliceCruiser(
   unitNumber: number,
   vehicleKind: PoliceVehicleKind,
   liveryId: PoliceLiveryId,
+  vehiclesConfig: VehiclesConfig,
   assets: LoadedJsonAssets,
-  textures: ProceduralTexturePack,
+  textures: TextureRegistry,
   isSoftwareGl: boolean,
   baseColorHex?: number,
+  onAssetIssue?: (issue: AssetIssue) => void,
 ): PoliceCruiserRig {
-  const modelKey =
-    vehicleKind === 'apc'
-      ? 'police_apc'
-      : vehicleKind === 'suv'
-      ? 'police_suv'
-      : vehicleKind === 'van'
-      ? 'police_van'
-      : 'police_cruiser';
-  const livery = POLICE_LIVERIES[liveryId];
-  const initialBaseColor = baseColorHex ?? livery.primaryPaint;
-  const modelDef = assets.models[modelKey];
-  const built = buildJsonModel(
-    modelDef,
-    textures.byId,
+  const chassis = vehiclesConfig.chassis[vehicleKind];
+  const livery =
+    vehiclesConfig.liveries[liveryId] ?? Object.values(vehiclesConfig.liveries)[0];
+  const initialBaseColor =
+    baseColorHex ?? parseInt(livery.primaryPaint.replace('#', ''), 16);
+
+  const built = buildModelOrMagentaCube(
+    chassis.modelRef,
+    [chassis.halfW * 2, chassis.obbHeight, chassis.halfL * 2],
+    assets,
+    textures,
     {
       black_paint: initialBaseColor,
       white_paint: initialBaseColor,
@@ -546,10 +451,10 @@ export function createPoliceCruiser(
     {
       door_decal: livery.doorTextureRef,
     },
+    onAssetIssue,
   );
   const root = built.root;
 
-  // Ensure transparent door decal never z-fights against mid_body door paint
   const doorDecalMat = built.materials['door_decal'] as THREE.MeshPhysicalMaterial | undefined;
   if (doorDecalMat) {
     doorDecalMat.transparent = true;
@@ -570,7 +475,9 @@ export function createPoliceCruiser(
   };
 
   const bodyGroup = (built.tags['bodyGroup']?.[0] as THREE.Group) ?? new THREE.Group();
-  attachLiveryDecals(bodyGroup, livery, vehicleKind, unitNumber);
+  if (!built.isFallbackCube) {
+    attachLiveryDecals(bodyGroup, livery, chassis, unitNumber);
+  }
 
   const cabinCrewGroup = (built.tags['cabinCrewGroup']?.[0] as THREE.Group) ?? new THREE.Group();
   const frontWheels = (built.tags['frontWheel'] ?? []) as THREE.Group[];
@@ -581,7 +488,6 @@ export function createPoliceCruiser(
     w.userData.bentAmount = 0;
   }
 
-  // Clone headlight and taillight materials individually per lamp so detaching one never affects others
   const headY =
     vehicleKind === 'apc'
       ? 1.06
@@ -626,10 +532,7 @@ export function createPoliceCruiser(
   haloHeadRight.position.set(-0.68, headY - 0.12, headZ);
   bodyGroup.add(haloHeadLeft, haloHeadRight);
 
-  const shadowGeo = new THREE.PlaneGeometry(
-    vehicleKind === 'apc' ? 3.1 : vehicleKind === 'sedan' ? 2.7 : 2.85,
-    vehicleKind === 'apc' ? 5.95 : vehicleKind === 'van' ? 5.75 : 5.45,
-  );
+  const shadowGeo = new THREE.PlaneGeometry(chassis.shadowSize[0], chassis.shadowSize[1]);
   shadowGeo.rotateX(-Math.PI / 2);
   const shadowPlane = new THREE.Mesh(
     shadowGeo,
@@ -640,7 +543,7 @@ export function createPoliceCruiser(
       opacity: 0.68,
     }),
   );
-  shadowPlane.position.y = 0.03;
+  shadowPlane.position.y = chassis.shadowY;
   root.add(shadowPlane);
 
   const trimMat = new THREE.MeshStandardMaterial({
@@ -654,25 +557,10 @@ export function createPoliceCruiser(
     metalness: 0.9,
   });
 
-  const lbY =
-    vehicleKind === 'apc'
-      ? 2.31
-      : vehicleKind === 'van'
-      ? 2.14
-      : vehicleKind === 'suv'
-      ? 1.82
-      : 1.56;
-  const lbZ =
-    vehicleKind === 'apc'
-      ? 0.56
-      : vehicleKind === 'van'
-      ? 1.12
-      : vehicleKind === 'suv'
-      ? -0.18
-      : -0.14;
+  const [lbX, lbY, lbZ] = chassis.lightbarPos;
   const lbGroup = new THREE.Group();
   lbGroup.name = 'roof_lightbar';
-  lbGroup.position.set(0, lbY, lbZ);
+  lbGroup.position.set(lbX, lbY, lbZ);
   bodyGroup.add(lbGroup);
 
   const mountGeo = new THREE.BoxGeometry(0.14, 0.08, 0.24);
@@ -827,7 +715,6 @@ export function createPoliceCruiser(
   const rotatorRight = buildRotator(-0.45);
   const rotatorCenter = buildRotator(0);
 
-  // Additive rotating ground-projected beam cookies (zero SpotLight sampler cost -> prevents WebGL2 shader crash)
   const cookieGeo = new THREE.PlaneGeometry(13.5, 13.5).rotateX(-Math.PI / 2);
   const cookieLeft = new THREE.Mesh(
     cookieGeo,
@@ -909,29 +796,23 @@ export function createPoliceCruiser(
   bluePointLight.position.set(-0.55, 0.42, 0);
   lbGroup.add(redPointLight, bluePointLight);
 
-  const clickH =
-    vehicleKind === 'apc'
-      ? 2.7
-      : vehicleKind === 'van'
-      ? 2.4
-      : vehicleKind === 'suv'
-      ? 2.1
-      : 1.9;
-  const clickL =
-    vehicleKind === 'apc' ? 5.5 : vehicleKind === 'van' ? 5.25 : 5.0;
   const clickableMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(vehicleKind === 'apc' ? 2.55 : 2.35, clickH, clickL),
+    new THREE.BoxGeometry(
+      chassis.hitboxSize[0],
+      chassis.hitboxSize[1],
+      chassis.hitboxSize[2],
+    ),
     new THREE.MeshBasicMaterial({ visible: false }),
   );
-  clickableMesh.position.y = clickH * 0.5;
-  clickableMesh.userData.unitId = `unit-${unitNumber}`;
+  clickableMesh.position.y = chassis.hitboxY;
+  clickableMesh.userData.unitId = vehiclesConfig.stationBays[unitNumber - 1]?.id ?? `unit-${unitNumber}`;
   root.add(clickableMesh);
 
   const detachableParts = collectDetachableParts(root, POLICE_DETACH_RULES);
   detachableParts.push({
     id: 'roof_lightbar',
     object: lbGroup,
-    localOffset: new THREE.Vector3(0, lbY, lbZ),
+    localOffset: new THREE.Vector3(lbX, lbY, lbZ),
     minStrikeSpeed: 15.2,
     detached: false,
     isLightbar: true,
@@ -985,213 +866,12 @@ export function createPoliceCruiser(
   };
 }
 
-export function updateLightbarVisuals(
-  rig: PoliceCruiserRig,
-  mode: LightbarMode,
-  active: boolean,
-  time: number,
-  haloBoost = 1.0,
-  phaseOffset = 0,
-  rateMult = 1.0,
-): void {
-  const lb = rig.lightbar;
-
-  const isLed = mode === LightbarMode.LED;
-  const isFlashing = mode === LightbarMode.FlashingHalogen;
-  const isRotating = mode === LightbarMode.RotatingHalogen;
-
-  lb.ledLeftPods.forEach((m) => (m.visible = isLed));
-  lb.ledRightPods.forEach((m) => (m.visible = isLed));
-  lb.ledCenterPods.forEach((m) => (m.visible = isLed));
-
-  lb.halogenLeftBulb.visible = isFlashing;
-  lb.halogenRightBulb.visible = isFlashing;
-  lb.halogenCenterBulb.visible = isFlashing;
-
-  lb.rotatorLeft.visible = isRotating;
-  lb.rotatorRight.visible = isRotating;
-  lb.rotatorCenter.visible = isRotating;
-
-  const effectiveActive = active && !lb.detached;
-
-  if (lb.detached) {
-    // Strictly zero every light emitter on a detached roof lightbar
-    lb.redPointLight.intensity = 0;
-    lb.bluePointLight.intensity = 0;
-    lb.cookieLeft.visible = false;
-    lb.cookieRight.visible = false;
-    lb.leftLensMat.emissiveIntensity = 0;
-    lb.rightLensMat.emissiveIntensity = 0;
-    (lb.haloLeft.material as THREE.SpriteMaterial).opacity = 0;
-    (lb.haloRight.material as THREE.SpriteMaterial).opacity = 0;
-    (lb.haloCenter.material as THREE.SpriteMaterial).opacity = 0;
-    lb.ledLeftPods.forEach((p) => ((p.material as THREE.MeshStandardMaterial).emissiveIntensity = 0));
-    lb.ledRightPods.forEach((p) => ((p.material as THREE.MeshStandardMaterial).emissiveIntensity = 0));
-    lb.ledCenterPods.forEach((p) => ((p.material as THREE.MeshStandardMaterial).emissiveIntensity = 0));
-    (lb.halogenLeftBulb.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
-    (lb.halogenRightBulb.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
-    (lb.halogenCenterBulb.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
-  }
-
-  if (!effectiveActive) {
-    lb.redPointLight.intensity = 0;
-    lb.bluePointLight.intensity = 0;
-    lb.cookieLeft.visible = false;
-    lb.cookieRight.visible = false;
-    if (!lb.detached) {
-      lb.leftLensMat.emissiveIntensity = 0.08;
-      lb.rightLensMat.emissiveIntensity = 0.08;
-      (lb.haloLeft.material as THREE.SpriteMaterial).opacity = 0;
-      (lb.haloRight.material as THREE.SpriteMaterial).opacity = 0;
-      (lb.haloCenter.material as THREE.SpriteMaterial).opacity = 0;
-      lb.ledLeftPods.forEach((p) => ((p.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.1));
-      lb.ledRightPods.forEach((p) => ((p.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.1));
-      lb.ledCenterPods.forEach((p) => ((p.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.05));
-      (lb.halogenLeftBulb.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.05;
-      (lb.halogenRightBulb.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.05;
-      (lb.halogenCenterBulb.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.05;
-    }
-
-    (lb.rearDeckRed.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
-    (lb.rearDeckBlue.material as THREE.MeshStandardMaterial).emissiveIntensity = 0;
-    (lb.haloRearLeft.material as THREE.SpriteMaterial).opacity = 0;
-    (lb.haloRearRight.material as THREE.SpriteMaterial).opacity = 0;
-
-    lb.headlightLeftMat.emissiveIntensity = lb.headlightLeftDetached ? 0 : 1.3;
-    lb.headlightRightMat.emissiveIntensity = lb.headlightRightDetached ? 0 : 1.3;
-    lb.taillightLeftMat.emissiveIntensity = lb.taillightLeftDetached ? 0 : 1.3;
-    lb.taillightRightMat.emissiveIntensity = lb.taillightRightDetached ? 0 : 1.3;
-    (lb.haloHeadLeft.material as THREE.SpriteMaterial).opacity = lb.headlightLeftDetached ? 0 : 0.25 * haloBoost;
-    (lb.haloHeadRight.material as THREE.SpriteMaterial).opacity = lb.headlightRightDetached ? 0 : 0.25 * haloBoost;
-    return;
-  }
-
-  // Per-unit + internal flasher oscillator desync for authentic fleet lighting
-  const t = time * rateMult + phaseOffset;
-
-  let leftRedPower = 0;
-  let rightBluePower = 0;
-  let centerPower = 0;
-
-  if (isLed) {
-    const cycleL = (t * 2.2) % 1;
-    const cycleR = (t * 2.27 + 0.17) % 1;
-    const cycleC = (t * 2.11 + 0.31) % 1;
-
-    const redBurst =
-      cycleL < 0.08 || (cycleL > 0.14 && cycleL < 0.22) || (cycleL > 0.28 && cycleL < 0.36);
-    const blueBurst =
-      (cycleR > 0.48 && cycleR < 0.56) ||
-      (cycleR > 0.62 && cycleR < 0.7) ||
-      (cycleR > 0.76 && cycleR < 0.84);
-    const takedownBurst =
-      (cycleC > 0.38 && cycleC < 0.45) || (cycleC > 0.88 && cycleC < 0.95);
-
-    leftRedPower = redBurst ? 1.0 : 0.05;
-    rightBluePower = blueBurst ? 1.0 : 0.05;
-    centerPower = takedownBurst ? 1.0 : 0.05;
-
-    lb.cookieLeft.visible = false;
-    lb.cookieRight.visible = false;
-    lb.redPointLight.position.set(0.55, 0.42, 0);
-    lb.bluePointLight.position.set(-0.55, 0.42, 0);
-
-    lb.ledLeftPods.forEach((p, idx) => {
-      const alt = idx === 1 ? (cycleL > 0.14 && cycleL < 0.36 ? 1.0 : 0.1) : leftRedPower;
-      (p.material as THREE.MeshStandardMaterial).emissiveIntensity = alt * 5.2;
-    });
-    lb.ledRightPods.forEach((p, idx) => {
-      const alt = idx === 1 ? (cycleR > 0.62 && cycleR < 0.84 ? 1.0 : 0.1) : rightBluePower;
-      (p.material as THREE.MeshStandardMaterial).emissiveIntensity = alt * 5.2;
-    });
-    lb.ledCenterPods.forEach((p, idx) => {
-      const alt = idx === 0 ? centerPower : cycleC > 0.42 && cycleC < 0.5 ? 1.0 : 0.06;
-      (p.material as THREE.MeshStandardMaterial).emissiveIntensity = alt * 4.5;
-    });
-  } else if (isFlashing) {
-    const phaseL = t * 5.35;
-    const phaseR = t * 5.58 + Math.PI + 0.42;
-    const phaseC = t * 7.85 + 1.15;
-    leftRedPower = Math.pow(Math.max(0, Math.sin(phaseL) * 0.5 + 0.5), 2.1);
-    rightBluePower = Math.pow(Math.max(0, Math.sin(phaseR) * 0.5 + 0.5), 2.1);
-    centerPower = Math.pow(Math.max(0, Math.sin(phaseC) * 0.5 + 0.5), 3.0);
-
-    lb.cookieLeft.visible = false;
-    lb.cookieRight.visible = false;
-    lb.redPointLight.position.set(0.55, 0.42, 0);
-    lb.bluePointLight.position.set(-0.55, 0.42, 0);
-
-    (lb.halogenLeftBulb.material as THREE.MeshStandardMaterial).emissiveIntensity =
-      0.2 + leftRedPower * 5.5;
-    (lb.halogenRightBulb.material as THREE.MeshStandardMaterial).emissiveIntensity =
-      0.2 + rightBluePower * 5.5;
-    (lb.halogenCenterBulb.material as THREE.MeshStandardMaterial).emissiveIntensity =
-      0.1 + centerPower * 4.2;
-  } else if (isRotating) {
-    const angL = t * 11.2;
-    const angR = -t * 12.35 + 1.45;
-    const angC = t * 8.65 + 2.7;
-
-    lb.rotatorLeft.rotation.y = angL;
-    lb.rotatorRight.rotation.y = angR;
-    lb.rotatorCenter.rotation.y = angC;
-
-    lb.cookieLeft.visible = true;
-    lb.cookieRight.visible = true;
-    lb.cookieLeft.rotation.y = angL;
-    lb.cookieRight.rotation.y = angR;
-    (lb.cookieLeft.material as THREE.MeshBasicMaterial).opacity = 0.28 * haloBoost;
-    (lb.cookieRight.material as THREE.MeshBasicMaterial).opacity = 0.28 * haloBoost;
-
-    // Sweep point lights slightly along rotator beam directions
-    lb.redPointLight.position.set(0.45 + Math.sin(angL) * 1.1, 0.42, Math.cos(angL) * 1.1);
-    lb.bluePointLight.position.set(-0.45 + Math.sin(angR) * 1.1, 0.42, Math.cos(angR) * 1.1);
-
-    leftRedPower = 0.4 + 0.6 * Math.abs(Math.cos(angL));
-    rightBluePower = 0.4 + 0.6 * Math.abs(Math.cos(angR));
-    centerPower = 0.25 + 0.55 * Math.abs(Math.cos(angC));
-  }
-
-  lb.leftLensMat.emissiveIntensity = 0.2 + leftRedPower * 1.85;
-  lb.rightLensMat.emissiveIntensity = 0.2 + rightBluePower * 1.85;
-
-  (lb.rearDeckRed.material as THREE.MeshStandardMaterial).emissiveIntensity = leftRedPower * 3.8;
-  (lb.rearDeckBlue.material as THREE.MeshStandardMaterial).emissiveIntensity = rightBluePower * 3.8;
-
-  lb.headlightLeftMat.emissiveIntensity = lb.headlightLeftDetached ? 0 : 1.2 + leftRedPower * 2.4;
-  lb.headlightRightMat.emissiveIntensity = lb.headlightRightDetached ? 0 : 1.2 + rightBluePower * 2.4;
-  lb.taillightLeftMat.emissiveIntensity = lb.taillightLeftDetached ? 0 : 1.4;
-  lb.taillightRightMat.emissiveIntensity = lb.taillightRightDetached ? 0 : 1.4;
-
-  lb.redPointLight.intensity = leftRedPower * 16;
-  lb.bluePointLight.intensity = rightBluePower * 16;
-
-  (lb.haloLeft.material as THREE.SpriteMaterial).opacity = leftRedPower * 0.72 * haloBoost;
-  lb.haloLeft.scale.set(1.1 + leftRedPower * 0.7, 0.8 + leftRedPower * 0.45, 1);
-
-  (lb.haloRight.material as THREE.SpriteMaterial).opacity = rightBluePower * 0.72 * haloBoost;
-  lb.haloRight.scale.set(1.1 + rightBluePower * 0.7, 0.8 + rightBluePower * 0.45, 1);
-
-  (lb.haloCenter.material as THREE.SpriteMaterial).opacity = centerPower * 0.55 * haloBoost;
-  (lb.haloRearLeft.material as THREE.SpriteMaterial).opacity = leftRedPower * 0.65 * haloBoost;
-  (lb.haloRearRight.material as THREE.SpriteMaterial).opacity = rightBluePower * 0.65 * haloBoost;
-
-  (lb.haloHeadLeft.material as THREE.SpriteMaterial).opacity = lb.headlightLeftDetached
-    ? 0
-    : (0.3 + leftRedPower * 0.35) * haloBoost;
-  (lb.haloHeadRight.material as THREE.SpriteMaterial).opacity = lb.headlightRightDetached
-    ? 0
-    : (0.3 + rightBluePower * 0.35) * haloBoost;
-}
-
-/**
- * Civilian vehicle compiled deterministically from JSON model definitions.
- */
 export function createCivilianCar(
   variant: 'sedan' | 'hatch' | 'taxi' | 'van',
   colorHex: number,
   assets: LoadedJsonAssets,
-  textures: ProceduralTexturePack,
+  textures: TextureRegistry,
+  onAssetIssue?: (issue: AssetIssue) => void,
 ): CivilianCarRig {
   const modelKey =
     variant === 'sedan'
@@ -1203,7 +883,15 @@ export function createCivilianCar(
       : 'civilian_van';
 
   const overrides = variant === 'taxi' ? undefined : { paint: colorHex };
-  const built = buildJsonModel(assets.models[modelKey], textures.byId, overrides);
+  const built = buildModelOrMagentaCube(
+    modelKey,
+    [1.85, 1.45, 4.4],
+    assets,
+    textures,
+    overrides,
+    undefined,
+    onAssetIssue,
+  );
   const root = built.root;
 
   const shadowGeo = new THREE.PlaneGeometry(2.3, 4.6);
@@ -1231,14 +919,12 @@ export function createCivilianCar(
   return { root, bodyGroup, wheels, detachableParts };
 }
 
-/**
- * Multi-part articulated humanoid compiled deterministically from JSON model definitions.
- */
 export function createHumanoid(
   role: 'officer' | 'heavy_officer' | 'suspect' | 'pedestrian',
   assets: LoadedJsonAssets,
-  textures: ProceduralTexturePack,
+  textures: TextureRegistry,
   shirtHex?: number,
+  onAssetIssue?: (issue: AssetIssue) => void,
 ): HumanoidRig {
   const modelKey =
     role === 'heavy_officer'
@@ -1251,7 +937,15 @@ export function createHumanoid(
 
   const overrides =
     role === 'pedestrian' && shirtHex !== undefined ? { shirt: shirtHex } : undefined;
-  const built = buildJsonModel(assets.models[modelKey], textures.byId, overrides);
+  const built = buildModelOrMagentaCube(
+    modelKey,
+    [0.65, 1.75, 0.45],
+    assets,
+    textures,
+    overrides,
+    undefined,
+    onAssetIssue,
+  );
   const root = built.root;
 
   const shadowPlane = new THREE.Mesh(

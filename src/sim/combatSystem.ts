@@ -1,7 +1,8 @@
 import * as THREE from 'three';
+import { EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
-import { getSurfaceHeight } from './roadGraph';
+import { getSurfaceHeight, WorldConfig } from './roadGraph';
 import {
   ActiveCrime,
   BulletTracer,
@@ -10,62 +11,15 @@ import {
   PedestrianActor,
   PoliceUnit,
 } from './simActors';
-import { WeaponKind } from './types';
+import { PoliceVehicleKind, UnitStatus, WeaponKind } from './types';
 import { SimVfxManager, stepRagdollPhysics, triggerRagdoll } from './vfx';
 
 const _vDir = new THREE.Vector3();
 const _vLook = new THREE.Vector3();
-const _vHitPos = new THREE.Vector3();
 
-interface WeaponBallisticSpec {
-  speed: number;
-  gravity: number;
-  baseSpreadRad: number;
-  suppressedSpreadRad: number;
-  minDmg: number;
-  maxDmg: number;
-  armorPen: number;
-  magSize: number;
-  cooldownMin: number;
-  cooldownJitter: number;
-  reloadTime: number;
-  maxRange: number;
-}
+export type WeaponsConfig = EngineConfigAsset['weapons'];
+export type ChassisConfigMap = EngineConfigAsset['vehicles']['chassis'];
 
-const WEAPON_SPECS: Record<WeaponKind, WeaponBallisticSpec> = {
-  pistol: {
-    speed: 78,
-    gravity: 7.5,
-    baseSpreadRad: 0.085,
-    suppressedSpreadRad: 0.19,
-    minDmg: 17,
-    maxDmg: 27,
-    armorPen: 0.24,
-    magSize: 12,
-    cooldownMin: 0.34,
-    cooldownJitter: 0.24,
-    reloadTime: 1.35,
-    maxRange: 30,
-  },
-  rifle: {
-    speed: 118,
-    gravity: 4.5,
-    baseSpreadRad: 0.032,
-    suppressedSpreadRad: 0.085,
-    minDmg: 24,
-    maxDmg: 35,
-    armorPen: 0.62,
-    magSize: 28,
-    cooldownMin: 0.16,
-    cooldownJitter: 0.09,
-    reloadTime: 1.55,
-    maxRange: 44,
-  },
-};
-
-/**
- * Closest fraction t in [0, 1] along 3D segment P0 -> P1 against a vertical humanoid cylinder.
- */
 function segmentHitsHumanoid(
   p0: THREE.Vector3,
   p1: THREE.Vector3,
@@ -102,9 +56,6 @@ function segmentHitsHumanoid(
   return { hit: true, t, hitY };
 }
 
-/**
- * Tests 3D segment against a vehicle's oriented bounding box in local XZ + height.
- */
 function segmentHitsVehicleOBB(
   p0: THREE.Vector3,
   p1: THREE.Vector3,
@@ -181,10 +132,14 @@ function segmentHitsVehicleOBB(
 }
 
 export class CombatSystem {
-  private scene: THREE.Scene;
+  private tracersGroup: THREE.Group;
   private rng: () => number;
   private vfx: SimVfxManager;
   private tracers: BulletTracer[] = [];
+
+  private weapons: WeaponsConfig | null = null;
+  private world: WorldConfig | null = null;
+  private chassis: ChassisConfigMap | null = null;
 
   private pistolTracerGeo = new THREE.BoxGeometry(0.055, 0.055, 1.35);
   private rifleTracerGeo = new THREE.BoxGeometry(0.065, 0.065, 2.05);
@@ -192,10 +147,23 @@ export class CombatSystem {
   private rifleTracerMat = new THREE.MeshBasicMaterial({ color: 0x93c5fd });
   private suspectTracerMat = new THREE.MeshBasicMaterial({ color: 0xf87171 });
 
-  constructor(scene: THREE.Scene, rng: () => number, vfx: SimVfxManager) {
-    this.scene = scene;
+  constructor(tracersGroup: THREE.Group, rng: () => number, vfx: SimVfxManager) {
+    this.tracersGroup = tracersGroup;
     this.rng = rng;
     this.vfx = vfx;
+  }
+
+  public configure(config: EngineConfigAsset): void {
+    this.weapons = config.weapons;
+    this.world = config.world;
+    this.chassis = config.vehicles.chassis;
+  }
+
+  public clearTracers(): void {
+    for (const tr of this.tracers) {
+      this.tracersGroup.remove(tr.mesh);
+    }
+    this.tracers.length = 0;
   }
 
   public checkVehiclePedestrianStrike(
@@ -250,23 +218,26 @@ export class CombatSystem {
     audio: JsonAudioSynth | null,
     dt: number,
   ): void {
+    if (!this.weapons || !this.world) return;
+    const world = this.world;
+
     if (off.hp <= 0) {
       if (off.ragdoll.active) {
-        stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, dt);
+        stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
       }
       if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
       return;
     }
 
     if (off.ragdoll.active) {
-      stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, dt);
+      stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
       off.ragdoll.recoverTimer -= dt;
       if (off.ragdoll.recoverTimer <= 0) {
         off.ragdoll.active = false;
         off.hp = Math.max(off.hp, 35);
         off.morale = off.isHeavy ? 65 : 15;
         off.cowardiceState = off.isHeavy ? 'steady' : 'fleeing';
-        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
         off.rig.root.rotation.set(0, off.yaw, 0);
         off.rig.torso.position.y = off.rig.torsoBaseY;
         off.rig.leftArm.rotation.set(0, 0, 0);
@@ -312,7 +283,7 @@ export class CombatSystem {
       off.pos.x += dirX * 5.8 * dt;
       off.pos.z += dirZ * 5.8 * dt;
       staticBvh.resolveCircle(off.pos, 0.48);
-      off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+      off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
 
       off.walkPhase += dt * 15;
       const swing = Math.sin(off.walkPhase) * 0.68;
@@ -412,9 +383,9 @@ export class CombatSystem {
       off.rig.rightLeg.rotation.x = THREE.MathUtils.damp(off.rig.rightLeg.rotation.x, 0, 10, dt);
     }
 
-    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
 
-    const spec = WEAPON_SPECS[off.weaponKind];
+    const spec = this.weapons[off.weaponKind];
     if (off.reloadTimer > 0) {
       off.reloadTimer -= dt;
       off.rig.rightArm.rotation.x = THREE.MathUtils.damp(off.rig.rightArm.rotation.x, -0.52, 10, dt);
@@ -523,22 +494,26 @@ export class CombatSystem {
     staticBvh: StaticObstacleBVH,
     dt: number,
   ): void {
+    if (!this.world) return;
+    const world = this.world;
+    const roamBound = Math.max(120, world.townHalfSize - 36);
+
     if (off.hp <= 0) {
       if (off.ragdoll.active) {
-        stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, dt);
+        stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
       }
       return;
     }
 
     if (off.ragdoll.active) {
-      stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, dt);
+      stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
       off.ragdoll.recoverTimer -= dt;
       if (off.ragdoll.recoverTimer <= 0) {
         off.ragdoll.active = false;
         off.hp = off.maxHp;
         off.morale = 85;
         off.cowardiceState = 'steady';
-        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
         off.rig.root.rotation.set(0, off.yaw, 0);
         off.rig.torso.position.y = off.rig.torsoBaseY;
         off.rig.leftArm.rotation.set(0, 0, 0);
@@ -561,7 +536,7 @@ export class CombatSystem {
 
     if (off.roamPauseTimer > 0) {
       off.roamPauseTimer -= dt;
-      off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+      off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
       off.rig.leftLeg.rotation.x = THREE.MathUtils.damp(off.rig.leftLeg.rotation.x, 0, 10, dt);
       off.rig.rightLeg.rotation.x = THREE.MathUtils.damp(off.rig.rightLeg.rotation.x, 0, 10, dt);
       off.rig.rightArm.rotation.x = THREE.MathUtils.damp(off.rig.rightArm.rotation.x, -0.4, 8, dt);
@@ -582,19 +557,19 @@ export class CombatSystem {
       for (let attempt = 0; attempt < 6; attempt++) {
         const ang = this.rng() * Math.PI * 2;
         const rad = 14 + this.rng() * 26;
-        const cx = THREE.MathUtils.clamp(anchorX + Math.cos(ang) * rad, -164, 164);
-        const cz = THREE.MathUtils.clamp(anchorZ + Math.sin(ang) * rad, -164, 164);
-        const cand = new THREE.Vector3(cx, getSurfaceHeight(cx, cz), cz);
+        const cx = THREE.MathUtils.clamp(anchorX + Math.cos(ang) * rad, -roamBound, roamBound);
+        const cz = THREE.MathUtils.clamp(anchorZ + Math.sin(ang) * rad, -roamBound, roamBound);
+        const cand = new THREE.Vector3(cx, getSurfaceHeight(cx, cz, world), cz);
         staticBvh.resolveCircle(cand, 0.65);
-        cand.y = getSurfaceHeight(cand.x, cand.z);
+        cand.y = getSurfaceHeight(cand.x, cand.z, world);
         if (cand.distanceToSquared(off.pos) > 8 * 8) {
           picked = cand;
           break;
         }
       }
-      const fbX = THREE.MathUtils.clamp(off.pos.x + (idx === 0 ? 12 : -12), -160, 160);
-      const fbZ = THREE.MathUtils.clamp(off.pos.z + 10, -160, 160);
-      off.roamTarget = picked ?? new THREE.Vector3(fbX, getSurfaceHeight(fbX, fbZ), fbZ);
+      const fbX = THREE.MathUtils.clamp(off.pos.x + (idx === 0 ? 12 : -12), -roamBound + 4, roamBound - 4);
+      const fbZ = THREE.MathUtils.clamp(off.pos.z + 10, -roamBound + 4, roamBound - 4);
+      off.roamTarget = picked ?? new THREE.Vector3(fbX, getSurfaceHeight(fbX, fbZ, world), fbZ);
       off.roamTimer = 7 + this.rng() * 5;
     }
 
@@ -645,7 +620,7 @@ export class CombatSystem {
       off.rig.leftArm.rotation.z = THREE.MathUtils.damp(off.rig.leftArm.rotation.z, -0.38, 8, dt);
     }
 
-    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+    off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
     off.rig.root.position.copy(off.pos);
     off.rig.root.rotation.y = off.yaw;
   }
@@ -659,6 +634,10 @@ export class CombatSystem {
     simTime: number,
     dt: number,
   ): void {
+    if (!this.weapons || !this.world) return;
+    const world = this.world;
+    const roamBound = Math.max(120, world.townHalfSize - 35);
+
     if (c.suspectRig.threatRing) {
       const s = 1 + Math.sin(simTime * 5) * 0.12;
       c.suspectRig.threatRing.scale.set(s, s, 1);
@@ -679,7 +658,7 @@ export class CombatSystem {
       }
     }
 
-    c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z);
+    c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, world);
 
     if (targetOfficer && minD < 40 * 40) {
       const dx = targetOfficer.pos.x - c.suspectPos.x;
@@ -718,9 +697,9 @@ export class CombatSystem {
       c.suspectPos.x += (moveX / mLen) * spd * dt;
       c.suspectPos.z += (moveZ / mLen) * spd * dt;
       staticBvh.resolveCircle(c.suspectPos, 0.5);
-      c.suspectPos.x = THREE.MathUtils.clamp(c.suspectPos.x, -165, 165);
-      c.suspectPos.z = THREE.MathUtils.clamp(c.suspectPos.z, -165, 165);
-      c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z);
+      c.suspectPos.x = THREE.MathUtils.clamp(c.suspectPos.x, -roamBound, roamBound);
+      c.suspectPos.z = THREE.MathUtils.clamp(c.suspectPos.z, -roamBound, roamBound);
+      c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, world);
       c.suspectRig.root.position.copy(c.suspectPos);
 
       c.suspectWalkPhase += dt * 9;
@@ -728,7 +707,7 @@ export class CombatSystem {
       c.suspectRig.leftLeg.rotation.x = legSwing;
       c.suspectRig.rightLeg.rotation.x = -legSwing;
 
-      const sSpec = WEAPON_SPECS[c.suspectWeaponKind];
+      const sSpec = this.weapons[c.suspectWeaponKind];
       if (c.suspectReloadTimer > 0) {
         c.suspectReloadTimer -= dt;
         c.suspectRig.rightArm.rotation.x = THREE.MathUtils.damp(
@@ -839,16 +818,15 @@ export class CombatSystem {
     isSuspect: boolean,
     shooterUnitId: string | null,
   ): void {
+    if (!this.weapons) return;
     _vDir.set(tx - x0, ty - y0, tz - z0);
     const dist = _vDir.length() || 1;
     _vDir.divideScalar(dist);
 
-    const spec = WEAPON_SPECS[weaponKind];
-    // Compensate slightly for ballistic drop over distance
+    const spec = this.weapons[weaponKind];
     const flightT = dist / spec.speed;
     _vDir.y += (0.5 * spec.gravity * flightT * flightT) / dist;
 
-    // Gaussian-like angular yaw and pitch spread so shots realistically miss or strike cover
     const yawJitter = ((this.rng() + this.rng()) * 0.5 - 0.5) * 2.2 * spreadRad;
     const pitchJitter = ((this.rng() + this.rng()) * 0.5 - 0.5) * 1.5 * spreadRad;
 
@@ -869,7 +847,7 @@ export class CombatSystem {
     mesh.position.set(x0, y0, z0);
     _vLook.set(x0 + _vDir.x, y0 + _vDir.y, z0 + _vDir.z);
     mesh.lookAt(_vLook);
-    this.scene.add(mesh);
+    this.tracersGroup.add(mesh);
 
     this.tracers.push({
       mesh,
@@ -896,6 +874,9 @@ export class CombatSystem {
     dt: number,
     onSuspectNeutralized: () => void,
   ): void {
+    if (!this.world || !this.chassis) return;
+    const world = this.world;
+
     for (let i = this.tracers.length - 1; i >= 0; i--) {
       const tr = this.tracers[i];
       tr.life -= dt;
@@ -911,7 +892,7 @@ export class CombatSystem {
       _vLook.copy(p1).add(tr.vel);
       tr.mesh.lookAt(_vLook);
 
-      const groundAtNext = getSurfaceHeight(p1.x, p1.z);
+      const groundAtNext = getSurfaceHeight(p1.x, p1.z, world);
       let destroyed = tr.life <= 0 || p1.y <= groundAtNext;
 
       if (p1.y <= groundAtNext) {
@@ -919,7 +900,6 @@ export class CombatSystem {
         destroyed = true;
       }
 
-      // 1. Static building / wall obstruction (absorbs bullet)
       if (!destroyed) {
         const ray = staticBvh.raycastSegment(p0.x, p0.z, p1.x, p1.z);
         if (!ray.clear) {
@@ -937,20 +917,11 @@ export class CombatSystem {
         }
       }
 
-      // 2. Vehicle cover & chassis interception (cars absorb gunfire + spark)
       if (!destroyed) {
         for (const u of units) {
-          if (u.status === UnitStatusSkip) continue;
-          // Give shooter 35ms clearance past their own cruiser door frame
+          if (u.status === UnitStatus.AtStation) continue;
           if (tr.shooterUnitId === u.id && age < 0.035) continue;
-          const vehH =
-            u.vehicleKind === 'apc'
-              ? 2.34
-              : u.vehicleKind === 'van'
-              ? 2.15
-              : u.vehicleKind === 'suv'
-              ? 1.82
-              : 1.52;
+          const vehH = this.chassis[u.vehicleKind as PoliceVehicleKind].obbHeight;
           const hit = segmentHitsVehicleOBB(p0, p1, u.pos, u.yaw, u.halfW, u.halfL, vehH);
           if (hit.hit) {
             this.vfx.spawnImpactSparks(hit.hitX, hit.hitY, hit.hitZ, 5, 0.85);
@@ -986,7 +957,6 @@ export class CombatSystem {
         }
       }
 
-      // 3. Police rounds vs Suspect (with armor absorption)
       if (!destroyed && !tr.isSuspect) {
         for (const c of crimes) {
           if (!c.suspectAlive || c.inVehiclePursuit) continue;
@@ -1049,7 +1019,6 @@ export class CombatSystem {
         }
       }
 
-      // 4. Suspect rounds vs Officers (with body armor absorption & casualties)
       if (!destroyed && tr.isSuspect) {
         for (const u of units) {
           if (u.mounted) continue;
@@ -1068,7 +1037,6 @@ export class CombatSystem {
                 const absorbed = Math.min(off.armor, dmg * effectiveAbsorb);
                 off.armor = Math.max(0, off.armor - absorbed);
                 dmg -= absorbed;
-                // Vest / tactical plate spark
                 this.vfx.spawnImpactSparks(
                   off.pos.x,
                   hit.hitY,
@@ -1126,7 +1094,6 @@ export class CombatSystem {
         }
       }
 
-      // 5. Stray bullets vs Pedestrians
       if (!destroyed) {
         for (const ped of pedestrians) {
           if (ped.ragdoll.active) continue;
@@ -1158,13 +1125,14 @@ export class CombatSystem {
       }
 
       if (destroyed) {
-        this.scene.remove(tr.mesh);
+        this.tracersGroup.remove(tr.mesh);
         this.tracers.splice(i, 1);
       }
     }
   }
 
   public dispose(): void {
+    this.clearTracers();
     this.pistolTracerGeo.dispose();
     this.rifleTracerGeo.dispose();
     this.policeTracerMat.dispose();
@@ -1172,5 +1140,3 @@ export class CombatSystem {
     this.suspectTracerMat.dispose();
   }
 }
-
-const UnitStatusSkip = 'AT_STATION' as const;

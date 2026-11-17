@@ -1,3 +1,5 @@
+import { AssetIssue } from '../assets/assetTypes';
+
 export enum LightbarMode {
   LED = 'LED',
   FlashingHalogen = 'FLASHING_HALOGEN',
@@ -68,7 +70,14 @@ export type PoliceLiveryId =
   | 'forest_cream'
   | 'slate_cobalt'
   | 'transport_blue'
-  | 'tactical_swat';
+  | 'tactical_swat'
+  | string;
+
+export interface PaintSwatchSummary {
+  id: string;
+  label: string;
+  hex: number;
+}
 
 export interface UnitSummary {
   id: string;
@@ -128,11 +137,16 @@ export interface SimSnapshot {
   audioEnabled: boolean;
   simSpeed: 1 | 2;
   isSoftwareGl: boolean;
+  paintPalette: PaintSwatchSummary[];
   assetPackName: string;
+  assetSourceLabel: string;
+  configVersion: string;
   assetCounts: {
     textures: number;
     models: number;
     audio: number;
   };
   assetsLoaded: boolean;
+  assetIssues: AssetIssue[];
+  fatalError: string | null;
 }

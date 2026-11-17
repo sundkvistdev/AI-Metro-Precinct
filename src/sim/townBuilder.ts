@@ -1,12 +1,8 @@
 import * as THREE from 'three';
+import { TextureRegistry } from '../assets/textureRegistry';
 import { ObstacleAABB } from './bvh';
-import {
-  ROAD_COORDS,
-  ROAD_WIDTH,
-  SIDEWALK_WIDTH,
-  STATION_BOUNDS,
-} from './roadGraph';
-import { ProceduralTexturePack } from './textures';
+import { WorldConfig } from './roadGraph';
+import { SceneWorldHierarchy } from './sceneHierarchy';
 
 export interface TownEnvironmentHandles {
   obstacles: ObstacleAABB[];
@@ -18,11 +14,18 @@ export interface TownEnvironmentHandles {
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
 
+function freezeStatic(obj: THREE.Object3D): void {
+  obj.updateMatrix();
+  obj.matrixAutoUpdate = false;
+}
+
 export function buildTownEnvironment(
-  scene: THREE.Scene,
-  textures: ProceduralTexturePack,
+  hierarchy: SceneWorldHierarchy,
+  world: WorldConfig,
+  textures: TextureRegistry,
 ): TownEnvironmentHandles {
   const obstacles: ObstacleAABB[] = [];
+  const { roadCoords, roadWidth, sidewalkWidth, blockCenters, parkBlock } = world;
 
   const terrainMat = new THREE.MeshStandardMaterial({
     color: 0x364437,
@@ -36,7 +39,8 @@ export function buildTownEnvironment(
   );
   terrain.position.y = 0;
   terrain.receiveShadow = true;
-  scene.add(terrain);
+  freezeStatic(terrain);
+  hierarchy.world.terrain.add(terrain);
 
   const roadMatV = new THREE.MeshStandardMaterial({
     map: textures.asphaltRoadV,
@@ -57,33 +61,31 @@ export function buildTownEnvironment(
     metalness: 0.05,
   });
 
-  for (const coord of ROAD_COORDS) {
-    const roadV = new THREE.Mesh(
-      new THREE.PlaneGeometry(ROAD_WIDTH, 400).rotateX(-Math.PI / 2),
-      roadMatV,
-    );
+  const roadVGeo = new THREE.PlaneGeometry(roadWidth, 400).rotateX(-Math.PI / 2);
+  const roadHGeo = new THREE.PlaneGeometry(400, roadWidth).rotateX(-Math.PI / 2);
+  const padGeo = new THREE.PlaneGeometry(roadWidth, roadWidth).rotateX(-Math.PI / 2);
+
+  for (const coord of roadCoords) {
+    const roadV = new THREE.Mesh(roadVGeo, roadMatV);
     roadV.position.set(coord, 0.02, 0);
     roadV.receiveShadow = true;
-    scene.add(roadV);
+    freezeStatic(roadV);
+    hierarchy.world.roads.add(roadV);
 
-    const roadH = new THREE.Mesh(
-      new THREE.PlaneGeometry(400, ROAD_WIDTH).rotateX(-Math.PI / 2),
-      roadMatH,
-    );
+    const roadH = new THREE.Mesh(roadHGeo, roadMatH);
     roadH.position.set(0, 0.025, coord);
     roadH.receiveShadow = true;
-    scene.add(roadH);
+    freezeStatic(roadH);
+    hierarchy.world.roads.add(roadH);
   }
 
-  for (const rx of ROAD_COORDS) {
-    for (const rz of ROAD_COORDS) {
-      const pad = new THREE.Mesh(
-        new THREE.PlaneGeometry(ROAD_WIDTH, ROAD_WIDTH).rotateX(-Math.PI / 2),
-        interMat,
-      );
+  for (const rx of roadCoords) {
+    for (const rz of roadCoords) {
+      const pad = new THREE.Mesh(padGeo, interMat);
       pad.position.set(rx, 0.035, rz);
       pad.receiveShadow = true;
-      scene.add(pad);
+      freezeStatic(pad);
+      hierarchy.world.roads.add(pad);
     }
   }
 
@@ -98,14 +100,39 @@ export function buildTownEnvironment(
     roughnessMap: textures.roughnessConcrete,
     roughness: 0.92,
   });
-  const hvacMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.48, metalness: 0.55 });
-  const awningMat = new THREE.MeshStandardMaterial({ color: 0x1e3a8a, roughness: 0.62 });
+  const hvacMat = new THREE.MeshStandardMaterial({
+    color: 0x94a3b8,
+    roughness: 0.48,
+    metalness: 0.55,
+  });
+  const awningMat = new THREE.MeshStandardMaterial({
+    color: 0x1e3a8a,
+    roughness: 0.62,
+  });
+
+  // Shared architectural materials (avoids creating 100+ redundant WebGL shader programs)
+  const storefrontMat = new THREE.MeshStandardMaterial({
+    map: textures.storefrontFacade,
+    roughnessMap: textures.roughnessConcrete,
+    roughness: 0.52,
+    metalness: 0.16,
+  });
+  const facadeMats = textures.buildingFacades.map(
+    (tex) =>
+      new THREE.MeshStandardMaterial({
+        map: tex,
+        roughnessMap: textures.roughnessConcrete,
+        roughness: 0.74,
+        metalness: 0.08,
+      }),
+  );
 
   const treePositions: [number, number, number][] = [];
   const streetlightPositions: [number, number, number][] = [];
 
-  const blockCenters = [-112.5, -37.5, 37.5, 112.5];
-  const blockSize = 75 - ROAD_WIDTH;
+  const blockSize = 75 - roadWidth;
+  const slabGeo = new THREE.BoxGeometry(blockSize, 0.14, blockSize);
+  const hvacGeo = new THREE.BoxGeometry(3.2, 1.3, 2.4);
 
   let apronMaterial = sidewalkMat;
 
@@ -114,25 +141,26 @@ export function buildTownEnvironment(
       const cx = blockCenters[bxIdx];
       const cz = blockCenters[bzIdx];
 
-      const slab = new THREE.Mesh(new THREE.BoxGeometry(blockSize, 0.14, blockSize), sidewalkMat);
+      const slab = new THREE.Mesh(slabGeo, sidewalkMat);
       slab.position.set(cx, 0.07, cz);
       slab.receiveShadow = true;
-      scene.add(slab);
+      freezeStatic(slab);
+      hierarchy.world.terrain.add(slab);
 
       streetlightPositions.push([cx - blockSize * 0.46, 0.14, cz - blockSize * 0.46]);
       streetlightPositions.push([cx + blockSize * 0.46, 0.14, cz + blockSize * 0.46]);
 
       if (bxIdx === 0 && bzIdx === 1) {
-        apronMaterial = buildPoliceStation(scene, textures, obstacles);
+        apronMaterial = buildPoliceStation(hierarchy, world, textures, obstacles);
         continue;
       }
 
-      if (bxIdx === 2 && bzIdx === 2) {
-        buildCivicPark(scene, cx, cz, blockSize, treePositions, textures, obstacles);
+      if (bxIdx === parkBlock.bxIdx && bzIdx === parkBlock.bzIdx) {
+        buildCivicPark(hierarchy, cx, cz, blockSize, treePositions, textures, obstacles);
         continue;
       }
 
-      const innerSpan = blockSize - SIDEWALK_WIDTH * 2;
+      const innerSpan = blockSize - sidewalkWidth * 2;
       const subOffsets = [
         [-innerSpan * 0.26, -innerSpan * 0.26],
         [innerSpan * 0.26, -innerSpan * 0.26],
@@ -153,17 +181,13 @@ export function buildTownEnvironment(
 
         const ground = new THREE.Mesh(
           new THREE.BoxGeometry(w + 0.5, groundH, d + 0.5),
-          new THREE.MeshStandardMaterial({
-            map: textures.storefrontFacade,
-            roughnessMap: textures.roughnessConcrete,
-            roughness: 0.52,
-            metalness: 0.16,
-          }),
+          storefrontMat,
         );
         ground.position.set(bx, 0.14 + groundH * 0.5, bz);
         ground.castShadow = true;
         ground.receiveShadow = true;
-        scene.add(ground);
+        freezeStatic(ground);
+        hierarchy.world.buildings.add(ground);
 
         obstacles.push({
           minX: bx - (w + 0.5) * 0.5,
@@ -175,30 +199,27 @@ export function buildTownEnvironment(
 
         const awning = new THREE.Mesh(new THREE.BoxGeometry(w + 1.2, 0.28, d + 1.2), awningMat);
         awning.position.set(bx, 0.14 + groundH + 0.14, bz);
-        scene.add(awning);
+        freezeStatic(awning);
+        hierarchy.world.buildings.add(awning);
 
-        const facadeTex =
-          textures.buildingFacades[(bxIdx + bzIdx + s) % textures.buildingFacades.length];
-        const upperMat = new THREE.MeshStandardMaterial({
-          map: facadeTex,
-          roughnessMap: textures.roughnessConcrete,
-          roughness: 0.74,
-          metalness: 0.08,
-        });
+        const upperMat = facadeMats[(bxIdx + bzIdx + s) % facadeMats.length];
         const upper = new THREE.Mesh(new THREE.BoxGeometry(w, upperH, d), upperMat);
         upper.position.set(bx, 0.14 + groundH + upperH * 0.5, bz);
         upper.castShadow = true;
         upper.receiveShadow = true;
-        scene.add(upper);
+        freezeStatic(upper);
+        hierarchy.world.buildings.add(upper);
 
         const roofCap = new THREE.Mesh(new THREE.BoxGeometry(w + 0.4, 0.45, d + 0.4), roofMat);
         roofCap.position.set(bx, 0.14 + groundH + upperH + 0.22, bz);
-        scene.add(roofCap);
+        freezeStatic(roofCap);
+        hierarchy.world.buildings.add(roofCap);
 
-        const hvac = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.3, 2.4), hvacMat);
+        const hvac = new THREE.Mesh(hvacGeo, hvacMat);
         hvac.position.set(bx + (seed % 3) - 1, 0.14 + groundH + upperH + 1.0, bz);
         hvac.castShadow = true;
-        scene.add(hvac);
+        freezeStatic(hvac);
+        hierarchy.world.buildings.add(hvac);
       }
     }
   }
@@ -218,16 +239,13 @@ export function buildTownEnvironment(
     const h = 9 + (idx % 4) * 3.5;
     const b = new THREE.Mesh(
       new THREE.BoxGeometry(24, h, 24),
-      new THREE.MeshStandardMaterial({
-        map: textures.buildingFacades[idx % textures.buildingFacades.length],
-        roughnessMap: textures.roughnessConcrete,
-        roughness: 0.78,
-      }),
+      facadeMats[idx % facadeMats.length],
     );
     b.position.set(ox, h * 0.5, oz);
     b.castShadow = true;
     b.receiveShadow = true;
-    scene.add(b);
+    freezeStatic(b);
+    hierarchy.world.buildings.add(b);
 
     obstacles.push({
       minX: ox - 12,
@@ -244,8 +262,8 @@ export function buildTownEnvironment(
     treePositions.push([Math.cos(angle) * radius, 0, Math.sin(angle) * radius]);
   }
 
-  buildInstancedTrees(scene, treePositions);
-  buildInstancedStreetlights(scene, streetlightPositions, textures);
+  buildInstancedTrees(hierarchy, world.treePalette, treePositions);
+  buildInstancedStreetlights(hierarchy, streetlightPositions, textures);
 
   return {
     obstacles,
@@ -256,27 +274,35 @@ export function buildTownEnvironment(
 }
 
 function buildPoliceStation(
-  scene: THREE.Scene,
-  textures: ProceduralTexturePack,
+  hierarchy: SceneWorldHierarchy,
+  world: WorldConfig,
+  textures: TextureRegistry,
   obstacles: ObstacleAABB[],
 ): THREE.MeshStandardMaterial {
-  const { centerX, centerZ } = STATION_BOUNDS;
+  const { centerX, centerZ } = world.stationBounds;
+  const apronB = world.apronBounds;
 
   const apronMat = new THREE.MeshStandardMaterial({
     color: 0x475569,
     roughnessMap: textures.roughnessAsphalt,
     roughness: 0.86,
   });
-  const apron = new THREE.Mesh(new THREE.BoxGeometry(24, 0.18, 58), apronMat);
-  apron.position.set(-93, 0.09, -36);
+  const apron = new THREE.Mesh(
+    new THREE.BoxGeometry(apronB.width, apronB.height, apronB.depth),
+    apronMat,
+  );
+  apron.position.set(apronB.centerX, apronB.height * 0.5, apronB.centerZ);
   apron.receiveShadow = true;
-  scene.add(apron);
+  freezeStatic(apron);
+  hierarchy.world.roads.add(apron);
 
   const stripeMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+  const stripeGeo = new THREE.BoxGeometry(7.2, 0.02, 0.2);
   for (const sz of [-62, -54, -46, -38, -30, -22, -14, -6]) {
-    const line = new THREE.Mesh(new THREE.BoxGeometry(7.2, 0.02, 0.2), stripeMat);
+    const line = new THREE.Mesh(stripeGeo, stripeMat);
     line.position.set(-92, 0.19, sz);
-    scene.add(line);
+    freezeStatic(line);
+    hierarchy.world.roads.add(line);
   }
 
   const brickMat = new THREE.MeshStandardMaterial({
@@ -296,7 +322,8 @@ function buildPoliceStation(
   mainHall.position.set(centerX - 8, 5.85, centerZ);
   mainHall.castShadow = true;
   mainHall.receiveShadow = true;
-  scene.add(mainHall);
+  freezeStatic(mainHall);
+  hierarchy.world.buildings.add(mainHall);
 
   obstacles.push({
     minX: centerX - 8 - 11,
@@ -308,12 +335,14 @@ function buildPoliceStation(
 
   const glassLobby = new THREE.Mesh(new THREE.BoxGeometry(2.5, 5.2, 16), glassMat);
   glassLobby.position.set(centerX + 3.2, 2.75, centerZ);
-  scene.add(glassLobby);
+  freezeStatic(glassLobby);
+  hierarchy.world.buildings.add(glassLobby);
 
   const canopy = new THREE.Mesh(new THREE.BoxGeometry(8, 0.5, 22), trimMat);
   canopy.position.set(centerX + 5.5, 4.9, centerZ);
   canopy.castShadow = true;
-  scene.add(canopy);
+  freezeStatic(canopy);
+  hierarchy.world.buildings.add(canopy);
 
   const sign = new THREE.Mesh(
     new THREE.BoxGeometry(14, 2.6, 0.4),
@@ -327,32 +356,35 @@ function buildPoliceStation(
   );
   sign.position.set(centerX + 3.4, 9.2, centerZ);
   sign.rotation.y = Math.PI / 2;
-  scene.add(sign);
+  freezeStatic(sign);
+  hierarchy.world.buildings.add(sign);
 
   const mast = new THREE.Mesh(
     new THREE.CylinderGeometry(0.18, 0.45, 11, 8),
     new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8, roughness: 0.3 }),
   );
   mast.position.set(centerX - 10, 17, centerZ - 10);
-  scene.add(mast);
+  freezeStatic(mast);
+  hierarchy.world.buildings.add(mast);
 
   const beacon = new THREE.Mesh(
     new THREE.SphereGeometry(0.32, 10, 10),
     new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xff2222, emissiveIntensity: 2.2 }),
   );
   beacon.position.set(centerX - 10, 22.6, centerZ - 10);
-  scene.add(beacon);
+  freezeStatic(beacon);
+  hierarchy.world.buildings.add(beacon);
 
   return apronMat;
 }
 
 function buildCivicPark(
-  scene: THREE.Scene,
+  hierarchy: SceneWorldHierarchy,
   cx: number,
   cz: number,
   blockSize: number,
   treePositions: [number, number, number][],
-  textures: ProceduralTexturePack,
+  textures: TextureRegistry,
   obstacles: ObstacleAABB[],
 ): void {
   const lawn = new THREE.Mesh(
@@ -365,7 +397,8 @@ function buildCivicPark(
   );
   lawn.position.set(cx, 0.16, cz);
   lawn.receiveShadow = true;
-  scene.add(lawn);
+  freezeStatic(lawn);
+  hierarchy.world.terrain.add(lawn);
 
   const stoneMat = new THREE.MeshStandardMaterial({
     color: 0x94a3b8,
@@ -376,14 +409,20 @@ function buildCivicPark(
   basin.position.set(cx, 0.58, cz);
   basin.castShadow = true;
   basin.receiveShadow = true;
+  freezeStatic(basin);
+
   const water = new THREE.Mesh(
     new THREE.CylinderGeometry(5.0, 5.0, 0.15, 20),
     new THREE.MeshPhysicalMaterial({ color: 0x38bdf8, roughness: 0.08, clearcoat: 1.0 }),
   );
   water.position.set(cx, 0.92, cz);
+  freezeStatic(water);
+
   const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 1.0, 2.8, 12), stoneMat);
   spire.position.set(cx, 1.8, cz);
-  scene.add(basin, water, spire);
+  freezeStatic(spire);
+
+  hierarchy.world.buildings.add(basin, water, spire);
 
   obstacles.push({
     minX: cx - 6.0,
@@ -408,7 +447,8 @@ function buildCivicPark(
 }
 
 function buildInstancedTrees(
-  scene: THREE.Scene,
+  hierarchy: SceneWorldHierarchy,
+  treePalette: string[],
   positions: [number, number, number][],
 ): void {
   if (positions.length === 0) return;
@@ -427,7 +467,7 @@ function buildInstancedTrees(
   crowns.castShadow = true;
   crowns.receiveShadow = true;
 
-  const palette = [0x3d6b41, 0x4a7c44, 0x2f5a38, 0x568247];
+  const palette = treePalette.map((hex) => parseInt(hex.replace('#', ''), 16));
 
   positions.forEach(([x, y, z], i) => {
     const scale = 0.85 + ((i * 37) % 30) / 100;
@@ -447,14 +487,16 @@ function buildInstancedTrees(
   if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
   trunks.computeBoundingSphere();
   crowns.computeBoundingSphere();
+  freezeStatic(trunks);
+  freezeStatic(crowns);
 
-  scene.add(trunks, crowns);
+  hierarchy.world.buildings.add(trunks, crowns);
 }
 
 function buildInstancedStreetlights(
-  scene: THREE.Scene,
+  hierarchy: SceneWorldHierarchy,
   positions: [number, number, number][],
-  textures: ProceduralTexturePack,
+  textures: TextureRegistry,
 ): void {
   if (positions.length === 0) return;
 
@@ -498,7 +540,8 @@ function buildInstancedStreetlights(
       const sp = new THREE.Sprite(haloMat);
       sp.position.set(x, y + 6.15, z);
       sp.scale.set(2.8, 2.8, 1);
-      scene.add(sp);
+      freezeStatic(sp);
+      hierarchy.world.buildings.add(sp);
     }
   });
 
@@ -506,5 +549,7 @@ function buildInstancedStreetlights(
   bulbs.instanceMatrix.needsUpdate = true;
   poles.computeBoundingSphere();
   bulbs.computeBoundingSphere();
-  scene.add(poles, bulbs);
+  freezeStatic(poles);
+  freezeStatic(bulbs);
+  hierarchy.world.buildings.add(poles, bulbs);
 }

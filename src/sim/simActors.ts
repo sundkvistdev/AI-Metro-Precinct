@@ -1,11 +1,15 @@
 import * as THREE from 'three';
 import {
+  AmbulanceStatus,
   CrimeType,
   PoliceLiveryId,
   PoliceVehicleKind,
+  SirenPattern,
+  TowTruckStatus,
   UnitStatus,
   WeaponKind,
 } from './types';
+import { AmbulanceRig, TowTruckRig } from './serviceVehicleModels';
 import { CivilianCarRig, HumanoidRig, PoliceCruiserRig } from './vehicleModels';
 import { VehicleDynState } from './vehiclePhysics';
 import { RagdollState } from './vfx';
@@ -80,6 +84,66 @@ export interface PoliceUnit {
   pursuitRole: 'direct' | 'nail_mat';
   officers: [OfficerActor, OfficerActor];
   holdTimer: number;
+  stuckTimer: number;
+  towRequested: boolean;
+  beingTowed: boolean;
+}
+
+export interface TowTruckActor {
+  id: string;
+  callsign: string;
+  rig: TowTruckRig;
+  pos: THREE.Vector3;
+  yaw: number;
+  speed: number;
+  dyn: VehicleDynState;
+  status: TowTruckStatus;
+  beaconsActive: boolean;
+  targetUnitId: string | null;
+  hookTimer: number;
+  waypoints: THREE.Vector3[];
+  waypointIndex: number;
+  avoidanceSteer: number;
+  stuckTimer: number;
+}
+
+export type CasualtyTarget =
+  | { kind: 'officer'; unitId: string; officerIndex: 0 | 1; key: string }
+  | { kind: 'suspect'; crimeId: string; key: string }
+  | { kind: 'pedestrian'; pedIndex: number; key: string };
+
+export interface ParamedicActor {
+  rig: HumanoidRig;
+  pos: THREE.Vector3;
+  yaw: number;
+  walkPhase: number;
+}
+
+export interface AmbulanceActor {
+  id: string;
+  callsign: string;
+  bayIndex: number;
+  rig: AmbulanceRig;
+  pos: THREE.Vector3;
+  yaw: number;
+  speed: number;
+  dyn: VehicleDynState;
+  status: AmbulanceStatus;
+  lightsActive: boolean;
+  sirensActive: boolean;
+  activeSirenPattern: SirenPattern;
+  sirenModeTimer: number;
+  lightPhaseOffset: number;
+  waypoints: THREE.Vector3[];
+  waypointIndex: number;
+  avoidanceSteer: number;
+  stuckTimer: number;
+  target: CasualtyTarget | null;
+  targetPos: THREE.Vector3;
+  scenePhase: 'walking_to_patient' | 'treating' | 'returning_to_rig';
+  treatTimer: number;
+  paramedics: [ParamedicActor, ParamedicActor];
+  stretcherGroup: THREE.Group;
 }
 
 export type NailMatPhase = 'en_route' | 'deploying' | 'armed' | 'recovering';

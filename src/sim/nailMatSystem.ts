@@ -1,21 +1,21 @@
 import * as THREE from 'three';
+import { EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
-import { pruneLeadingWaypoints, resetOfficerPose } from './policeUnitSystem';
+import { resetOfficerPose } from './policeUnitSystem';
 import {
   getSurfaceHeight,
-  LANE_OFFSET,
-  ROAD_WIDTH,
-  STATION_BAYS,
+  pruneLeadingWaypoints,
   TownRoadGraph,
 } from './roadGraph';
+import { disposeGroupContents } from './sceneHierarchy';
 import {
   ActiveCrime,
   CivilianVehicle,
   NailMatActor,
   PoliceUnit,
 } from './simActors';
-import { DrivingMode, UnitStatus } from './types';
+import { UnitStatus } from './types';
 import { SimVfxManager, triggerRagdoll } from './vfx';
 
 interface InterceptSpot {
@@ -33,17 +33,10 @@ interface InterceptSpot {
 
 let nailMatCounter = 1;
 
-function disposeGroup(group: THREE.Group): void {
-  group.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.geometry.dispose();
-      if (Array.isArray(obj.material)) {
-        obj.material.forEach((m) => m.dispose());
-      } else {
-        obj.material.dispose();
-      }
-    }
-  });
+function disposeNailMatObject(group: THREE.Group): void {
+  const wrapper = new THREE.Group();
+  wrapper.add(group);
+  disposeGroupContents(wrapper);
 }
 
 function buildNailMatVisuals(
@@ -62,12 +55,10 @@ function buildNailMatVisuals(
   const curbZ = roadCenter.z + perpZ * (curbSideSign * halfSpan);
   group.position.set(curbX, 0.044, curbZ);
 
-  // Local +X points across the road toward the opposite curb (-curbSideSign * perp)
   const acrossX = -curbSideSign * perpX;
   const acrossZ = -curbSideSign * perpZ;
   group.rotation.y = Math.atan2(-acrossZ, acrossX);
 
-  // Curbside deployment housing box
   const boxMat = new THREE.MeshStandardMaterial({
     color: 0xea580c,
     roughness: 0.45,
@@ -77,7 +68,6 @@ function buildNailMatVisuals(
   boxMesh.position.set(-0.18, 0.08, 0);
   group.add(boxMesh);
 
-  // Amber curb beacon LED
   const beaconMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
   const warningBeacon = new THREE.Mesh(
     new THREE.SphereGeometry(0.065, 8, 8),
@@ -86,7 +76,6 @@ function buildNailMatVisuals(
   warningBeacon.position.set(-0.18, 0.2, 0);
   group.add(warningBeacon);
 
-  // Unrolling spike strip pivot anchored at curb (x = 0 .. totalLen)
   const totalLen = halfSpan * 2;
   const stripPivot = new THREE.Group();
   stripPivot.scale.set(0.06, 1, 1);
@@ -108,7 +97,6 @@ function buildNailMatVisuals(
     metalness: 0.9,
   });
 
-  // Main rubber-polymer sleeve
   const sleeve = new THREE.Mesh(
     new THREE.BoxGeometry(totalLen, 0.035, 0.34),
     baseMat,
@@ -116,7 +104,6 @@ function buildNailMatVisuals(
   sleeve.position.set(totalLen * 0.5, 0.018, 0);
   stripPivot.add(sleeve);
 
-  // High-contrast yellow accordion slats + hollow steel quills
   const slatCount = 16;
   const slatGeo = new THREE.BoxGeometry(0.18, 0.042, 0.38);
   const spikeGeo = new THREE.ConeGeometry(0.032, 0.11, 4);
@@ -138,10 +125,6 @@ function buildNailMatVisuals(
   return { group, stripPivot, warningBeacon };
 }
 
-/**
- * Predicts upcoming road mid-segments where the fleeing getaway car is likely to pass
- * and scores them by intercept feasibility for the deploying police cruiser.
- */
 export function pickInterceptRoadSpot(
   crime: ActiveCrime,
   unit: PoliceUnit,
@@ -151,6 +134,7 @@ export function pickInterceptRoadSpot(
 ): InterceptSpot | null {
   if (!crime.inVehiclePursuit || !crime.suspectAlive) return null;
 
+  const world = roadGraph.world;
   const currNode = roadGraph.nodes[crime.vehicleNodeId];
   const nextNode = roadGraph.nodes[crime.vehicleNextNodeId];
   if (!currNode || !nextNode) return null;
@@ -169,7 +153,6 @@ export function pickInterceptRoadSpot(
     routeWeight: number;
   }> = [];
 
-  // 0-hop: far end of current road segment if suspect still has >42m to reach nextNode
   const distToNext = Math.hypot(
     nextNode.x - crime.vehiclePos.x,
     nextNode.z - crime.vehiclePos.z,
@@ -186,7 +169,6 @@ export function pickInterceptRoadSpot(
     });
   }
 
-  // Rank 1-hop outgoing road segments from nextNode using getaway momentum & distance from cops
   const hop1Ids = nextNode.neighbors.filter((n) => n !== crime.vehicleNodeId);
   const hop1Pool = hop1Ids.length > 0 ? hop1Ids : nextNode.neighbors;
 
@@ -222,7 +204,6 @@ export function pickInterceptRoadSpot(
       routeWeight: w1,
     });
 
-    // 2-hop outgoing segments along primary continuation
     const hop2Ids = hop1.neighbors.filter((n) => n !== nextNode.id);
     const dir1X = hop1.x - nextNode.x;
     const dir1Z = hop1.z - nextNode.z;
@@ -259,10 +240,8 @@ export function pickInterceptRoadSpot(
     const cx = THREE.MathUtils.lerp(cand.ax, cand.bx, cand.t);
     const cz = THREE.MathUtils.lerp(cand.az, cand.bz, cand.t);
 
-    // Stay clear of station driveway apron & precinct perimeter
-    if (cx < -74 && cz < 2) continue;
+    if (cx < world.apronBounds.maxX + 7 && cz < 2) continue;
 
-    // Avoid stacking two spike strips at the same block
     let overlapsExisting = false;
     for (const m of existingMats) {
       if (m.phase === 'recovering') continue;
@@ -289,23 +268,19 @@ export function pickInterceptRoadSpot(
     const suspectEta = suspectDist / suspectSpeed;
     const copEta = copDist / 16.5;
     const marginSec = suspectEta - copEta;
-
-    // Prefer places the cruiser can reach ahead of the suspect
     if (marginSec < -2.4) continue;
 
-    // Choose the curb shoulder closer to the cruiser's approach side
     const sideDot =
       (unit.pos.x - cx) * perpX + (unit.pos.z - cz) * perpZ;
     const curbSideSign: 1 | -1 = sideDot >= 0 ? 1 : -1;
 
-    // Cruiser parks cleanly along the outer curb/shoulder just past the strip line
-    const shoulderOffset = ROAD_WIDTH * 0.5 + 1.4;
+    const shoulderOffset = world.roadWidth * 0.5 + 1.4;
     const stagX = cx + perpX * (curbSideSign * shoulderOffset) + roadDirX * 3.8;
     const stagZ = cz + perpZ * (curbSideSign * shoulderOffset) + roadDirZ * 3.8;
 
     const stagingPos = new THREE.Vector3(
       stagX,
-      getSurfaceHeight(stagX, stagZ),
+      getSurfaceHeight(stagX, stagZ, world),
       stagZ,
     );
     const stagingYaw =
@@ -318,7 +293,7 @@ export function pickInterceptRoadSpot(
     if (score > bestScore) {
       bestScore = score;
       bestSpot = {
-        roadCenter: new THREE.Vector3(cx, 0.035, cz),
+        roadCenter: new THREE.Vector3(cx, world.surfaceHeights.road, cz),
         roadDirX,
         roadDirZ,
         perpX,
@@ -341,7 +316,8 @@ export function assignUnitToNailMat(
   units: PoliceUnit[],
   nailMats: NailMatActor[],
   roadGraph: TownRoadGraph,
-  scene: THREE.Scene,
+  config: EngineConfigAsset,
+  nailMatsGroup: THREE.Group,
   audio: JsonAudioSynth | null,
 ): boolean {
   if (!crime.inVehiclePursuit || !crime.suspectAlive) return false;
@@ -362,7 +338,7 @@ export function assignUnitToNailMat(
     halfSpan,
   );
   visuals.group.visible = false;
-  scene.add(visuals.group);
+  nailMatsGroup.add(visuals.group);
 
   const mat: NailMatActor = {
     id: matId,
@@ -398,7 +374,7 @@ export function assignUnitToNailMat(
   unit.repathTimer = 1.2;
   unit.avoidanceSteer = 0;
 
-  routeUnitToInterceptSpot(unit, spot, roadGraph);
+  routeUnitToInterceptSpot(unit, spot, roadGraph, config);
   crime.nailMatAttempts++;
   audio?.playAssetAt('dispatch_chirp');
   return true;
@@ -408,15 +384,18 @@ function routeUnitToInterceptSpot(
   unit: PoliceUnit,
   spot: InterceptSpot,
   roadGraph: TownRoadGraph,
+  config: EngineConfigAsset,
 ): void {
-  const bay = STATION_BAYS[unit.bayIndex];
+  const { laneOffset, roadCoords, surfaceHeights, apronBounds } = config.world;
+  const exitRoadX = roadCoords[1] ?? -75;
+  const bay = config.vehicles.stationBays[unit.bayIndex];
   const wps: THREE.Vector3[] = [];
   let routeStartNodeId: number;
 
-  if (unit.pos.x < -80) {
+  if (unit.pos.x < apronBounds.maxX + 1) {
     const laneExitX =
-      -75 + (spot.roadCenter.z > unit.pos.z ? -LANE_OFFSET : LANE_OFFSET);
-    wps.push(new THREE.Vector3(laneExitX, 0.035, bay.parkPos.z));
+      exitRoadX + (spot.roadCenter.z > unit.pos.z ? -laneOffset : laneOffset);
+    wps.push(new THREE.Vector3(laneExitX, surfaceHeights.road, bay.parkPos[2]));
     const pathN = roadGraph.findNodePath(6, spot.targetNodeId);
     const pathS = roadGraph.findNodePath(7, spot.targetNodeId);
     routeStartNodeId = pathN.length <= pathS.length ? 6 : 7;
@@ -430,7 +409,7 @@ function routeUnitToInterceptSpot(
 
   const nodePath = roadGraph.findNodePath(routeStartNodeId, spot.targetNodeId);
   wps.push(...roadGraph.buildLaneWaypoints(nodePath, spot.stagingPos, true));
-  if (unit.pos.x >= -80) {
+  if (unit.pos.x >= apronBounds.maxX + 1) {
     pruneLeadingWaypoints(unit.pos, unit.yaw, wps);
   }
   unit.waypoints = wps;
@@ -487,19 +466,21 @@ export function updateNailMats(
   civilianCars: CivilianVehicle[],
   roadGraph: TownRoadGraph,
   staticBvh: StaticObstacleBVH,
+  config: EngineConfigAsset,
   vfx: SimVfxManager,
   audio: JsonAudioSynth | null,
-  scene: THREE.Scene,
+  nailMatsGroup: THREE.Group,
   simTime: number,
   rng: () => number,
   dt: number,
 ): void {
+  const world = config.world;
+
   for (let i = nailMats.length - 1; i >= 0; i--) {
     const mat = nailMats[i];
     const unit = units.find((u) => u.id === mat.unitId);
     const crime = crimes.find((c) => c.id === mat.crimeId);
 
-    // Blink amber safety beacon
     const beaconBlink = Math.sin(simTime * 11 + i * 1.3) > 0;
     const beaconMat = mat.warningBeacon.material as THREE.MeshBasicMaterial;
     beaconMat.color.setHex(beaconBlink ? 0xfbbf24 : 0x78350f);
@@ -510,16 +491,16 @@ export function updateNailMats(
       unit.status === UnitStatus.Retreating ||
       unit.status === UnitStatus.AtStation
     ) {
-      scene.remove(mat.group);
-      disposeGroup(mat.group);
+      nailMatsGroup.remove(mat.group);
+      disposeNailMatObject(mat.group);
       nailMats.splice(i, 1);
       continue;
     }
 
     if (mat.phase === 'en_route') {
       if (!crime || !crime.suspectAlive || !crime.inVehiclePursuit) {
-        scene.remove(mat.group);
-        disposeGroup(mat.group);
+        nailMatsGroup.remove(mat.group);
+        disposeNailMatObject(mat.group);
         nailMats.splice(i, 1);
         unit.pursuitRole = 'direct';
         if (unit.status === UnitStatus.DeployingSpikes) {
@@ -529,13 +510,11 @@ export function updateNailMats(
         continue;
       }
 
-      // Check arrival at curb staging spot
       const distToStage = Math.hypot(
         mat.stagingPos.x - unit.pos.x,
         mat.stagingPos.z - unit.pos.z,
       );
       if (distToStage < 4.8 || unit.waypointIndex >= unit.waypoints.length) {
-        // Park cleanly along curb and dismount officer with nail mat
         unit.speed = 0;
         unit.dyn.vx = 0;
         unit.dyn.vz = 0;
@@ -549,7 +528,7 @@ export function updateNailMats(
         const curbZ = mat.roadCenter.z + mat.perpZ * (mat.curbSideSign * (mat.halfSpan + 0.55));
         off.pos.set(curbX, 0, curbZ);
         staticBvh.resolveCircle(off.pos, 0.42);
-        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z);
+        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
         off.yaw = Math.atan2(
           mat.roadCenter.x - off.pos.x,
           mat.roadCenter.z - off.pos.z,
@@ -568,7 +547,6 @@ export function updateNailMats(
         continue;
       }
 
-      // Re-evaluate if suspect drove completely past or turned onto an opposite road
       mat.recheckTimer -= dt;
       if (mat.recheckTimer <= 0) {
         mat.recheckTimer = 1.25;
@@ -584,8 +562,8 @@ export function updateNailMats(
         if (suspectDist > 34 && movingToward < -0.25 && distToStage > 18) {
           const better = pickInterceptRoadSpot(crime, unit, units, roadGraph, nailMats);
           if (better) {
-            scene.remove(mat.group);
-            disposeGroup(mat.group);
+            nailMatsGroup.remove(mat.group);
+            disposeNailMatObject(mat.group);
             const visuals = buildNailMatVisuals(
               better.roadCenter,
               better.perpX,
@@ -594,7 +572,7 @@ export function updateNailMats(
               mat.halfSpan,
             );
             visuals.group.visible = false;
-            scene.add(visuals.group);
+            nailMatsGroup.add(visuals.group);
 
             mat.roadCenter.copy(better.roadCenter);
             mat.roadDirX = better.roadDirX;
@@ -607,11 +585,10 @@ export function updateNailMats(
             mat.group = visuals.group;
             mat.stripPivot = visuals.stripPivot;
             mat.warningBeacon = visuals.warningBeacon;
-            routeUnitToInterceptSpot(unit, better, roadGraph);
+            routeUnitToInterceptSpot(unit, better, roadGraph, config);
           } else {
-            // Fall back to direct pursuit
-            scene.remove(mat.group);
-            disposeGroup(mat.group);
+            nailMatsGroup.remove(mat.group);
+            disposeNailMatObject(mat.group);
             nailMats.splice(i, 1);
             unit.pursuitRole = 'direct';
             unit.status = UnitStatus.Pursuing;
@@ -629,7 +606,6 @@ export function updateNailMats(
       unit.dyn.vx = 0;
       unit.dyn.vz = 0;
 
-      // Suspect can strike the deploying officer if arriving mid-toss
       if (crime && crime.inVehiclePursuit && crime.vehicleSpeed > 4.2 && !off.ragdoll.active) {
         const dxS = off.pos.x - crime.vehiclePos.x;
         const dzS = off.pos.z - crime.vehiclePos.z;
@@ -670,15 +646,8 @@ export function updateNailMats(
       off.rig.root.position.copy(off.pos);
       off.rig.root.rotation.y = off.yaw;
 
-      // Check early hit once 70% unrolled across the road
       if (mat.deployProgress >= 0.72) {
-        const hit = checkSuspectOverNailMat(
-          mat,
-          crime,
-          vfx,
-          audio,
-          rng,
-        );
+        const hit = checkSuspectOverNailMat(mat, crime, vfx, audio, rng);
         if (hit) {
           startNailMatRecovery(mat, unit);
           continue;
@@ -706,7 +675,6 @@ export function updateNailMats(
         continue;
       }
 
-      // Officer stands ready on sidewalk watching suspect approach
       off.yaw = Math.atan2(
         crime.vehiclePos.x - off.pos.x,
         crime.vehiclePos.z - off.pos.z,
@@ -715,7 +683,6 @@ export function updateNailMats(
       off.rig.root.position.copy(off.pos);
       off.rig.root.rotation.y = off.yaw;
 
-      // Friendly pull-cord: retract strip briefly when a friendly cruiser passes through while suspect is far
       const suspectDistSq = crime.vehiclePos.distanceToSquared(mat.roadCenter);
       let friendlyPassing = false;
       if (suspectDistSq > 16 * 16) {
@@ -742,7 +709,6 @@ export function updateNailMats(
           continue;
         }
 
-        // Civilian vehicle crossing an armed strip at speed
         let civHit = false;
         for (const civ of civilianCars) {
           if (civ.immobilized || civ.speed < 3.5) continue;
@@ -764,11 +730,10 @@ export function updateNailMats(
       continue;
     }
 
-    // 'recovering': retract strip quickly and clean up mesh
     mat.stripPivot.scale.x = THREE.MathUtils.damp(mat.stripPivot.scale.x, 0.04, 16, dt);
     if (mat.stripPivot.scale.x < 0.1) {
-      scene.remove(mat.group);
-      disposeGroup(mat.group);
+      nailMatsGroup.remove(mat.group);
+      disposeNailMatObject(mat.group);
       nailMats.splice(i, 1);
     }
   }
@@ -796,7 +761,6 @@ function checkSuspectOverNailMat(
     return false;
   }
 
-  // Punctured! Shred tires -> sparks, blowout pop/hiss, violent swerve, then immobilization & bailout
   mat.triggeredBySuspect = true;
   crime.vehicleTireBlowoutTimer = 1.15;
   crime.vehicleHp = Math.max(0, crime.vehicleHp - 44);
