@@ -185,8 +185,61 @@ export interface SimSnapshot {
     textures: number;
     models: number;
     audio: number;
+    materials: number;
+    media: number;
   };
   assetsLoaded: boolean;
   assetIssues: AssetIssue[];
   fatalError: string | null;
+}
+
+export type DevEditorMode = 'world' | 'asset';
+export type DevWorldTab = 'hierarchy' | 'spawn' | 'debug';
+export type DevAssetTab =
+  | 'hierarchy'
+  | 'map'
+  | 'model'
+  | 'materials'
+  | 'texture'
+  | 'audio'
+  | 'prefabs';
+
+export type WorldEntityKind = 'police' | 'traffic' | 'ped' | 'crime' | 'nail_mat';
+
+export interface WorldEntitySummary {
+  uid: string;
+  kind: WorldEntityKind;
+  id: string;
+  label: string;
+  statusText: string;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  hp?: number;
+  maxHp?: number;
+  immobilized?: boolean;
+  lightsActive?: boolean;
+  sirensActive?: boolean;
+  mounted?: boolean;
+  extra?: string;
+}
+
+export interface AIDebugFlags {
+  showPolicePaths: boolean;
+  showPursuitPaths: boolean;
+  showTrafficRoutes: boolean;
+  showNodesAndPriority: boolean;
+  showAvoidanceAndStuck: boolean;
+}
+
+export interface AIDebugStats {
+  activePoliceRoutes: number;
+  activePursuits: number;
+  activeTrafficRoutes: number;
+  impatientCount: number;
+  reversingCount: number;
+  avoidingCount: number;
+  roadNodeCount: number;
+  roadEdgeCount: number;
 }

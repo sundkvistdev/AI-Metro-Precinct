@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SirenPattern } from '../sim/types';
-import { ProceduralAudioAsset } from './assetTypes';
+import { ImportedMediaAsset, ProceduralAudioAsset } from './assetTypes';
 import { mulberry32 } from './prng';
 
 export type AudioVoiceQuality = 'low' | 'normal' | 'high';
@@ -14,6 +14,21 @@ interface SirenVoice {
   phase: number;
   autoPhaseOffset: number;
   lastActiveTime: number;
+}
+
+interface ActivePreviewVoice {
+  asset: ProceduralAudioAsset;
+  loop: boolean;
+  osc1?: OscillatorNode;
+  osc2?: OscillatorNode;
+  filter?: BiquadFilterNode;
+  gain?: GainNode;
+  bufferSource?: AudioBufferSourceNode;
+  intervalId?: number;
+  stopTimeoutId?: number;
+  phase: number;
+  lastTickMs: number;
+  disposed: boolean;
 }
 
 const QUALITY_LIMITS: Record<
@@ -60,11 +75,21 @@ export class JsonAudioSynth {
   private lastPlayedMs = new Map<string, number>();
 
   private audioAssets: Record<string, ProceduralAudioAsset>;
+  private mediaAssets: Record<string, ImportedMediaAsset> = {};
+  private decodedAudioBuffers = new Map<string, AudioBuffer>();
+  private decodingAudioPromises = new Map<string, Promise<AudioBuffer | null>>();
   private cachedNoiseBuffers = new Map<string, AudioBuffer>();
   private missingAssetLogged = new Set<string>();
+  private previewVoice: ActivePreviewVoice | null = null;
+  private previewListeners = new Set<() => void>();
 
-  constructor(audioAssets: Record<string, ProceduralAudioAsset>, defaultEnabled = true) {
+  constructor(
+    audioAssets: Record<string, ProceduralAudioAsset>,
+    defaultEnabled = true,
+    mediaAssets: Record<string, ImportedMediaAsset> = {},
+  ) {
     this.audioAssets = audioAssets;
+    this.mediaAssets = mediaAssets;
     this.enabled = defaultEnabled;
   }
 
@@ -72,6 +97,67 @@ export class JsonAudioSynth {
     this.audioAssets = audioAssets;
     this.cachedNoiseBuffers.clear();
     this.missingAssetLogged.clear();
+  }
+
+  public setMediaAssets(mediaAssets: Record<string, ImportedMediaAsset>): void {
+    this.mediaAssets = mediaAssets;
+    this.decodedAudioBuffers.clear();
+    this.decodingAudioPromises.clear();
+  }
+
+  public subscribePreviewState(listener: () => void): () => void {
+    this.previewListeners.add(listener);
+    return () => {
+      this.previewListeners.delete(listener);
+    };
+  }
+
+  private emitPreviewState(): void {
+    for (const cb of this.previewListeners) {
+      cb();
+    }
+  }
+
+  public getPreviewState(): { playing: boolean; assetId: string | null; loop: boolean } {
+    if (!this.previewVoice || this.previewVoice.disposed) {
+      return { playing: false, assetId: null, loop: true };
+    }
+    return {
+      playing: true,
+      assetId: this.previewVoice.asset.id,
+      loop: this.previewVoice.loop,
+    };
+  }
+
+  private async decodeMediaAudio(mediaId: string): Promise<AudioBuffer | null> {
+    const existing = this.decodedAudioBuffers.get(mediaId);
+    if (existing) return existing;
+
+    const inflight = this.decodingAudioPromises.get(mediaId);
+    if (inflight) return inflight;
+
+    const media = this.mediaAssets[mediaId];
+    if (!media || media.kind !== 'audio') return null;
+
+    this.ensureContext();
+    if (!this.ctx) return null;
+    const ctx = this.ctx;
+
+    const promise = ctx
+      .decodeAudioData(media.bytes.slice().buffer)
+      .then((buffer) => {
+        this.decodedAudioBuffers.set(mediaId, buffer);
+        this.decodingAudioPromises.delete(mediaId);
+        return buffer;
+      })
+      .catch((err) => {
+        console.error(`[AUDIO DECODE ERROR] (${mediaId}):`, err);
+        this.decodingAudioPromises.delete(mediaId);
+        return null;
+      });
+
+    this.decodingAudioPromises.set(mediaId, promise);
+    return promise;
   }
 
   private getGunshotShaperCurve(): Float32Array<ArrayBuffer> {
@@ -470,63 +556,10 @@ export class JsonAudioSynth {
     this.missingAssetLogged.delete(id);
   }
 
-  public previewAudioAsset(asset: ProceduralAudioAsset): number {
-    this.ensureContext();
-    if (!this.ctx || !this.dryBus || !this.echoInput) return 0;
-    if (this.ctx.state !== 'running') {
-      void this.ctx.resume();
-    }
-
+  private scheduleTransientOnce(asset: ProceduralAudioAsset): number {
+    if (!this.ctx || !this.dryBus || !this.echoInput) return 0.25;
     const now = this.ctx.currentTime;
     const g = THREE.MathUtils.clamp(asset.gain || 0.25, 0.02, 1.0);
-
-    if ((asset.kind === 'siren_sweep' || asset.kind === 'siren_hilo') && asset.siren) {
-      const spec = asset.siren;
-      const dur = 1.65;
-      const osc1 = this.ctx.createOscillator();
-      const osc2 = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
-      const gain = this.ctx.createGain();
-      osc1.type = spec.waveform1 ?? 'sawtooth';
-      osc2.type = spec.waveform2 ?? 'triangle';
-      filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(Math.max(80, spec.bandpassFreq || 1150), now);
-      filter.Q.setValueAtTime(Math.max(0.2, spec.bandpassQ || 1.2), now);
-
-      const steps = 48;
-      for (let i = 0; i <= steps; i++) {
-        const t = (i / steps) * dur;
-        let freq = spec.minFreq;
-        if (asset.kind === 'siren_hilo') {
-          const idx = Math.floor(t * (spec.hiloAlternationHz ?? 1.55)) % 2;
-          freq = idx === 0 ? spec.maxFreq : spec.minFreq;
-        } else {
-          const saw = (t * (spec.sweepRateHz || 0.35)) % 1;
-          const tri = saw < 0.45 ? saw / 0.45 : 1 - (saw - 0.45) / 0.55;
-          const shaped = 0.5 - 0.5 * Math.cos(tri * Math.PI);
-          freq = spec.minFreq + shaped * (spec.maxFreq - spec.minFreq);
-        }
-        osc1.frequency.setValueAtTime(Math.max(40, freq), now + t);
-        osc2.frequency.setValueAtTime(Math.max(40, freq * (spec.detuneRatio || 1.004)), now + t);
-      }
-
-      gain.gain.setValueAtTime(0.001, now);
-      gain.gain.linearRampToValueAtTime(g, now + 0.04);
-      gain.gain.setValueAtTime(g, now + dur - 0.12);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
-
-      osc1.connect(filter);
-      osc2.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.dryBus);
-      gain.connect(this.echoInput);
-      this.trackTransientCleanup(osc1, [osc1, osc2, filter, gain]);
-      osc1.start(now);
-      osc2.start(now);
-      osc1.stop(now + dur + 0.02);
-      osc2.stop(now + dur + 0.02);
-      return dur;
-    }
 
     if (asset.kind === 'chirp_sequence' && asset.chirp) {
       const dur = Math.max(0.06, asset.chirp.duration || 0.25);
@@ -537,7 +570,10 @@ export class JsonAudioSynth {
         osc.frequency.setValueAtTime(Math.max(40, step.freq), now + Math.max(0, step.time));
       }
       gain.gain.setValueAtTime(Math.max(0.01, g), now);
-      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, asset.chirp.endGain || 0.005), now + dur);
+      gain.gain.exponentialRampToValueAtTime(
+        Math.max(0.001, asset.chirp.endGain || 0.005),
+        now + dur,
+      );
       osc.connect(gain);
       gain.connect(this.dryBus);
       this.trackTransientCleanup(osc, [osc, gain]);
@@ -577,7 +613,246 @@ export class JsonAudioSynth {
       return dur;
     }
 
-    return 0;
+    return 0.25;
+  }
+
+  public stopAudioPreview(): void {
+    const pv = this.previewVoice;
+    if (!pv) return;
+    pv.disposed = true;
+    if (pv.intervalId !== undefined) window.clearInterval(pv.intervalId);
+    if (pv.stopTimeoutId !== undefined) window.clearTimeout(pv.stopTimeoutId);
+
+    for (const node of [pv.osc1, pv.osc2, pv.bufferSource]) {
+      if (!node) continue;
+      try {
+        node.stop();
+      } catch {
+        // already stopped
+      }
+      try {
+        node.disconnect();
+      } catch {
+        // ignore
+      }
+    }
+    for (const node of [pv.filter, pv.gain]) {
+      if (!node) continue;
+      try {
+        node.disconnect();
+      } catch {
+        // ignore
+      }
+    }
+
+    this.previewVoice = null;
+    this.emitPreviewState();
+  }
+
+  public startAudioPreview(asset: ProceduralAudioAsset, loop = true): void {
+    this.stopAudioPreview();
+    this.ensureContext();
+    if (!this.ctx || !this.dryBus || !this.echoInput) return;
+    if (this.ctx.state !== 'running') {
+      void this.ctx.resume();
+    }
+    if (this.masterGain) {
+      this.masterGain.gain.setTargetAtTime(this.effectiveMasterGain(), this.ctx.currentTime, 0.03);
+    }
+
+    const clonedAsset: ProceduralAudioAsset = JSON.parse(JSON.stringify(asset));
+    const voice: ActivePreviewVoice = {
+      asset: clonedAsset,
+      loop,
+      phase: 0,
+      lastTickMs: performance.now(),
+      disposed: false,
+    };
+    this.previewVoice = voice;
+    this.emitPreviewState();
+
+    const g = THREE.MathUtils.clamp(clonedAsset.gain || 0.25, 0.02, 1.0);
+
+    if ((clonedAsset.kind === 'siren_sweep' || clonedAsset.kind === 'siren_hilo') && clonedAsset.siren) {
+      const spec = clonedAsset.siren;
+      const now = this.ctx.currentTime;
+      const osc1 = this.ctx.createOscillator();
+      const osc2 = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const gain = this.ctx.createGain();
+
+      osc1.type = spec.waveform1 ?? 'sawtooth';
+      osc2.type = spec.waveform2 ?? 'triangle';
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(Math.max(60, spec.bandpassFreq || 1150), now);
+      filter.Q.setValueAtTime(Math.max(0.2, spec.bandpassQ || 1.4), now);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(g, now + 0.04);
+
+      osc1.connect(filter);
+      osc2.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.dryBus);
+      gain.connect(this.echoInput);
+      osc1.start(now);
+      osc2.start(now);
+
+      voice.osc1 = osc1;
+      voice.osc2 = osc2;
+      voice.filter = filter;
+      voice.gain = gain;
+
+      const stepModulation = () => {
+        if (voice.disposed || !this.ctx || !voice.osc1 || !voice.osc2 || !voice.filter || !voice.gain) {
+          return;
+        }
+        const curMs = performance.now();
+        const dt = Math.min(0.1, Math.max(0.001, (curMs - voice.lastTickMs) / 1000));
+        voice.lastTickMs = curMs;
+        const s = voice.asset.siren;
+        if (!s) return;
+
+        const t = this.ctx.currentTime;
+        let freq = s.minFreq;
+        if (voice.asset.kind === 'siren_hilo') {
+          voice.phase += dt * (s.hiloAlternationHz ?? 1.55);
+          const idx = Math.floor(voice.phase) % 2;
+          freq = idx === 0 ? s.maxFreq : s.minFreq;
+        } else {
+          voice.phase += dt * Math.max(0.05, s.sweepRateHz || 0.35);
+          const saw = voice.phase % 1;
+          const tri = saw < 0.45 ? saw / 0.45 : 1 - (saw - 0.45) / 0.55;
+          const shaped = 0.5 - 0.5 * Math.cos(tri * Math.PI);
+          freq = s.minFreq + shaped * (s.maxFreq - s.minFreq);
+        }
+
+        if (voice.osc1.type !== s.waveform1) voice.osc1.type = s.waveform1;
+        if (voice.osc2.type !== s.waveform2) voice.osc2.type = s.waveform2;
+        voice.filter.frequency.setTargetAtTime(Math.max(60, s.bandpassFreq || 1150), t, 0.03);
+        voice.filter.Q.setTargetAtTime(Math.max(0.2, s.bandpassQ || 1.4), t, 0.03);
+        voice.osc1.frequency.setTargetAtTime(Math.max(40, freq), t, 0.015);
+        voice.osc2.frequency.setTargetAtTime(
+          Math.max(40, freq * (s.detuneRatio || 1.004)),
+          t,
+          0.015,
+        );
+        voice.gain.gain.setTargetAtTime(
+          THREE.MathUtils.clamp(voice.asset.gain || 0.25, 0.02, 1.0),
+          t,
+          0.03,
+        );
+      };
+
+      stepModulation();
+      voice.intervalId = window.setInterval(stepModulation, 25);
+
+      if (!loop) {
+        const cycleDurMs =
+          clonedAsset.kind === 'siren_hilo'
+            ? Math.round((2 / Math.max(0.25, spec.hiloAlternationHz ?? 1.55)) * 1000)
+            : Math.round((1 / Math.max(0.15, spec.sweepRateHz || 0.35)) * 1000);
+        voice.stopTimeoutId = window.setTimeout(() => {
+          this.stopAudioPreview();
+        }, Math.min(6000, Math.max(1200, cycleDurMs)));
+      }
+      return;
+    }
+
+    if (clonedAsset.kind === 'audio_clip' && clonedAsset.clip?.mediaId) {
+      const mediaId = clonedAsset.clip.mediaId;
+      void this.decodeMediaAudio(mediaId).then((buf) => {
+        if (voice.disposed || !buf || !this.ctx || !this.dryBus) {
+          if (!voice.disposed && !buf) this.stopAudioPreview();
+          return;
+        }
+        const now = this.ctx.currentTime;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf;
+        src.loop = voice.loop;
+        src.playbackRate.setValueAtTime(
+          THREE.MathUtils.clamp(voice.asset.clip?.playbackRate ?? 1.0, 0.25, 4.0),
+          now,
+        );
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(
+          THREE.MathUtils.clamp(voice.asset.gain || 0.5, 0.02, 1.0),
+          now,
+        );
+        src.connect(gain);
+        gain.connect(this.dryBus);
+        voice.bufferSource = src;
+        voice.gain = gain;
+        src.onended = () => {
+          if (!voice.disposed && !voice.loop) {
+            this.stopAudioPreview();
+          }
+        };
+        src.start(now);
+      });
+      return;
+    }
+
+    // Transient assets (chirp_sequence / filtered_noise_burst)
+    const firstDur = this.scheduleTransientOnce(clonedAsset);
+    if (!loop) {
+      voice.stopTimeoutId = window.setTimeout(() => {
+        this.stopAudioPreview();
+      }, Math.max(140, Math.round(firstDur * 1000 + 80)));
+      return;
+    }
+
+    const triggerRepeat = () => {
+      if (voice.disposed) return;
+      const d = this.scheduleTransientOnce(voice.asset);
+      const waitMs = Math.max(220, Math.round((d + 0.24) * 1000));
+      voice.stopTimeoutId = window.setTimeout(triggerRepeat, waitMs);
+    };
+    voice.stopTimeoutId = window.setTimeout(
+      triggerRepeat,
+      Math.max(220, Math.round((firstDur + 0.24) * 1000)),
+    );
+  }
+
+  public updateAudioPreview(asset: ProceduralAudioAsset, loop?: boolean): void {
+    const pv = this.previewVoice;
+    if (!pv || pv.disposed) return;
+    const prevKind = pv.asset.kind;
+    const prevLoop = pv.loop;
+    const prevMedia = pv.asset.clip?.mediaId;
+    const nextLoop = loop !== undefined ? loop : prevLoop;
+    pv.asset = JSON.parse(JSON.stringify(asset));
+    pv.loop = nextLoop;
+
+    if (
+      prevKind !== asset.kind ||
+      prevLoop !== nextLoop ||
+      prevMedia !== asset.clip?.mediaId
+    ) {
+      this.startAudioPreview(pv.asset, nextLoop);
+      return;
+    }
+
+    if (pv.bufferSource && pv.gain && this.ctx && asset.clip) {
+      const t = this.ctx.currentTime;
+      pv.bufferSource.playbackRate.setTargetAtTime(
+        THREE.MathUtils.clamp(asset.clip.playbackRate ?? 1.0, 0.25, 4.0),
+        t,
+        0.02,
+      );
+      pv.gain.gain.setTargetAtTime(
+        THREE.MathUtils.clamp(asset.gain || 0.5, 0.02, 1.0),
+        t,
+        0.02,
+      );
+    }
+  }
+
+  public previewAudioAsset(asset: ProceduralAudioAsset, loop = true): number {
+    this.startAudioPreview(asset, loop);
+    if (asset.kind === 'chirp_sequence') return asset.chirp?.duration ?? 0.25;
+    if (asset.kind === 'filtered_noise_burst') return asset.noiseBurst?.duration ?? 0.25;
+    return 1.65;
   }
 
   public playAssetAt(assetId: string, worldPos?: THREE.Vector3): void {
@@ -598,6 +873,42 @@ export class JsonAudioSynth {
     if (!this.canSpawnTransient(assetId, worldPos, maxDist)) return;
 
     const now = this.ctx.currentTime;
+
+    if (asset.kind === 'audio_clip' && asset.clip?.mediaId) {
+      const cached = this.decodedAudioBuffers.get(asset.clip.mediaId);
+      if (!cached) {
+        void this.decodeMediaAudio(asset.clip.mediaId);
+        return;
+      }
+      const src = this.ctx.createBufferSource();
+      src.buffer = cached;
+      src.playbackRate.setValueAtTime(
+        THREE.MathUtils.clamp(asset.clip.playbackRate ?? 1.0, 0.25, 4.0),
+        now,
+      );
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(Math.max(0.01, asset.gain), now);
+      src.connect(gain);
+
+      const nodesToDisconnect: AudioNode[] = [src, gain];
+      if (worldPos) {
+        const panner = this.ctx.createPanner();
+        panner.panningModel = 'equalpower';
+        panner.distanceModel = 'inverse';
+        panner.refDistance = 24;
+        panner.maxDistance = maxDist;
+        panner.rolloffFactor = 1.1;
+        panner.setPosition(worldPos.x, worldPos.y + 1.2, worldPos.z);
+        gain.connect(panner);
+        panner.connect(this.dryBus);
+        nodesToDisconnect.push(panner);
+      } else {
+        gain.connect(this.dryBus);
+      }
+      this.trackTransientCleanup(src, nodesToDisconnect);
+      src.start(now);
+      return;
+    }
 
     if (asset.kind === 'chirp_sequence' && asset.chirp) {
       const osc = this.ctx.createOscillator();
@@ -806,6 +1117,8 @@ export class JsonAudioSynth {
   }
 
   public dispose(): void {
+    this.stopAudioPreview();
+    this.previewListeners.clear();
     this.sirenVoices.clear();
     if (this.rainSource) {
       try {
@@ -820,5 +1133,7 @@ export class JsonAudioSynth {
       this.ctx = null;
     }
     this.cachedNoiseBuffers.clear();
+    this.decodedAudioBuffers.clear();
+    this.decodingAudioPromises.clear();
   }
 }

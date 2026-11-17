@@ -6,7 +6,7 @@ import {
   EngineConfigAsset,
   LoadedJsonAssets,
 } from '../assets/assetTypes';
-import { loadJsonAssetBundle } from '../assets/jsonAssetLoader';
+import { loadJsonAssetBundle, revokeMediaObjectUrls } from '../assets/jsonAssetLoader';
 import { JsonAudioSynth, AudioVoiceQuality } from '../assets/jsonAudioSynth';
 import { mulberry32 } from '../assets/prng';
 import { TextureRegistry } from '../assets/textureRegistry';
@@ -20,15 +20,17 @@ import { StaticObstacleBVH } from './bvh';
 import { SimCameraController } from './cameraController';
 import { CombatSystem, VehicleHumanoidCollider } from './combatSystem';
 import { spawnCrime, updateCrimes } from './crimeSystem';
+import { AIDebugVisualizer } from './debugVisualizer';
 import { DevEditorController, DevEditorState } from './devEditorController';
 import { updateNailMats } from './nailMatSystem';
 import {
   buildAllVehicleProxies,
   dismountUnit,
+  resetOfficerPose,
   spawnPoliceUnits,
   updatePoliceUnits,
 } from './policeUnitSystem';
-import { TownRoadGraph } from './roadGraph';
+import { getSurfaceHeight, TownRoadGraph } from './roadGraph';
 import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
@@ -45,6 +47,8 @@ import {
   updatePedestrians,
 } from './trafficSystem';
 import {
+  AIDebugFlags,
+  AIDebugStats,
   BackupMode,
   CameraMode,
   CaseAssignedUnitBadge,
@@ -52,17 +56,26 @@ import {
   DrivingMode,
   LightbarMode,
   PaintSwatchSummary,
+  PoliceVehicleKind,
   SimSnapshot,
   SirenPattern,
   UnitStatus,
   WeatherCondition,
+  WorldEntityKind,
+  WorldEntitySummary,
 } from './types';
-import { disposeLiveryTextureCache } from './vehicleModels';
 import {
+  createCivilianCar,
+  createHumanoid,
+  createPoliceCruiser,
+  disposeLiveryTextureCache,
+} from './vehicleModels';
+import {
+  createVehicleDynState,
   VehicleCollisionEntry,
   VehicleCrashPhysicsSystem,
 } from './vehiclePhysics';
-import { SimVfxManager } from './vfx';
+import { createRagdollState, SimVfxManager } from './vfx';
 import { WeatherSystem } from './weatherSystem';
 
 const _camFwd = new THREE.Vector3();
@@ -125,6 +138,14 @@ export class PoliceSimEngine {
   private weatherSystem: WeatherSystem;
   private cameraController: SimCameraController | null = null;
   private devEditor: DevEditorController | null = null;
+  private aiDebugVisualizer: AIDebugVisualizer;
+  private aiDebugFlags: AIDebugFlags = {
+    showPolicePaths: false,
+    showPursuitPaths: false,
+    showTrafficRoutes: false,
+    showNodesAndPriority: false,
+    showAvoidanceAndStuck: false,
+  };
 
   private units: PoliceUnit[] = [];
   private crimes: ActiveCrime[] = [];
@@ -268,6 +289,7 @@ export class PoliceSimEngine {
       this.isSoftwareGl,
       this.simRng,
     );
+    this.aiDebugVisualizer = new AIDebugVisualizer(this.scene);
 
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('pointerdown', this.handleGlobalGestureUnlock);
@@ -322,6 +344,9 @@ export class PoliceSimEngine {
     disposeLiveryTextureCache();
     this.textures?.dispose();
     this.textures = null;
+    if (this.assets?.media && (!result.assets || result.assets.media !== this.assets.media)) {
+      revokeMediaObjectUrls(this.assets.media);
+    }
 
     if (result.fatalError || !result.assets || !result.config) {
       this.assets = null;
@@ -357,9 +382,10 @@ export class PoliceSimEngine {
     this.combat.configure(config, assets.map);
 
     if (!this.audio) {
-      this.audio = new JsonAudioSynth(assets.audio, this.audioWanted);
+      this.audio = new JsonAudioSynth(assets.audio, this.audioWanted, assets.media);
       this.audio.unlockOnGesture();
     } else {
+      this.audio.setMediaAssets(assets.media);
       this.audio.setAudioAssets(assets.audio);
       this.audio.setEnabled(this.audioWanted);
     }
@@ -396,6 +422,17 @@ export class PoliceSimEngine {
           getBuildingMesh: (bid) => this.envHandles?.buildingMeshesById.get(bid),
           getObjectMesh: (oid) => this.envHandles?.objectMeshesById.get(oid),
           getSignMesh: (sid) => this.envHandles?.signMeshesById.get(sid),
+          getWorldEntities: () => this.getWorldEntitiesSnapshot(),
+          spawnWorldEntity: (kind, pos) => this.spawnWorldEntity(kind, pos),
+          deleteWorldEntity: (kind, id) => this.deleteWorldEntity(kind, id),
+          modifyWorldEntity: (kind, id, action, transform) =>
+            this.modifyWorldEntity(kind, id, action, transform),
+          getWorldEntityObject: (kind, id) => this.getWorldEntityObject(kind, id),
+          findWorldEntityByObject: (obj) => this.findWorldEntityByObject(obj),
+          focusWorldEntity: (kind, id) => this.focusWorldEntity(kind, id),
+          getAIDebugFlags: () => this.getAIDebugFlags(),
+          setAIDebugFlags: (patch) => this.setAIDebugFlags(patch),
+          getAIDebugStats: () => this.getAIDebugStats(),
         },
       );
     }
@@ -1031,6 +1068,12 @@ export class PoliceSimEngine {
     const selectedUnit =
       this.units.find((u) => u.id === this.selectedUnitId) ?? this.units[0];
     this.cameraController.update(rawDt, selectedUnit);
+    this.aiDebugVisualizer.update(this.aiDebugFlags, {
+      units: this.units,
+      civilianCars: this.civilianCars,
+      crimes: this.crimes,
+      roadGraph: this.roadGraph,
+    });
     this.devEditor?.update();
 
     this.snapshotAccum += rawDt;
@@ -1358,11 +1401,689 @@ export class PoliceSimEngine {
         textures: this.assets ? Object.keys(this.assets.textures).length : 0,
         models: this.assets ? Object.keys(this.assets.models).length : 0,
         audio: this.assets ? Object.keys(this.assets.audio).length : 0,
+        materials: this.assets ? Object.keys(this.assets.materials).length : 0,
+        media: this.assets ? Object.keys(this.assets.media).length : 0,
       },
       assetsLoaded: this.assetsLoaded,
       assetIssues: this.assetIssues,
       fatalError: this.fatalError,
     });
+  }
+
+  // --- AI Debug & World Instance Editor Live Bridge ---
+
+  public getAIDebugFlags(): AIDebugFlags {
+    return { ...this.aiDebugFlags };
+  }
+
+  public setAIDebugFlags(patch: Partial<AIDebugFlags>): void {
+    this.aiDebugFlags = { ...this.aiDebugFlags, ...patch };
+    this.aiDebugVisualizer.update(this.aiDebugFlags, {
+      units: this.units,
+      civilianCars: this.civilianCars,
+      crimes: this.crimes,
+      roadGraph: this.roadGraph,
+    });
+  }
+
+  public getAIDebugStats(): AIDebugStats {
+    return this.aiDebugVisualizer.computeStats({
+      units: this.units,
+      civilianCars: this.civilianCars,
+      crimes: this.crimes,
+      roadGraph: this.roadGraph,
+    });
+  }
+
+  public getWorldEntitiesSnapshot(): WorldEntitySummary[] {
+    const out: WorldEntitySummary[] = [];
+
+    for (const u of this.units) {
+      const avgHp = Math.round((u.officers[0].hp + u.officers[1].hp) * 0.5);
+      const maxHp = Math.round((u.officers[0].maxHp + u.officers[1].maxHp) * 0.5);
+      out.push({
+        uid: `police:${u.id}`,
+        kind: 'police',
+        id: u.id,
+        label: `${u.callsign} (${u.vehicleKind.toUpperCase()})`,
+        statusText: `${u.status}${u.immobilized ? ' • IMMOB' : ''}${u.reverseTimer > 0 ? ' • REV' : ''}`,
+        x: Math.round(u.pos.x * 100) / 100,
+        y: Math.round(u.pos.y * 100) / 100,
+        z: Math.round(u.pos.z * 100) / 100,
+        yaw: Math.round(u.yaw * 1000) / 1000,
+        hp: avgHp,
+        maxHp,
+        immobilized: u.immobilized,
+        lightsActive: u.lightsActive,
+        sirensActive: u.sirensActive,
+        mounted: u.mounted,
+        extra: u.assignedCaseNumber ? `Case #${u.assignedCaseNumber}` : undefined,
+      });
+    }
+
+    for (const c of this.civilianCars) {
+      out.push({
+        uid: `traffic:${c.id}`,
+        kind: 'traffic',
+        id: c.id,
+        label: `Traffic ${c.id}`,
+        statusText: c.immobilized
+          ? 'Immobilized'
+          : c.reverseTimer > 0
+          ? 'Reversing'
+          : `${Math.round(Math.abs(c.speed) * 3.6)} km/h`,
+        x: Math.round(c.pos.x * 100) / 100,
+        y: Math.round(c.pos.y * 100) / 100,
+        z: Math.round(c.pos.z * 100) / 100,
+        yaw: Math.round(c.yaw * 1000) / 1000,
+        immobilized: c.immobilized,
+        extra: c.destinationNodeId !== undefined ? `-> Node ${c.destinationNodeId}` : undefined,
+      });
+    }
+
+    this.pedestrians.forEach((p, idx) => {
+      const pid = `ped-${idx + 1}`;
+      out.push({
+        uid: `ped:${pid}`,
+        kind: 'ped',
+        id: pid,
+        label: `Pedestrian #${idx + 1}`,
+        statusText: p.dead ? 'Deceased' : p.injured ? 'Injured' : p.panicTimer > 0 ? 'Panicking' : 'Walking',
+        x: Math.round(p.pos.x * 100) / 100,
+        y: Math.round(p.pos.y * 100) / 100,
+        z: Math.round(p.pos.z * 100) / 100,
+        yaw: Math.round(p.yaw * 1000) / 1000,
+        hp: Math.round(p.hp),
+        maxHp: p.maxHp,
+      });
+    });
+
+    for (const cr of this.crimes) {
+      const pos = cr.inVehiclePursuit && cr.vehicleRig ? cr.vehiclePos : cr.suspectPos;
+      const yaw = cr.inVehiclePursuit && cr.vehicleRig ? cr.vehicleYaw : cr.suspectYaw;
+      out.push({
+        uid: `crime:${cr.id}`,
+        kind: 'crime',
+        id: cr.id,
+        label: `Case #${cr.caseNumber} (${cr.type})`,
+        statusText: !cr.suspectAlive
+          ? 'Neutralized'
+          : cr.inVehiclePursuit
+          ? `Pursuit • ${cr.urgencyLevel.toUpperCase()}`
+          : `${cr.incidentStatus} • ${cr.urgencyLevel.toUpperCase()}`,
+        x: Math.round(pos.x * 100) / 100,
+        y: Math.round(pos.y * 100) / 100,
+        z: Math.round(pos.z * 100) / 100,
+        yaw: Math.round(yaw * 1000) / 1000,
+        hp: Math.round(cr.inVehiclePursuit ? cr.vehicleHp : cr.suspectHp),
+        maxHp: 100,
+        extra: cr.district,
+      });
+    }
+
+    for (const nm of this.nailMats) {
+      out.push({
+        uid: `nail_mat:${nm.id}`,
+        kind: 'nail_mat',
+        id: nm.id,
+        label: `Spike Strip (${nm.unitId})`,
+        statusText: nm.phase,
+        x: Math.round(nm.roadCenter.x * 100) / 100,
+        y: Math.round(nm.roadCenter.y * 100) / 100,
+        z: Math.round(nm.roadCenter.z * 100) / 100,
+        yaw: nm.stagingYaw,
+      });
+    }
+
+    return out;
+  }
+
+  public getWorldEntityObject(kind: WorldEntityKind, id: string): THREE.Object3D | undefined {
+    if (kind === 'police') return this.units.find((u) => u.id === id)?.rig.root;
+    if (kind === 'traffic') return this.civilianCars.find((c) => c.id === id)?.rig.root;
+    if (kind === 'ped') {
+      const idx = Number(id.replace('ped-', '')) - 1;
+      return this.pedestrians[idx]?.rig.root;
+    }
+    if (kind === 'crime') {
+      const cr = this.crimes.find((c) => c.id === id);
+      if (!cr) return undefined;
+      return cr.inVehiclePursuit && cr.vehicleRig ? cr.vehicleRig.root : cr.suspectRig.root;
+    }
+    if (kind === 'nail_mat') return this.nailMats.find((n) => n.id === id)?.group;
+    return undefined;
+  }
+
+  public findWorldEntityByObject(obj: THREE.Object3D): { kind: WorldEntityKind; id: string } | null {
+    const isAncestor = (root: THREE.Object3D | undefined): boolean => {
+      if (!root) return false;
+      let cur: THREE.Object3D | null = obj;
+      while (cur) {
+        if (cur === root) return true;
+        cur = cur.parent;
+      }
+      return false;
+    };
+
+    for (const u of this.units) {
+      if (isAncestor(u.rig.root)) return { kind: 'police', id: u.id };
+    }
+    for (const c of this.civilianCars) {
+      if (isAncestor(c.rig.root)) return { kind: 'traffic', id: c.id };
+    }
+    for (let i = 0; i < this.pedestrians.length; i++) {
+      if (isAncestor(this.pedestrians[i].rig.root)) {
+        return { kind: 'ped', id: `ped-${i + 1}` };
+      }
+    }
+    for (const cr of this.crimes) {
+      if (isAncestor(cr.vehicleRig?.root) || isAncestor(cr.suspectRig.root)) {
+        return { kind: 'crime', id: cr.id };
+      }
+    }
+    for (const nm of this.nailMats) {
+      if (isAncestor(nm.group)) return { kind: 'nail_mat', id: nm.id };
+    }
+    return null;
+  }
+
+  public spawnWorldEntity(
+    kind:
+      | 'police_sedan'
+      | 'police_suv'
+      | 'police_van'
+      | 'police_apc'
+      | 'civilian'
+      | 'pedestrian'
+      | 'crime'
+      | 'pursuit',
+    pos?: { x: number; z: number },
+  ): WorldEntitySummary | null {
+    if (!this.assets || !this.config || !this.textures || !this.roadGraph) return null;
+    const camTarget = this.cameraController?.controls.target;
+    const x = pos?.x ?? camTarget?.x ?? 0;
+    const z = pos?.z ?? camTarget?.z ?? 0;
+    const surface = this.assets.map;
+    const y = getSurfaceHeight(x, z, surface);
+
+    if (kind === 'crime' || kind === 'pursuit') {
+      const created = spawnCrime({
+        forcePursuit: kind === 'pursuit',
+        crimes: this.crimes,
+        crimeCounter: this.crimeCounter,
+        units: this.units,
+        hierarchy: this.hierarchy,
+        roadGraph: this.roadGraph,
+        staticBvh: this.staticBvh,
+        config: this.config,
+        map: this.assets.map,
+        assets: this.assets,
+        textures: this.textures,
+        drivingMode: this.drivingMode,
+        audio: this.audio,
+        rng: this.simRng,
+        onAssetIssue: this.recordAssetIssue,
+      });
+      if (!created) return null;
+      this.crimeCounter++;
+      this.emitSnapshot();
+      return this.getWorldEntitiesSnapshot().find((e) => e.id === created.id) ?? null;
+    }
+
+    if (kind === 'pedestrian') {
+      const pool = this.config.world.pedestrianModels ?? ['pedestrian_humanoid'];
+      const pedModel = pool[this.pedestrians.length % pool.length];
+      const shirtHex = parseInt(
+        (this.config.world.pedestrianShirtColors[0] ?? '#475569').replace('#', ''),
+        16,
+      );
+      const rig = createHumanoid(
+        'pedestrian',
+        this.assets,
+        this.textures,
+        pedModel === 'pedestrian_humanoid' ? shirtHex : undefined,
+        this.recordAssetIssue,
+        pedModel,
+      );
+      const spawnPos = new THREE.Vector3(x, y, z);
+      this.staticBvh.resolveCircle(spawnPos, 0.45);
+      spawnPos.y = getSurfaceHeight(spawnPos.x, spawnPos.z, surface);
+      rig.root.position.copy(spawnPos);
+      this.hierarchy.entities.pedestrians.add(rig.root);
+      this.pedestrians.push({
+        rig,
+        pos: spawnPos,
+        yaw: 0,
+        blockCx: spawnPos.x,
+        blockCz: spawnPos.z,
+        loopRadius: 12,
+        loopRect: { cx: spawnPos.x, cz: spawnPos.z, halfW: 12, halfD: 12 },
+        cornerIdx: 0,
+        dir: 1,
+        walkPhase: 0,
+        panicTimer: 0,
+        hp: 100,
+        maxHp: 100,
+        injured: false,
+        dead: false,
+        ragdoll: createRagdollState(),
+      });
+      const id = `ped-${this.pedestrians.length}`;
+      this.emitSnapshot();
+      return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
+    }
+
+    if (kind === 'civilian') {
+      const variants = this.config.world.civilianVariants;
+      const variant = variants[this.civilianCars.length % variants.length] ?? 'sedan';
+      const colors = this.config.world.civilianColors;
+      const colorHex = parseInt(
+        (colors[this.civilianCars.length % colors.length] ?? '#94a3b8').replace('#', ''),
+        16,
+      );
+      const rig = createCivilianCar(
+        variant,
+        colorHex,
+        this.assets,
+        this.textures,
+        this.recordAssetIssue,
+      );
+      const nearest = this.roadGraph.findNearestNode(x, z);
+      const nextId = nearest.neighbors[0] ?? nearest.id;
+      const spawnPos = new THREE.Vector3(x, y, z);
+      rig.root.position.copy(spawnPos);
+      this.hierarchy.entities.traffic.add(rig.root);
+      const id = `civ-spawn-${Date.now().toString(36).slice(-4)}`;
+      const reachable = this.roadGraph
+        .getReachableNodeIds(nearest.id)
+        .filter((nid) => nid !== nearest.id && nid !== nextId);
+      const destId = reachable[0] ?? nextId;
+      const plan =
+        destId !== nextId ? this.roadGraph.findNodePath(nextId, destId) : [];
+
+      this.civilianCars.push({
+        id,
+        rig,
+        pos: spawnPos,
+        yaw: 0,
+        speed: 4,
+        dyn: createVehicleDynState(),
+        maxSpeed: 10,
+        currentNodeId: nearest.id,
+        nextNodeId: nextId,
+        prevNodeId: nearest.id,
+        routeQueue: plan.slice(1).map((n) => n.id),
+        destinationNodeId: destId,
+        junctionPauseTimer: 0,
+        junctionWaitNodeId: undefined,
+        turnApex: null,
+        lateralYield: 0,
+        stunTimer: 0,
+        impatience: 0,
+        patienceRate: 0.2,
+        stuckTimer: 0,
+        reverseTimer: 0,
+        reverseSteerDir: 1,
+        immobilized: false,
+        immobilizeTilt: 0,
+        damageSmokeTimer: 0,
+        smokeAccum: 0,
+      });
+      this.emitSnapshot();
+      return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
+    }
+
+    // Spawn Police Unit
+    const vehicleKind: PoliceVehicleKind =
+      kind === 'police_apc'
+        ? 'apc'
+        : kind === 'police_van'
+        ? 'van'
+        : kind === 'police_suv'
+        ? 'suv'
+        : 'sedan';
+    const isHeavy = vehicleKind === 'van' || vehicleKind === 'apc';
+    const liveryId = isHeavy ? 'tactical_swat' : 'classic_bw';
+    const weaponKind = isHeavy ? 'rifle' : 'pistol';
+    const unitNum = this.units.length + 1;
+    const id = `unit-spawn-${Date.now().toString(36).slice(-4)}`;
+    const rig = createPoliceCruiser(
+      unitNum,
+      vehicleKind,
+      liveryId,
+      this.config.vehicles,
+      this.assets,
+      this.textures,
+      this.isSoftwareGl,
+      undefined,
+      this.recordAssetIssue,
+    );
+    const spawnPos = new THREE.Vector3(x, y, z);
+    rig.root.position.copy(spawnPos);
+    rig.clickableMesh.userData.unitId = id;
+    this.hierarchy.entities.police.add(rig.root);
+    this.clickables.push(rig.clickableMesh);
+
+    const chassis = this.config.vehicles.chassis[vehicleKind] ?? this.config.vehicles.chassis.sedan;
+    const maxHp = vehicleKind === 'apc' ? 185 : isHeavy ? 160 : 100;
+    const maxArmor = vehicleKind === 'apc' ? 150 : isHeavy ? 120 : 45;
+    const magSize = this.config.weapons[weaponKind].magSize;
+
+    const makeOff = (strafe: 1 | -1) => {
+      const oRig = createHumanoid(
+        isHeavy ? 'heavy_officer' : 'officer',
+        this.assets!,
+        this.textures!,
+        undefined,
+        this.recordAssetIssue,
+      );
+      oRig.root.visible = false;
+      this.hierarchy.entities.police.add(oRig.root);
+      return {
+        rig: oRig,
+        pos: spawnPos.clone(),
+        yaw: 0,
+        hp: maxHp,
+        maxHp,
+        armor: maxArmor,
+        maxArmor,
+        weaponKind,
+        isHeavy,
+        morale: 100,
+        cowardiceState: 'steady' as const,
+        ragdoll: createRagdollState(),
+        fireCooldown: 0.25,
+        muzzleTimer: 0,
+        walkPhase: 0,
+        ammo: magSize,
+        reloadTimer: 0,
+        recoilKick: 0,
+        strafeSign: strafe,
+        strafeTimer: 1.5,
+        roamTarget: null,
+        roamTimer: 0,
+        roamPauseTimer: 0,
+        mountPhase: 'walk' as const,
+        boardTimer: 0,
+      };
+    };
+
+    const refBayIdx = Math.max(0, Math.min(this.config.vehicles.stationBays.length - 1, 0));
+    this.units.push({
+      id,
+      callsign: `UNIT-${unitNum}`,
+      bayIndex: refBayIdx,
+      vehicleKind,
+      liveryId,
+      baseColorHex: 0x0f172a,
+      isHeavyUnit: isHeavy,
+      weaponKind,
+      wheelRadius: chassis.wheelRadius,
+      halfW: chassis.halfW,
+      halfL: chassis.halfL,
+      mass: chassis.mass,
+      rig,
+      pos: spawnPos,
+      yaw: 0,
+      speed: 0,
+      dyn: createVehicleDynState(),
+      lateralOffset: 0,
+      status: UnitStatus.Engaging,
+      mounted: true,
+      freeRoam: true,
+      dismountTimer: 0,
+      mountTimer: 0,
+      immobilized: false,
+      immobilizeTilt: 0,
+      lightsActive: true,
+      sirensActive: false,
+      waypoints: [],
+      waypointIndex: 0,
+      repathTimer: 0,
+      avoidanceSteer: 0,
+      damageSmokeTimer: 0,
+      smokeAccum: 0,
+      lightPhaseOffset: unitNum * 0.4,
+      lightRateMult: 1,
+      targetCrimeId: null,
+      assignedCaseNumber: null,
+      assignedRole: null,
+      pursuitRole: 'direct',
+      officers: [makeOff(1), makeOff(-1)],
+      holdTimer: 0,
+      stuckTimer: 0,
+      impatience: 0,
+      reverseTimer: 0,
+      reverseSteerDir: 1,
+      towRequested: false,
+      beingTowed: false,
+    });
+    this.emitSnapshot();
+    return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
+  }
+
+  public deleteWorldEntity(kind: WorldEntityKind, id: string): boolean {
+    if (kind === 'police') {
+      const idx = this.units.findIndex((u) => u.id === id);
+      if (idx < 0) return false;
+      const [u] = this.units.splice(idx, 1);
+      this.hierarchy.entities.police.remove(u.rig.root);
+      u.officers.forEach((o) => this.hierarchy.entities.police.remove(o.rig.root));
+      if (this.selectedUnitId === id && this.units.length > 0) {
+        this.selectedUnitId = this.units[0].id;
+      }
+      this.emitSnapshot();
+      return true;
+    }
+    if (kind === 'traffic') {
+      const idx = this.civilianCars.findIndex((c) => c.id === id);
+      if (idx < 0) return false;
+      const [car] = this.civilianCars.splice(idx, 1);
+      this.hierarchy.entities.traffic.remove(car.rig.root);
+      this.emitSnapshot();
+      return true;
+    }
+    if (kind === 'ped') {
+      const idx = Number(id.replace('ped-', '')) - 1;
+      if (idx < 0 || idx >= this.pedestrians.length) return false;
+      const [ped] = this.pedestrians.splice(idx, 1);
+      this.hierarchy.entities.pedestrians.remove(ped.rig.root);
+      this.emitSnapshot();
+      return true;
+    }
+    if (kind === 'crime') {
+      const idx = this.crimes.findIndex((c) => c.id === id);
+      if (idx < 0) return false;
+      const [cr] = this.crimes.splice(idx, 1);
+      this.hierarchy.entities.crimes.remove(cr.suspectRig.root);
+      if (cr.vehicleRig) this.hierarchy.entities.crimes.remove(cr.vehicleRig.root);
+      for (const u of this.units) {
+        if (u.targetCrimeId === id) {
+          u.targetCrimeId = null;
+          u.assignedCaseNumber = null;
+        }
+      }
+      this.emitSnapshot();
+      return true;
+    }
+    if (kind === 'nail_mat') {
+      const idx = this.nailMats.findIndex((n) => n.id === id);
+      if (idx < 0) return false;
+      const [nm] = this.nailMats.splice(idx, 1);
+      this.hierarchy.entities.nailMats.remove(nm.group);
+      this.emitSnapshot();
+      return true;
+    }
+    return false;
+  }
+
+  public modifyWorldEntity(
+    kind: WorldEntityKind,
+    id: string,
+    action:
+      | 'repair_heal'
+      | 'toggle_lights'
+      | 'toggle_siren'
+      | 'toggle_mount'
+      | 'clear_impatience'
+      | 'set_transform',
+    transform?: { x?: number; y?: number; z?: number; yaw?: number },
+  ): boolean {
+    if (kind === 'police') {
+      const u = this.units.find((item) => item.id === id);
+      if (!u) return false;
+      if (action === 'set_transform' && transform) {
+        if (transform.x !== undefined) u.pos.x = transform.x;
+        if (transform.y !== undefined) u.pos.y = transform.y;
+        if (transform.z !== undefined) u.pos.z = transform.z;
+        if (transform.yaw !== undefined) u.yaw = transform.yaw;
+        u.rig.root.position.copy(u.pos);
+        u.rig.root.rotation.y = u.yaw;
+        return true;
+      }
+      if (action === 'repair_heal') {
+        u.immobilized = false;
+        u.immobilizeTilt = 0;
+        u.damageSmokeTimer = 0;
+        u.rig.bodyGroup.rotation.set(0, 0, 0);
+        u.rig.lightbar.detached = false;
+        u.rig.lightbar.group.visible = true;
+        u.rig.wheels.forEach((w) => {
+          w.userData.bentAmount = 0;
+          w.rotation.z = 0;
+        });
+        u.officers.forEach((o) => {
+          o.hp = o.maxHp;
+          o.armor = o.maxArmor;
+          o.morale = 100;
+          o.cowardiceState = 'steady';
+          o.ragdoll.active = false;
+          resetOfficerPose(o, u.yaw);
+        });
+      } else if (action === 'toggle_lights') {
+        u.lightsActive = !u.lightsActive;
+      } else if (action === 'toggle_siren') {
+        u.sirensActive = !u.sirensActive;
+      } else if (action === 'toggle_mount' && this.config) {
+        if (u.mounted) {
+          dismountUnit(
+            u,
+            this.cowardiceLevel,
+            this.staticBvh,
+            this.config,
+            this.simRng,
+            true,
+            this.assets?.map,
+          );
+        } else {
+          u.mounted = true;
+          u.freeRoam = false;
+          u.rig.cabinCrewGroup.visible = true;
+          u.officers.forEach((o) => {
+            o.rig.root.visible = false;
+            o.ragdoll.active = false;
+            resetOfficerPose(o, u.yaw);
+          });
+          u.status = UnitStatus.Engaging;
+        }
+      } else if (action === 'clear_impatience') {
+        u.impatience = 0;
+        u.stuckTimer = 0;
+        u.reverseTimer = 0;
+      }
+      this.emitSnapshot();
+      return true;
+    }
+
+    if (kind === 'traffic') {
+      const car = this.civilianCars.find((c) => c.id === id);
+      if (!car) return false;
+      if (action === 'set_transform' && transform) {
+        if (transform.x !== undefined) car.pos.x = transform.x;
+        if (transform.y !== undefined) car.pos.y = transform.y;
+        if (transform.z !== undefined) car.pos.z = transform.z;
+        if (transform.yaw !== undefined) car.yaw = transform.yaw;
+        car.rig.root.position.copy(car.pos);
+        car.rig.root.rotation.y = car.yaw;
+        return true;
+      }
+      if (action === 'repair_heal') {
+        car.immobilized = false;
+        car.stunTimer = 0;
+        car.damageSmokeTimer = 0;
+        car.rig.bodyGroup.rotation.set(0, 0, 0);
+      } else if (action === 'clear_impatience') {
+        car.impatience = 0;
+        car.stuckTimer = 0;
+        car.reverseTimer = 0;
+      }
+      this.emitSnapshot();
+      return true;
+    }
+
+    if (kind === 'ped') {
+      const idx = Number(id.replace('ped-', '')) - 1;
+      const ped = this.pedestrians[idx];
+      if (!ped) return false;
+      if (action === 'set_transform' && transform) {
+        if (transform.x !== undefined) ped.pos.x = transform.x;
+        if (transform.y !== undefined) ped.pos.y = transform.y;
+        if (transform.z !== undefined) ped.pos.z = transform.z;
+        if (transform.yaw !== undefined) ped.yaw = transform.yaw;
+        ped.rig.root.position.copy(ped.pos);
+        ped.rig.root.rotation.y = ped.yaw;
+        return true;
+      }
+      if (action === 'repair_heal') {
+        ped.hp = ped.maxHp;
+        ped.dead = false;
+        ped.injured = false;
+        ped.ragdoll.active = false;
+        ped.rig.root.rotation.set(0, ped.yaw, 0);
+      }
+      this.emitSnapshot();
+      return true;
+    }
+
+    if (kind === 'crime') {
+      const cr = this.crimes.find((c) => c.id === id);
+      if (!cr) return false;
+      if (action === 'set_transform' && transform) {
+        if (cr.inVehiclePursuit && cr.vehicleRig) {
+          if (transform.x !== undefined) cr.vehiclePos.x = transform.x;
+          if (transform.y !== undefined) cr.vehiclePos.y = transform.y;
+          if (transform.z !== undefined) cr.vehiclePos.z = transform.z;
+          if (transform.yaw !== undefined) cr.vehicleYaw = transform.yaw;
+          cr.vehicleRig.root.position.copy(cr.vehiclePos);
+          cr.vehicleRig.root.rotation.y = cr.vehicleYaw;
+        } else {
+          if (transform.x !== undefined) cr.suspectPos.x = transform.x;
+          if (transform.y !== undefined) cr.suspectPos.y = transform.y;
+          if (transform.z !== undefined) cr.suspectPos.z = transform.z;
+          if (transform.yaw !== undefined) cr.suspectYaw = transform.yaw;
+          cr.suspectRig.root.position.copy(cr.suspectPos);
+          cr.suspectRig.root.rotation.y = cr.suspectYaw;
+        }
+        return true;
+      }
+      if (action === 'repair_heal') {
+        cr.suspectHp = 100;
+        cr.suspectAlive = true;
+        cr.vehicleHp = 100;
+        cr.vehicleImmobilized = false;
+      }
+      this.emitSnapshot();
+      return true;
+    }
+
+    return false;
+  }
+
+  public focusWorldEntity(kind: WorldEntityKind, id: string): void {
+    const obj = this.getWorldEntityObject(kind, id);
+    if (!obj || !this.cameraController) return;
+    const p = obj.position;
+    this.cameraController.focusTarget(p.x, p.y + 0.8, p.z, p.x + 14, p.y + 11, p.z + 14);
   }
 
   public dispose(): void {
@@ -1376,9 +2097,13 @@ export class PoliceSimEngine {
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestored);
 
     this.devEditor?.dispose();
+    this.aiDebugVisualizer.dispose();
     this.cameraController?.dispose();
     this.audio?.dispose();
     this.textures?.dispose();
+    if (this.assets?.media) {
+      revokeMediaObjectUrls(this.assets.media);
+    }
     disposeLiveryTextureCache();
     this.vfx.dispose();
     this.combat.dispose();

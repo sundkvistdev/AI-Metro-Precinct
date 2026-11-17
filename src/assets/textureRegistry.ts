@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { AssetIssue, LoadedJsonAssets } from './assetTypes';
+import { AssetIssue, ImportedMediaAsset, LoadedJsonAssets } from './assetTypes';
 import { renderJsonTexture } from './jsonTextureRenderer';
+import { mulberry32 } from './prng';
 
 export function createMagentaFallbackTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
@@ -28,12 +29,41 @@ export function createMagentaFallbackTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+function createPlainAsphaltPadTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#24282f';
+  ctx.fillRect(0, 0, 256, 256);
+
+  const rand = mulberry32(441923);
+  for (let i = 0; i < 420; i++) {
+    const x = rand() * 256;
+    const y = rand() * 256;
+    const r = Math.floor(30 + rand() * 22);
+    const g = Math.floor(33 + rand() * 22);
+    const b = Math.floor(38 + rand() * 24);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 export class TextureRegistry {
   public readonly byId: Record<string, THREE.CanvasTexture> = {};
   public readonly magentaFallback: THREE.CanvasTexture;
+  public readonly plainAsphaltPad: THREE.CanvasTexture;
   private readonly reportedMissing = new Set<string>();
   private readonly onMissingIssue?: (issue: AssetIssue) => void;
   private readonly maxAnisotropy: number;
+  private media: Record<string, ImportedMediaAsset> = {};
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -41,12 +71,14 @@ export class TextureRegistry {
     onMissingIssue?: (issue: AssetIssue) => void,
   ) {
     this.onMissingIssue = onMissingIssue;
+    this.media = assets.media ?? {};
     this.magentaFallback = createMagentaFallbackTexture();
     this.maxAnisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    this.plainAsphaltPad = createPlainAsphaltPadTexture(this.maxAnisotropy);
 
     for (const [id, texDef] of Object.entries(assets.textures)) {
       try {
-        this.byId[id] = renderJsonTexture(texDef, this.maxAnisotropy);
+        this.byId[id] = renderJsonTexture(texDef, this.maxAnisotropy, this.media);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[TEXTURE RENDER ERROR] (${id}): ${msg}`);
@@ -62,9 +94,13 @@ export class TextureRegistry {
     }
   }
 
+  public setMedia(media: Record<string, ImportedMediaAsset>): void {
+    this.media = media;
+  }
+
   public upsertTexture(id: string, asset: LoadedJsonAssets['textures'][string]): THREE.CanvasTexture {
     const existing = this.byId[id];
-    const nextTex = renderJsonTexture(asset, this.maxAnisotropy);
+    const nextTex = renderJsonTexture(asset, this.maxAnisotropy, this.media);
     if (existing && existing !== this.magentaFallback) {
       const prevCanvas = existing.image as HTMLCanvasElement | undefined;
       const nextCanvas = nextTex.image as HTMLCanvasElement;
@@ -169,6 +205,9 @@ export class TextureRegistry {
     }
     if (!disposed.has(this.magentaFallback)) {
       this.magentaFallback.dispose();
+    }
+    if (!disposed.has(this.plainAsphaltPad)) {
+      this.plainAsphaltPad.dispose();
     }
   }
 }

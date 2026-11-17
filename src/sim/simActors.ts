@@ -92,6 +92,7 @@ export interface PoliceUnit {
   reverseSteerDir: 1 | -1;
   towRequested: boolean;
   beingTowed: boolean;
+  debugAvoidActive?: boolean;
 }
 
 export type NailMatPhase = 'en_route' | 'deploying' | 'armed' | 'recovering';
@@ -195,6 +196,12 @@ export interface CivilianVehicle {
   currentNodeId: number;
   nextNodeId: number;
   prevNodeId: number;
+  routeQueue: number[];
+  destinationNodeId?: number;
+  junctionPauseTimer: number;
+  junctionWaitNodeId?: number;
+  debugNextTarget?: THREE.Vector3;
+  debugAvoidActive?: boolean;
   turnApex: THREE.Vector3 | null;
   lateralYield: number;
   stunTimer: number;

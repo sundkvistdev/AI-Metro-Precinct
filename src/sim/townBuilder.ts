@@ -82,6 +82,12 @@ export function buildTownEnvironment(
     roughness: 0.87,
     metalness: 0.05,
   });
+  const plainRoadNodeMat = new THREE.MeshStandardMaterial({
+    map: textures.plainAsphaltPad,
+    roughnessMap: textures.roughnessAsphalt,
+    roughness: 0.87,
+    metalness: 0.05,
+  });
 
   const nodeById = new Map(map.roadNetwork.nodes.map((n) => [n.id, n]));
 
@@ -182,12 +188,48 @@ export function buildTownEnvironment(
   }
 
   const padGeo = new THREE.CircleGeometry(roadWidth * 0.54, 16).rotateX(-Math.PI / 2);
+  const stopBarGeo = new THREE.BoxGeometry(roadWidth * 0.44, 0.014, 0.42);
+  const stopBarMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc });
+  const yieldBarMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+
   for (const node of map.roadNetwork.nodes) {
-    const pad = new THREE.Mesh(padGeo, interMat);
+    const padMat = node.hasCrosswalk === true ? interMat : plainRoadNodeMat;
+    const pad = new THREE.Mesh(padGeo, padMat);
     pad.position.set(node.x, roadY - 0.005, node.z);
     pad.receiveShadow = true;
     freezeStatic(pad);
     hierarchy.world.roads.add(pad);
+
+    if (
+      node.nodeType !== 'join' &&
+      (node.priority === 'stop' || node.priority === 'yield')
+    ) {
+      const barMat = node.priority === 'stop' ? stopBarMat : yieldBarMat;
+      const barDist = roadWidth * 0.56;
+      const laneOff = map.roadNetwork.laneOffset;
+      for (const edge of map.roadNetwork.edges) {
+        if (edge.from !== node.id && edge.to !== node.id) continue;
+        const other = nodeById.get(edge.from === node.id ? edge.to : edge.from);
+        if (!other) continue;
+        const dx = other.x - node.x;
+        const dz = other.z - node.z;
+        const len = Math.hypot(dx, dz) || 1;
+        const ux = dx / len;
+        const uz = dz / len;
+        // Approach right-hand lane entering this node
+        const rx = uz * laneOff;
+        const rz = -ux * laneOff;
+        const bar = new THREE.Mesh(stopBarGeo, barMat);
+        bar.position.set(
+          node.x + ux * barDist + rx,
+          roadY + 0.004,
+          node.z + uz * barDist + rz,
+        );
+        bar.rotation.y = Math.atan2(ux, uz);
+        freezeStatic(bar);
+        hierarchy.world.roads.add(bar);
+      }
+    }
   }
 
   const sidewalkMat = new THREE.MeshStandardMaterial({
@@ -537,6 +579,7 @@ export function buildTownEnvironment(
                 message: `Texture "${missingTex}" referenced by "${objDef.modelRef}" is missing (magenta fallback applied)`,
               });
             },
+            assets?.materials,
           )
         : (() => {
             onAssetIssue?.({
@@ -593,7 +636,7 @@ export function buildTownEnvironment(
 
   return {
     obstacles,
-    roadMaterials: [roadMatV, roadMatH, interMat],
+    roadMaterials: [roadMatV, roadMatH, interMat, plainRoadNodeMat],
     sidewalkMaterial: sidewalkMat,
     apronMaterial,
     buildingMeshesById,

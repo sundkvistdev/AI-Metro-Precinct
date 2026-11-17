@@ -1,11 +1,41 @@
 import * as THREE from 'three';
-import { ProceduralTextureAsset, TextureLayerOp } from './assetTypes';
+import {
+  ImportedMediaAsset,
+  ProceduralTextureAsset,
+  TextureLayerOp,
+} from './assetTypes';
 import { mulberry32 } from './prng';
+
+function drawMagentaStampFallback(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  ctx.fillStyle = '#ff00ff';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#2d002d';
+  const step = Math.max(8, Math.round(Math.min(Math.abs(w), Math.abs(h)) / 4));
+  for (let py = 0; py < h; py += step) {
+    for (let px = 0; px < w; px += step) {
+      if (((Math.floor(px / step) + Math.floor(py / step)) & 1) === 1) {
+        ctx.fillRect(
+          x + px,
+          y + py,
+          Math.min(step, w - px),
+          Math.min(step, h - py),
+        );
+      }
+    }
+  }
+}
 
 function renderLayer(
   ctx: CanvasRenderingContext2D,
   asset: ProceduralTextureAsset,
   layer: TextureLayerOp,
+  mediaLookup?: Record<string, ImportedMediaAsset>,
 ): void {
   const { width, height, seed } = asset;
 
@@ -16,8 +46,123 @@ function renderLayer(
       break;
     }
     case 'rect': {
+      ctx.save();
+      if (layer.opacity !== undefined) ctx.globalAlpha = layer.opacity;
       ctx.fillStyle = layer.color;
       ctx.fillRect(layer.x, layer.y, layer.w, layer.h);
+      if (layer.strokeColor && (layer.strokeWidth ?? 0) > 0) {
+        ctx.strokeStyle = layer.strokeColor;
+        ctx.lineWidth = layer.strokeWidth!;
+        ctx.strokeRect(layer.x, layer.y, layer.w, layer.h);
+      }
+      ctx.restore();
+      break;
+    }
+    case 'circle': {
+      ctx.save();
+      if (layer.opacity !== undefined) ctx.globalAlpha = layer.opacity;
+      ctx.beginPath();
+      ctx.arc(layer.cx, layer.cy, Math.max(1, layer.r), 0, Math.PI * 2);
+      ctx.fillStyle = layer.color;
+      ctx.fill();
+      if (layer.strokeColor && (layer.strokeWidth ?? 0) > 0) {
+        ctx.strokeStyle = layer.strokeColor;
+        ctx.lineWidth = layer.strokeWidth!;
+        ctx.stroke();
+      }
+      ctx.restore();
+      break;
+    }
+    case 'ellipse': {
+      ctx.save();
+      if (layer.opacity !== undefined) ctx.globalAlpha = layer.opacity;
+      ctx.beginPath();
+      ctx.ellipse(
+        layer.cx,
+        layer.cy,
+        Math.max(1, layer.rx),
+        Math.max(1, layer.ry),
+        layer.rotation ?? 0,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fillStyle = layer.color;
+      ctx.fill();
+      if (layer.strokeColor && (layer.strokeWidth ?? 0) > 0) {
+        ctx.strokeStyle = layer.strokeColor;
+        ctx.lineWidth = layer.strokeWidth!;
+        ctx.stroke();
+      }
+      ctx.restore();
+      break;
+    }
+    case 'line': {
+      ctx.save();
+      if (layer.opacity !== undefined) ctx.globalAlpha = layer.opacity;
+      ctx.strokeStyle = layer.color;
+      ctx.lineWidth = Math.max(1, layer.width);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(layer.x1, layer.y1);
+      ctx.lineTo(layer.x2, layer.y2);
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case 'polygon': {
+      if (layer.points.length < 3) break;
+      ctx.save();
+      if (layer.opacity !== undefined) ctx.globalAlpha = layer.opacity;
+      ctx.beginPath();
+      ctx.moveTo(layer.points[0][0], layer.points[0][1]);
+      for (let i = 1; i < layer.points.length; i++) {
+        ctx.lineTo(layer.points[i][0], layer.points[i][1]);
+      }
+      ctx.closePath();
+      ctx.fillStyle = layer.color;
+      ctx.fill();
+      if (layer.strokeColor && (layer.strokeWidth ?? 0) > 0) {
+        ctx.strokeStyle = layer.strokeColor;
+        ctx.lineWidth = layer.strokeWidth!;
+        ctx.stroke();
+      }
+      ctx.restore();
+      break;
+    }
+    case 'text': {
+      ctx.save();
+      if (layer.opacity !== undefined) ctx.globalAlpha = layer.opacity;
+      ctx.font = `${layer.fontWeight ?? '700'} ${Math.max(6, layer.fontSize)}px sans-serif`;
+      ctx.textAlign = layer.align ?? 'left';
+      ctx.textBaseline = 'middle';
+      if (layer.strokeColor && (layer.strokeWidth ?? 0) > 0) {
+        ctx.strokeStyle = layer.strokeColor;
+        ctx.lineWidth = layer.strokeWidth!;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(layer.text, layer.x, layer.y);
+      }
+      ctx.fillStyle = layer.color;
+      ctx.fillText(layer.text, layer.x, layer.y);
+      ctx.restore();
+      break;
+    }
+    case 'image_stamp': {
+      ctx.save();
+      if (layer.opacity !== undefined) ctx.globalAlpha = layer.opacity;
+      const cx = layer.x + layer.w * 0.5;
+      const cy = layer.y + layer.h * 0.5;
+      if (layer.rotation) {
+        ctx.translate(cx, cy);
+        ctx.rotate(layer.rotation);
+        ctx.translate(-cx, -cy);
+      }
+      const media = mediaLookup?.[layer.mediaId];
+      if (media?.kind === 'image' && media.imageElement) {
+        ctx.drawImage(media.imageElement, layer.x, layer.y, layer.w, layer.h);
+      } else {
+        drawMagentaStampFallback(ctx, layer.x, layer.y, layer.w, layer.h);
+      }
+      ctx.restore();
       break;
     }
     case 'noise_speckle': {
@@ -330,6 +475,7 @@ function renderLayer(
 export function renderJsonTextureToCanvas(
   asset: ProceduralTextureAsset,
   targetCanvas?: HTMLCanvasElement,
+  mediaLookup?: Record<string, ImportedMediaAsset>,
 ): HTMLCanvasElement {
   const canvas = targetCanvas ?? document.createElement('canvas');
   canvas.width = Math.max(16, Math.min(2048, asset.width));
@@ -338,7 +484,7 @@ export function renderJsonTextureToCanvas(
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   for (const layer of asset.layers) {
-    renderLayer(ctx, asset, layer);
+    renderLayer(ctx, asset, layer, mediaLookup);
   }
   return canvas;
 }
@@ -346,8 +492,9 @@ export function renderJsonTextureToCanvas(
 export function renderJsonTexture(
   asset: ProceduralTextureAsset,
   maxDeviceAnisotropy: number,
+  mediaLookup?: Record<string, ImportedMediaAsset>,
 ): THREE.CanvasTexture {
-  const canvas = renderJsonTextureToCanvas(asset);
+  const canvas = renderJsonTextureToCanvas(asset, undefined, mediaLookup);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace =

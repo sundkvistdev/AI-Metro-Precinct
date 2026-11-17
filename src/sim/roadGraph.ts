@@ -1,5 +1,11 @@
 import * as THREE from 'three';
-import { CustomMapAsset, EngineConfigAsset, MapZoneDef } from '../assets/assetTypes';
+import {
+  CustomMapAsset,
+  EngineConfigAsset,
+  MapZoneDef,
+  RoadNodePriority,
+  RoadNodeType,
+} from '../assets/assetTypes';
 import { StaticObstacleBVH } from './bvh';
 
 export type WorldConfig = EngineConfigAsset['world'];
@@ -269,6 +275,9 @@ export interface RoadNode {
   x: number;
   z: number;
   neighbors: number[];
+  nodeType: RoadNodeType;
+  hasCrosswalk: boolean;
+  priority: RoadNodePriority;
 }
 
 export interface RoadEdge {
@@ -316,6 +325,8 @@ export class TownRoadGraph {
       this.stationExitPoint = source.stationExit?.apronPoint ?? [-82.5, -36];
       this.stationZones = source.zones.filter((z) => z.kind === 'apron');
 
+      const defById = new Map(source.roadNetwork.nodes.map((d) => [d.id, d]));
+
       for (let i = 0; i < source.roadNetwork.nodes.length; i++) {
         const def = source.roadNetwork.nodes[i];
         this.nodeIndexById.set(def.id, this.nodes.length);
@@ -326,6 +337,9 @@ export class TownRoadGraph {
           x: def.x,
           z: def.z,
           neighbors: [],
+          nodeType: def.nodeType ?? 'junction',
+          hasCrosswalk: def.hasCrosswalk === true,
+          priority: def.priority ?? 'none',
         });
       }
 
@@ -359,6 +373,13 @@ export class TownRoadGraph {
         };
         this.edges.push(edgeObj);
         this.edgeLookup.set(key, edgeObj);
+      }
+
+      for (const node of this.nodes) {
+        const def = defById.get(node.id);
+        if (def && !def.nodeType) {
+          node.nodeType = node.neighbors.length <= 2 ? 'join' : 'junction';
+        }
       }
       return;
     }
@@ -394,6 +415,9 @@ export class TownRoadGraph {
           x: coords[gx],
           z: coords[gz],
           neighbors: [],
+          nodeType: 'junction',
+          hasCrosswalk: false,
+          priority: 'none',
         });
         this.gridToNode.set(`${gx},${gz}`, id);
       }
@@ -430,6 +454,7 @@ export class TownRoadGraph {
           }
         }
       }
+      node.nodeType = node.neighbors.length <= 2 ? 'join' : 'junction';
     }
   }
 
@@ -561,7 +586,20 @@ export class TownRoadGraph {
 
     if (candidates.length === 0) {
       const pt = new THREE.Vector3(x, roadY, z);
-      return { point: pt, nearestNode: { id: 0, gx: 0, gz: 0, x, z, neighbors: [] } };
+      return {
+        point: pt,
+        nearestNode: {
+          id: 0,
+          gx: 0,
+          gz: 0,
+          x,
+          z,
+          neighbors: [],
+          nodeType: 'junction',
+          hasCrosswalk: false,
+          priority: 'none',
+        },
+      };
     }
 
     candidates.sort((a, b) => {
@@ -592,6 +630,41 @@ export class TownRoadGraph {
       point: chosen,
       nearestNode: this.findNearestNode(chosen.x, chosen.z),
     };
+  }
+
+  public getReachableNodeIds(startId: number): number[] {
+    const start = this.getNodeById(startId);
+    if (!start) return [];
+    const visited = new Set<number>([startId]);
+    const queue = [startId];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const node = this.getNodeById(cur);
+      if (!node) continue;
+      for (const nid of node.neighbors) {
+        if (!visited.has(nid)) {
+          visited.add(nid);
+          queue.push(nid);
+        }
+      }
+    }
+    return Array.from(visited);
+  }
+
+  public findNearestReachableNode(x: number, z: number, fromStartId: number): RoadNode | undefined {
+    const reachable = this.getReachableNodeIds(fromStartId);
+    let best: RoadNode | undefined;
+    let bestDistSq = Infinity;
+    for (const id of reachable) {
+      const node = this.getNodeById(id);
+      if (!node) continue;
+      const d = (node.x - x) ** 2 + (node.z - z) ** 2;
+      if (d < bestDistSq) {
+        bestDistSq = d;
+        best = node;
+      }
+    }
+    return best;
   }
 
   public findNodePath(startId: number, goalId: number): RoadNode[] {
@@ -645,7 +718,7 @@ export class TownRoadGraph {
       }
     }
 
-    return [startNode, goalNode];
+    return [];
   }
 
   private heuristic(aId: number, bId: number): number {
@@ -675,14 +748,25 @@ export class TownRoadGraph {
     const nodeB = this.getNodeById(nodeBId) ?? nodeA;
     if (!nodeA || !nodeB) return [finalSpot.clone()];
 
-    const pathA = this.findNodePath(startNodeId, nodeA.id);
-    const pathB =
+    let pathA = this.findNodePath(startNodeId, nodeA.id);
+    let pathB =
       nodeB.id !== nodeA.id ? this.findNodePath(startNodeId, nodeB.id) : pathA;
 
+    if (pathA.length === 0 && pathB.length === 0) {
+      const nearestReachable = this.findNearestReachableNode(finalSpot.x, finalSpot.z, startNodeId);
+      if (!nearestReachable) return [finalSpot.clone()];
+      const fallbackPath = this.findNodePath(startNodeId, nearestReachable.id);
+      return this.buildLaneWaypoints(fallbackPath, finalSpot, aggressive);
+    }
+
     const costA =
-      this.pathDistance(pathA) + Math.hypot(finalSpot.x - nodeA.x, finalSpot.z - nodeA.z);
+      pathA.length > 0
+        ? this.pathDistance(pathA) + Math.hypot(finalSpot.x - nodeA.x, finalSpot.z - nodeA.z)
+        : Infinity;
     const costB =
-      this.pathDistance(pathB) + Math.hypot(finalSpot.x - nodeB.x, finalSpot.z - nodeB.z);
+      pathB.length > 0
+        ? this.pathDistance(pathB) + Math.hypot(finalSpot.x - nodeB.x, finalSpot.z - nodeB.z)
+        : Infinity;
 
     let chosenPath = costA <= costB ? pathA : pathB;
     const entryNode = costA <= costB ? nodeA : nodeB;
@@ -824,9 +908,15 @@ export class TownRoadGraph {
         const nextSample = this.sampleDirectedEdge(b, c, 0.05);
         const nrx = -nextSample.tz * offset;
         const nrz = nextSample.tx * offset;
-        waypoints.push(
-          new THREE.Vector3(b.x + (exitRx + nrx) * 0.44, roadY, b.z + (exitRz + nrz) * 0.44),
-        );
+        if (b.nodeType === 'join') {
+          const avgRx = (exitRx + nrx) * 0.5;
+          const avgRz = (exitRz + nrz) * 0.5;
+          waypoints.push(new THREE.Vector3(b.x + avgRx, roadY, b.z + avgRz));
+        } else {
+          waypoints.push(
+            new THREE.Vector3(b.x + (exitRx + nrx) * 0.44, roadY, b.z + (exitRz + nrz) * 0.44),
+          );
+        }
       }
     }
 

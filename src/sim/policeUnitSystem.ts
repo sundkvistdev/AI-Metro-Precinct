@@ -230,12 +230,18 @@ export function routeUnitToStation(
   unit.reverseTimer = 0;
 
   const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z, staticBvh);
-  const pathA = roadGraph.findNodePath(entry.nearestNode.id, primary);
-  const pathB =
+  let pathA = roadGraph.findNodePath(entry.nearestNode.id, primary);
+  let pathB =
     secondaryNode && secondary !== primary
       ? roadGraph.findNodePath(entry.nearestNode.id, secondary)
       : pathA;
-  const chosenPath = pathA.length <= pathB.length ? pathA : pathB;
+  if (pathA.length === 0 && pathB.length === 0) {
+    const reach = roadGraph.findNearestReachableNode(exitRoadX, bay.parkPos[2], entry.nearestNode.id);
+    pathA = reach ? roadGraph.findNodePath(entry.nearestNode.id, reach.id) : [];
+    pathB = pathA;
+  }
+  const chosenPath =
+    pathB.length > 0 && (pathA.length === 0 || pathB.length < pathA.length) ? pathB : pathA;
   const wps: THREE.Vector3[] = [];
   if (unit.pos.distanceToSquared(entry.point) > 9) {
     wps.push(entry.point);
@@ -415,7 +421,11 @@ export function dispatchNearestUnit(
       wps.push(entry.point);
     }
     if (crime.inVehiclePursuit) {
-      const nodePath = roadGraph.findNodePath(entry.nearestNode.id, targetNodeId);
+      let nodePath = roadGraph.findNodePath(entry.nearestNode.id, targetNodeId);
+      if (nodePath.length === 0) {
+        const reach = roadGraph.findNearestReachableNode(pullSpot.x, pullSpot.z, entry.nearestNode.id);
+        if (reach) nodePath = roadGraph.findNodePath(entry.nearestNode.id, reach.id);
+      }
       wps.push(...roadGraph.buildLaneWaypoints(nodePath, pullSpot, isAggro));
     } else {
       wps.push(
@@ -778,7 +788,11 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
               wps.push(entry.point);
             }
             if (crime.inVehiclePursuit) {
-              const path = roadGraph.findNodePath(entry.nearestNode.id, crime.vehicleNextNodeId);
+              let path = roadGraph.findNodePath(entry.nearestNode.id, crime.vehicleNextNodeId);
+              if (path.length === 0) {
+                const reach = roadGraph.findNearestReachableNode(targetPos.x, targetPos.z, entry.nearestNode.id);
+                if (reach) path = roadGraph.findNodePath(entry.nearestNode.id, reach.id);
+              }
               wps.push(...roadGraph.buildLaneWaypoints(path, targetPos, recklessness > 0.35));
             } else {
               wps.push(
@@ -959,6 +973,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             impatience: unit.impatience,
           });
           unit.avoidanceSteer = avoid.nextSteerBias;
+          unit.debugAvoidActive = avoid.blocked || avoid.steerActive;
           unit.lateralOffset = 0;
 
           const revState = {

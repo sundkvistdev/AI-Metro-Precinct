@@ -5,7 +5,10 @@ import {
   AssetManifest,
   CustomMapAsset,
   EngineConfigAsset,
+  ImportedMediaAsset,
   LoadedJsonAssets,
+  MediaKind,
+  ModelMaterialDef,
   ProceduralAudioAsset,
   ProceduralModelAsset,
   ProceduralTextureAsset,
@@ -17,7 +20,7 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 
 export function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
   if (!isObjectRecord(raw)) return false;
-  if (raw.format !== 'jdata-config-v1') return false;
+  if (raw.format !== 'jdata-config-v1' && raw.format !== 'jdata-config-v2') return false;
   if (!isObjectRecord(raw.world) || !isObjectRecord(raw.simulation) || !isObjectRecord(raw.camera)) {
     return false;
   }
@@ -55,7 +58,11 @@ export function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
 
 export function validateMapAsset(raw: unknown): raw is CustomMapAsset {
   if (!isObjectRecord(raw)) return false;
-  if (raw.format !== 'jdata-map-v1' || typeof raw.id !== 'string' || typeof raw.name !== 'string') {
+  if (
+    (raw.format !== 'jdata-map-v1' && raw.format !== 'jdata-map-v2') ||
+    typeof raw.id !== 'string' ||
+    typeof raw.name !== 'string'
+  ) {
     return false;
   }
   if (!isObjectRecord(raw.bounds) || !isObjectRecord(raw.surfaceHeights) || !isObjectRecord(raw.roadNetwork)) {
@@ -82,7 +89,7 @@ export function validateMapAsset(raw: unknown): raw is CustomMapAsset {
 export function validateTextureAsset(raw: unknown): raw is ProceduralTextureAsset {
   if (!isObjectRecord(raw)) return false;
   return (
-    raw.format === 'jdata-texture-v1' &&
+    (raw.format === 'jdata-texture-v1' || raw.format === 'jdata-texture-v2') &&
     typeof raw.id === 'string' &&
     typeof raw.width === 'number' &&
     typeof raw.height === 'number' &&
@@ -93,7 +100,7 @@ export function validateTextureAsset(raw: unknown): raw is ProceduralTextureAsse
 export function validateModelAsset(raw: unknown): raw is ProceduralModelAsset {
   if (!isObjectRecord(raw)) return false;
   if (
-    raw.format !== 'jdata-model-v1' ||
+    (raw.format !== 'jdata-model-v1' && raw.format !== 'jdata-model-v2') ||
     typeof raw.id !== 'string' ||
     !isObjectRecord(raw.materials) ||
     !Array.isArray(raw.parts)
@@ -107,16 +114,24 @@ export function validateModelAsset(raw: unknown): raw is ProceduralModelAsset {
 export function validateAudioAsset(raw: unknown): raw is ProceduralAudioAsset {
   if (!isObjectRecord(raw)) return false;
   return (
-    raw.format === 'jdata-audio-v1' &&
+    (raw.format === 'jdata-audio-v1' || raw.format === 'jdata-audio-v2') &&
     typeof raw.id === 'string' &&
     typeof raw.kind === 'string'
   );
 }
 
+export function validateMaterialsRecord(raw: unknown): raw is Record<string, ModelMaterialDef> {
+  if (!isObjectRecord(raw)) return false;
+  for (const val of Object.values(raw)) {
+    if (!isObjectRecord(val) || typeof val.color !== 'string') return false;
+  }
+  return true;
+}
+
 export function parseSingleModelJson(text: string): ProceduralModelAsset {
   const parsed = JSON.parse(text) as unknown;
   if (!validateModelAsset(parsed)) {
-    throw new Error('JSON file is not a valid jdata-model-v1 model asset.');
+    throw new Error('JSON file is not a valid jdata-model-v1/v2 model asset.');
   }
   return parsed;
 }
@@ -156,6 +171,99 @@ async function fetchJsonStrict<T>(url: string): Promise<T> {
     throw new Error(`HTTP ${res.status} loading ${url}`);
   }
   return (await res.json()) as T;
+}
+
+function guessMimeType(path: string, kind: MediaKind, explicit?: string): string {
+  if (explicit && explicit.trim()) return explicit;
+  const lower = path.toLowerCase();
+  if (kind === 'image') {
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.svg')) return 'image/svg+xml';
+    return 'image/png';
+  }
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.ogg')) return 'audio/ogg';
+  if (lower.endsWith('.webm')) return 'audio/webm';
+  return 'audio/wav';
+}
+
+function sanitizeMediaId(rawName: string): string {
+  const base = rawName.replace(/\.[^/.]+$/, '').toLowerCase();
+  const clean = base.replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  return clean || `media_${Date.now()}`;
+}
+
+function decodeImageElement(objectUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to decode image asset'));
+    img.src = objectUrl;
+  });
+}
+
+async function createMediaAssetFromBytes(
+  id: string,
+  kind: MediaKind,
+  path: string,
+  bytes: Uint8Array,
+  mimeType?: string,
+  filename?: string,
+): Promise<ImportedMediaAsset> {
+  const resolvedMime = guessMimeType(path, kind, mimeType);
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const blob = new Blob([copy], { type: resolvedMime });
+  const objectUrl = URL.createObjectURL(blob);
+  const asset: ImportedMediaAsset = {
+    id,
+    kind,
+    path,
+    mimeType: resolvedMime,
+    bytes: copy,
+    objectUrl,
+    filename: filename ?? path.split('/').pop() ?? `${id}.${kind === 'image' ? 'png' : 'wav'}`,
+  };
+  if (kind === 'image') {
+    const img = await decodeImageElement(objectUrl);
+    asset.imageElement = img;
+    asset.width = img.naturalWidth || img.width;
+    asset.height = img.naturalHeight || img.height;
+  }
+  return asset;
+}
+
+export async function importMediaImageFile(
+  file: File,
+  customId?: string,
+): Promise<ImportedMediaAsset> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const id = customId || sanitizeMediaId(file.name);
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'png';
+  const path = `media/${id}.${ext}`;
+  return await createMediaAssetFromBytes(id, 'image', path, bytes, file.type, file.name);
+}
+
+export async function importMediaAudioFile(
+  file: File,
+  customId?: string,
+): Promise<ImportedMediaAsset> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const id = customId || sanitizeMediaId(file.name);
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'wav';
+  const path = `media/${id}.${ext}`;
+  return await createMediaAssetFromBytes(id, 'audio', path, bytes, file.type, file.name);
+}
+
+export function revokeMediaObjectUrls(media: Record<string, ImportedMediaAsset>): void {
+  for (const item of Object.values(media)) {
+    if (item.objectUrl) {
+      URL.revokeObjectURL(item.objectUrl);
+    }
+  }
 }
 
 export async function loadJsonAssetBundle(
@@ -246,13 +354,36 @@ export async function loadJsonAssetBundle(
     };
   }
 
+  const materials: Record<string, ModelMaterialDef> = {};
+  if (typeof manifest.materials === 'string' && manifest.materials.trim()) {
+    try {
+      const rawMats = await fetchJsonStrict<unknown>(manifest.materials);
+      if (!validateMaterialsRecord(rawMats)) {
+        throw new Error('Invalid shared materials JSON format.');
+      }
+      Object.assign(materials, rawMats);
+    } catch (err) {
+      const issue: AssetIssue = {
+        severity: 'error',
+        category: 'material',
+        id: 'materials',
+        path: manifest.materials,
+        message: err instanceof Error ? err.message : String(err),
+      };
+      logAssetIssue(issue);
+      issues.push(issue);
+    }
+  }
+
   const textures: Record<string, ProceduralTextureAsset> = {};
   const models: Record<string, ProceduralModelAsset> = {};
   const audio: Record<string, ProceduralAudioAsset> = {};
+  const media: Record<string, ImportedMediaAsset> = {};
 
   const textureEntries = Object.entries(manifest.textures ?? {});
   const modelEntries = Object.entries(manifest.models ?? {});
   const audioEntries = Object.entries(manifest.audio ?? {});
+  const mediaEntries = Object.entries(manifest.media ?? {});
 
   await Promise.all([
     Promise.all(
@@ -260,7 +391,7 @@ export async function loadJsonAssetBundle(
         try {
           const data = await fetchJsonStrict<unknown>(path);
           if (!validateTextureAsset(data)) {
-            throw new Error('Invalid jdata-texture-v1 format.');
+            throw new Error('Invalid jdata-texture format.');
           }
           textures[key] = data;
         } catch (err) {
@@ -281,7 +412,7 @@ export async function loadJsonAssetBundle(
         try {
           const data = await fetchJsonStrict<unknown>(path);
           if (!validateModelAsset(data)) {
-            throw new Error('Invalid jdata-model-v1 format.');
+            throw new Error('Invalid jdata-model format.');
           }
           models[key] = data;
         } catch (err) {
@@ -302,7 +433,7 @@ export async function loadJsonAssetBundle(
         try {
           const data = await fetchJsonStrict<unknown>(path);
           if (!validateAudioAsset(data)) {
-            throw new Error('Invalid jdata-audio-v1 format.');
+            throw new Error('Invalid jdata-audio format.');
           }
           audio[key] = data;
         } catch (err) {
@@ -318,6 +449,33 @@ export async function loadJsonAssetBundle(
         }
       }),
     ),
+    Promise.all(
+      mediaEntries.map(async ([key, meta]) => {
+        try {
+          const res = await fetch(meta.path, { cache: 'no-store' });
+          if (!res.ok) throw new Error(`HTTP ${res.status} loading media ${meta.path}`);
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          media[key] = await createMediaAssetFromBytes(
+            key,
+            meta.kind,
+            meta.path,
+            bytes,
+            meta.mimeType,
+            meta.filename,
+          );
+        } catch (err) {
+          const issue: AssetIssue = {
+            severity: 'error',
+            category: 'media',
+            id: key,
+            path: meta.path,
+            message: err instanceof Error ? err.message : String(err),
+          };
+          logAssetIssue(issue);
+          issues.push(issue);
+        }
+      }),
+    ),
   ]);
 
   return {
@@ -325,9 +483,11 @@ export async function loadJsonAssetBundle(
       manifest,
       config,
       map,
+      materials,
       textures,
       models,
       audio,
+      media,
     },
     config,
     issues,
@@ -566,9 +726,32 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
     };
   }
 
+  const materials: Record<string, ModelMaterialDef> = {};
+  if (typeof manifest.materials === 'string' && manifest.materials.trim()) {
+    try {
+      const matEntry = findZipEntry(zip, manifestDir, manifest.materials);
+      if (matEntry) {
+        const parsed = JSON.parse(await matEntry.async('string')) as unknown;
+        if (!validateMaterialsRecord(parsed)) throw new Error('Invalid materials JSON schema');
+        Object.assign(materials, parsed);
+      }
+    } catch (err) {
+      const issue: AssetIssue = {
+        severity: 'error',
+        category: 'material',
+        id: 'materials',
+        path: manifest.materials,
+        message: err instanceof Error ? err.message : String(err),
+      };
+      logAssetIssue(issue);
+      issues.push(issue);
+    }
+  }
+
   const textures: Record<string, ProceduralTextureAsset> = {};
   const models: Record<string, ProceduralModelAsset> = {};
   const audio: Record<string, ProceduralAudioAsset> = {};
+  const media: Record<string, ImportedMediaAsset> = {};
 
   await Promise.all([
     Promise.all(
@@ -634,6 +817,33 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
         }
       }),
     ),
+    Promise.all(
+      Object.entries(manifest.media ?? {}).map(async ([key, meta]) => {
+        try {
+          const entry = findZipEntry(zip, manifestDir, meta.path);
+          if (!entry) throw new Error(`Media "${meta.path}" not found in ZIP`);
+          const bytes = await entry.async('uint8array');
+          media[key] = await createMediaAssetFromBytes(
+            key,
+            meta.kind,
+            meta.path,
+            bytes,
+            meta.mimeType,
+            meta.filename,
+          );
+        } catch (err) {
+          const issue: AssetIssue = {
+            severity: 'error',
+            category: 'media',
+            id: key,
+            path: meta.path,
+            message: err instanceof Error ? err.message : String(err),
+          };
+          logAssetIssue(issue);
+          issues.push(issue);
+        }
+      }),
+    ),
   ]);
 
   return {
@@ -641,9 +851,11 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
       manifest,
       config,
       map,
+      materials,
       textures,
       models,
       audio,
+      media,
     },
     config,
     issues,
@@ -656,18 +868,27 @@ export async function exportAssetBundleToZip(assets: LoadedJsonAssets): Promise<
   const zip = new JSZip();
 
   const mapRel = `maps/${assets.map.id || 'metro_default'}.json`;
+  const hasMaterials = Object.keys(assets.materials ?? {}).length > 0;
+  const hasMedia = Object.keys(assets.media ?? {}).length > 0;
+
   const exportedManifest: AssetManifest = {
-    formatVersion: assets.manifest.formatVersion,
+    formatVersion: '2.0',
     packName: assets.manifest.packName,
     config: 'engine_config.json',
     map: mapRel,
+    ...(hasMaterials ? { materials: 'materials.json' } : {}),
     textures: {},
     models: {},
     audio: {},
+    ...(hasMedia ? { media: {} } : {}),
   };
 
   zip.file('engine_config.json', JSON.stringify(assets.config, null, 2));
   zip.file(mapRel, JSON.stringify(assets.map, null, 2));
+
+  if (hasMaterials) {
+    zip.file('materials.json', JSON.stringify(assets.materials, null, 2));
+  }
 
   for (const [id, tex] of Object.entries(assets.textures)) {
     const rel = `textures/${id}.json`;
@@ -685,6 +906,21 @@ export async function exportAssetBundleToZip(assets: LoadedJsonAssets): Promise<
     const rel = `audio/${id}.json`;
     exportedManifest.audio[id] = rel;
     zip.file(rel, JSON.stringify(audio, null, 2));
+  }
+
+  if (hasMedia && exportedManifest.media) {
+    for (const [id, item] of Object.entries(assets.media)) {
+      const safeName = (item.filename || `${id}.${item.kind === 'image' ? 'png' : 'wav'}`)
+        .replace(/[^a-zA-Z0-9._-]+/g, '_');
+      const rel = item.path.startsWith('media/') ? item.path : `media/${safeName}`;
+      exportedManifest.media[id] = {
+        kind: item.kind,
+        path: rel,
+        mimeType: item.mimeType,
+        filename: item.filename,
+      };
+      zip.file(rel, item.bytes);
+    }
   }
 
   zip.file('manifest.json', JSON.stringify(exportedManifest, null, 2));

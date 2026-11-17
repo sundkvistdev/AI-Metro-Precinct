@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
   CrashPartSpec,
+  ImportedMediaAsset,
   LoadedJsonAssets,
   MapBuildingDef,
   MapDynamicObjectDef,
@@ -18,6 +19,8 @@ import {
   RoadSignStyle,
 } from '../assets/assetTypes';
 import {
+  importMediaAudioFile,
+  importMediaImageFile,
   parseSingleAudioJson,
   parseSingleMapJson,
   parseSingleModelJson,
@@ -29,15 +32,34 @@ import { TextureRegistry } from '../assets/textureRegistry';
 import { SimCameraController } from './cameraController';
 import { getSurfaceHeight, sampleEdgeBezier } from './roadGraph';
 import { SceneWorldHierarchy } from './sceneHierarchy';
+import {
+  AIDebugFlags,
+  AIDebugStats,
+  DevAssetTab,
+  DevEditorMode,
+  DevWorldTab,
+  WorldEntityKind,
+  WorldEntitySummary,
+} from './types';
 
-export type DevEditorTab = 'map' | 'model' | 'texture' | 'audio' | 'templates';
+export type DevEditorTab = DevAssetTab;
 export type DevGizmoMode = 'translate' | 'rotate' | 'scale';
 
 export interface DevEditorState {
   active: boolean;
+  devMode: DevEditorMode;
+  worldTab: DevWorldTab;
+  assetTab: DevAssetTab;
   tab: DevEditorTab;
   gizmoMode: DevGizmoMode;
   showRoadOverlay: boolean;
+
+  // World Instance Editor
+  worldEntities: WorldEntitySummary[];
+  selectedWorldEntityUid: string | null;
+  selectedWorldEntity: WorldEntitySummary | null;
+  aiDebugFlags: AIDebugFlags;
+  aiDebugStats: AIDebugStats;
 
   // Map: Buildings, Nodes, Curved Edges, Dynamic Objects, Road Signs
   selectedBuildingId: string | null;
@@ -47,7 +69,15 @@ export interface DevEditorState {
   selectedNodeId: number | null;
   selectedNode: MapRoadNodeDef | null;
   linkFromNodeId: number | null;
-  nodeList: Array<{ id: number; x: number; z: number; label?: string }>;
+  nodeList: Array<{
+    id: number;
+    x: number;
+    z: number;
+    label?: string;
+    nodeType?: MapRoadNodeDef['nodeType'];
+    hasCrosswalk?: boolean;
+    priority?: MapRoadNodeDef['priority'];
+  }>;
 
   edgeList: Array<{
     index: number;
@@ -78,15 +108,32 @@ export interface DevEditorState {
   selectedPartParentId: string | null;
   modelMaterialKeys: string[];
 
-  // Texture Studio
+  // Shared Pack Materials
+  materialIds: string[];
+  selectedMaterialId: string;
+  selectedMaterial: ModelMaterialDef | null;
+
+  // Texture Studio & Media
   textureIds: string[];
   selectedTextureId: string;
   selectedTexture: ProceduralTextureAsset | null;
+  mediaList: Array<{
+    id: string;
+    kind: 'image' | 'audio';
+    path: string;
+    width?: number;
+    height?: number;
+    objectUrl: string;
+    filename?: string;
+  }>;
 
   // Audio Studio
   audioIds: string[];
   selectedAudioId: string;
   selectedAudio: ProceduralAudioAsset | null;
+  audioPreviewPlaying: boolean;
+  audioPreviewAssetId: string | null;
+  audioPreviewLoop: boolean;
 
   // Config template pools
   civilianVariants: string[];
@@ -97,7 +144,10 @@ export interface DevEditorState {
 
   dirtyMap: boolean;
   dirtyModel: boolean;
+  dirtyMaterials: boolean;
   dirtyTextures: boolean;
+  dirtyAudio: boolean;
+  lastSavedStatus: string | null;
 }
 
 export interface DevEditorCallbacks {
@@ -107,6 +157,40 @@ export interface DevEditorCallbacks {
   getBuildingMesh: (buildingId: string) => THREE.Object3D | undefined;
   getObjectMesh?: (objectId: string) => THREE.Object3D | undefined;
   getSignMesh?: (signId: string) => THREE.Object3D | undefined;
+  getWorldEntities?: () => WorldEntitySummary[];
+  spawnWorldEntity?: (
+    kind:
+      | 'police_sedan'
+      | 'police_suv'
+      | 'police_van'
+      | 'police_apc'
+      | 'civilian'
+      | 'pedestrian'
+      | 'crime'
+      | 'pursuit',
+    pos?: { x: number; z: number },
+  ) => WorldEntitySummary | null;
+  deleteWorldEntity?: (kind: WorldEntityKind, id: string) => boolean;
+  modifyWorldEntity?: (
+    kind: WorldEntityKind,
+    id: string,
+    action:
+      | 'repair_heal'
+      | 'toggle_lights'
+      | 'toggle_siren'
+      | 'toggle_mount'
+      | 'clear_impatience'
+      | 'set_transform',
+    transform?: { x?: number; y?: number; z?: number; yaw?: number },
+  ) => boolean;
+  getWorldEntityObject?: (kind: WorldEntityKind, id: string) => THREE.Object3D | undefined;
+  findWorldEntityByObject?: (
+    obj: THREE.Object3D,
+  ) => { kind: WorldEntityKind; id: string } | null;
+  focusWorldEntity?: (kind: WorldEntityKind, id: string) => void;
+  getAIDebugFlags?: () => AIDebugFlags;
+  setAIDebugFlags?: (patch: Partial<AIDebugFlags>) => void;
+  getAIDebugStats?: () => AIDebugStats;
 }
 
 const STUDIO_ORIGIN = new THREE.Vector3(260, 0.05, -260);
@@ -115,6 +199,25 @@ const _pointer = new THREE.Vector2();
 const _box3 = new THREE.Box3();
 const _size3 = new THREE.Vector3();
 const _center3 = new THREE.Vector3();
+
+const DEFAULT_AI_DEBUG_FLAGS: AIDebugFlags = {
+  showPolicePaths: false,
+  showPursuitPaths: false,
+  showTrafficRoutes: false,
+  showNodesAndPriority: false,
+  showAvoidanceAndStuck: false,
+};
+
+const DEFAULT_AI_DEBUG_STATS: AIDebugStats = {
+  activePoliceRoutes: 0,
+  activePursuits: 0,
+  activeTrafficRoutes: 0,
+  impatientCount: 0,
+  reversingCount: 0,
+  avoidingCount: 0,
+  roadNodeCount: 0,
+  roadEdgeCount: 0,
+};
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -126,6 +229,16 @@ function round3(n: number): number {
 
 function deepClone<T>(val: T): T {
   return JSON.parse(JSON.stringify(val)) as T;
+}
+
+function parseWorldUid(uid: string | null): { kind: WorldEntityKind; id: string } | null {
+  if (!uid) return null;
+  const sep = uid.indexOf(':');
+  if (sep <= 0) return null;
+  return {
+    kind: uid.slice(0, sep) as WorldEntityKind,
+    id: uid.slice(sep + 1),
+  };
 }
 
 function flattenParts(parts: ModelPartDef[]): ModelPartDef[] {
@@ -200,7 +313,11 @@ function ensureUniquePartId(parts: ModelPartDef[], desired: string): string {
   return `${desired}_${counter}`;
 }
 
-function clonePartDef(part: ModelPartDef, suffix: string, rootParts: ModelPartDef[]): ModelPartDef {
+function clonePartDef(
+  part: ModelPartDef,
+  suffix: string,
+  rootParts: ModelPartDef[],
+): ModelPartDef {
   const nextId = ensureUniquePartId(rootParts, `${part.id}_${suffix}`);
   return {
     ...part,
@@ -237,7 +354,13 @@ function defaultSignTexts(style: RoadSignStyle): {
       return { text: 'PRECINCT', subtext: 'METRO PD' };
     case 'custom':
     default:
-      return { text: 'CAUTION', subtext: 'CITY ZONE', bgColor: '#facc15', textColor: '#111827', borderColor: '#111827' };
+      return {
+        text: 'CAUTION',
+        subtext: 'CITY ZONE',
+        bgColor: '#facc15',
+        textColor: '#111827',
+        borderColor: '#111827',
+      };
   }
 }
 
@@ -251,14 +374,17 @@ export class DevEditorController {
   private assets: LoadedJsonAssets | null = null;
   private textures: TextureRegistry | null = null;
   private audio: JsonAudioSynth | null = null;
+  private unsubAudioPreview: (() => void) | null = null;
 
   private transform: TransformControls;
   private gizmoHelper: THREE.Object3D;
   private mapProxy = new THREE.Object3D();
+  private worldProxy = new THREE.Object3D();
 
   private overlayGroup = new THREE.Group();
   private nodeMarkersGroup = new THREE.Group();
   private edgeLinesGroup = new THREE.Group();
+  private edgeHitGroup = new THREE.Group();
   private selectionHighlightGroup = new THREE.Group();
 
   private studioGroup = new THREE.Group();
@@ -266,9 +392,14 @@ export class DevEditorController {
   private partHighlightBox: THREE.BoxHelper | null = null;
 
   private active = false;
-  private tab: DevEditorTab = 'map';
+  private devMode: DevEditorMode = 'world';
+  private worldTab: DevWorldTab = 'hierarchy';
+  private assetTab: DevAssetTab = 'map';
   private gizmoMode: DevGizmoMode = 'translate';
   private showRoadOverlay = true;
+
+  private selectedWorldEntityUid: string | null = null;
+  private worldRefreshTimer = 0;
 
   private selectedBuildingId: string | null = null;
   private selectedNodeId: number | null = null;
@@ -279,12 +410,18 @@ export class DevEditorController {
 
   private selectedModelId = 'police_cruiser';
   private selectedPartId: string | null = null;
+  private selectedMaterialId = '';
   private selectedTextureId = 'asphalt_road_v';
   private selectedAudioId = 'siren_wail';
+  private audioLoopEnabled = true;
 
   private dirtyMap = false;
   private dirtyModel = false;
+  private dirtyMaterials = false;
   private dirtyTextures = false;
+  private dirtyAudio = false;
+  private lastSavedStatus: string | null = null;
+
   private isDraggingGizmo = false;
   private pointerDownPos = { x: 0, y: 0 };
 
@@ -308,10 +445,11 @@ export class DevEditorController {
     this.callbacks = callbacks;
 
     this.mapProxy.name = 'DevMapProxy';
-    this.scene.add(this.mapProxy);
+    this.worldProxy.name = 'DevWorldProxy';
+    this.scene.add(this.mapProxy, this.worldProxy);
 
     this.overlayGroup.name = 'DevMapOverlay';
-    this.overlayGroup.add(this.nodeMarkersGroup, this.edgeLinesGroup);
+    this.overlayGroup.add(this.edgeHitGroup, this.edgeLinesGroup, this.nodeMarkersGroup);
     this.overlayGroup.visible = false;
     this.scene.add(this.overlayGroup);
 
@@ -367,12 +505,26 @@ export class DevEditorController {
     textures: TextureRegistry | null,
     audio: JsonAudioSynth | null = null,
   ): void {
+    this.unsubAudioPreview?.();
+    this.unsubAudioPreview = null;
+
     this.assets = assets;
     this.textures = textures;
     this.audio = audio;
+
+    if (audio) {
+      this.unsubAudioPreview = audio.subscribePreviewState(() => {
+        this.emitState();
+      });
+    }
+
     this.dirtyMap = false;
     this.dirtyModel = false;
+    this.dirtyMaterials = false;
     this.dirtyTextures = false;
+    this.dirtyAudio = false;
+    this.lastSavedStatus = null;
+
     this.selectedBuildingId = null;
     this.selectedNodeId = null;
     this.selectedEdgeIndex = null;
@@ -380,12 +532,19 @@ export class DevEditorController {
     this.selectedSignId = null;
     this.linkFromNodeId = null;
     this.selectedPartId = null;
+    this.selectedWorldEntityUid = null;
 
     if (assets) {
+      if (!assets.materials) assets.materials = {};
+      if (!assets.media) assets.media = {};
+
       const modelKeys = Object.keys(assets.models);
       if (modelKeys.length > 0 && !assets.models[this.selectedModelId]) {
         this.selectedModelId = modelKeys[0];
       }
+      const matKeys = Object.keys(assets.materials);
+      this.selectedMaterialId = matKeys[0] ?? '';
+
       const texKeys = Object.keys(assets.textures);
       if (texKeys.length > 0 && !assets.textures[this.selectedTextureId]) {
         this.selectedTextureId = texKeys[0];
@@ -444,19 +603,60 @@ export class DevEditorController {
         ? findPartInTree(model.parts, this.selectedPartId)
         : null;
 
+    const materialIds = this.assets?.materials ? Object.keys(this.assets.materials) : [];
+    const activeMatId =
+      this.selectedMaterialId && this.assets?.materials?.[this.selectedMaterialId]
+        ? this.selectedMaterialId
+        : materialIds[0] ?? '';
+    const selectedMaterial = activeMatId
+      ? this.assets?.materials?.[activeMatId] ?? null
+      : null;
+
     const textureIds = this.assets ? Object.keys(this.assets.textures) : [];
     const selectedTexture = this.assets?.textures[this.selectedTextureId] ?? null;
 
     const audioIds = this.assets ? Object.keys(this.assets.audio) : [];
     const selectedAudio = this.assets?.audio[this.selectedAudioId] ?? null;
+    const previewState = this.audio?.getPreviewState() ?? {
+      playing: false,
+      assetId: null,
+      loop: this.audioLoopEnabled,
+    };
+
+    const mediaList = this.assets?.media
+      ? Object.values(this.assets.media).map((m) => ({
+          id: m.id,
+          kind: m.kind,
+          path: m.path,
+          width: m.width,
+          height: m.height,
+          objectUrl: m.objectUrl,
+          filename: m.filename,
+        }))
+      : [];
+
+    const worldEntities = this.callbacks.getWorldEntities?.() ?? [];
+    const selectedWorldEntity =
+      this.selectedWorldEntityUid
+        ? worldEntities.find((e) => e.uid === this.selectedWorldEntityUid) ?? null
+        : null;
 
     const config = this.assets?.config;
 
     return {
       active: this.active,
-      tab: this.tab,
+      devMode: this.devMode,
+      worldTab: this.worldTab,
+      assetTab: this.assetTab,
+      tab: this.assetTab,
       gizmoMode: this.gizmoMode,
       showRoadOverlay: this.showRoadOverlay,
+
+      worldEntities,
+      selectedWorldEntityUid: selectedWorldEntity?.uid ?? null,
+      selectedWorldEntity,
+      aiDebugFlags: this.callbacks.getAIDebugFlags?.() ?? DEFAULT_AI_DEBUG_FLAGS,
+      aiDebugStats: this.callbacks.getAIDebugStats?.() ?? DEFAULT_AI_DEBUG_STATS,
 
       selectedBuildingId: selectedBuilding?.id ?? null,
       selectedBuilding: selectedBuilding ? { ...selectedBuilding } : null,
@@ -471,6 +671,9 @@ export class DevEditorController {
             x: round2(n.x),
             z: round2(n.z),
             label: n.label,
+            nodeType: n.nodeType ?? 'junction',
+            hasCrosswalk: n.hasCrosswalk,
+            priority: n.priority ?? 'none',
           }))
         : [],
 
@@ -504,13 +707,21 @@ export class DevEditorController {
       selectedPartParentId: foundPart?.parentGroup?.id ?? null,
       modelMaterialKeys: model ? Object.keys(model.materials) : [],
 
+      materialIds,
+      selectedMaterialId: activeMatId,
+      selectedMaterial: selectedMaterial ? deepClone(selectedMaterial) : null,
+
       textureIds,
       selectedTextureId: selectedTexture?.id ?? this.selectedTextureId,
       selectedTexture: selectedTexture ? deepClone(selectedTexture) : null,
+      mediaList,
 
       audioIds,
       selectedAudioId: selectedAudio?.id ?? this.selectedAudioId,
       selectedAudio: selectedAudio ? deepClone(selectedAudio) : null,
+      audioPreviewPlaying: previewState.playing,
+      audioPreviewAssetId: previewState.assetId,
+      audioPreviewLoop: this.audioLoopEnabled,
 
       civilianVariants: config ? [...config.world.civilianVariants] : [],
       pedestrianModels: config?.world.pedestrianModels
@@ -522,7 +733,10 @@ export class DevEditorController {
 
       dirtyMap: this.dirtyMap,
       dirtyModel: this.dirtyModel,
+      dirtyMaterials: this.dirtyMaterials,
       dirtyTextures: this.dirtyTextures,
+      dirtyAudio: this.dirtyAudio,
+      lastSavedStatus: this.lastSavedStatus,
     };
   }
 
@@ -536,20 +750,49 @@ export class DevEditorController {
     this.cameraController.setDevEditorActive(active);
     if (!active) {
       this.cameraController.setGizmoDragging(false);
+      this.audio?.stopAudioPreview();
+    } else if (this.devMode === 'asset' && this.assetTab === 'model') {
+      this.focusModelStage();
+    }
+    this.refreshVisuals();
+    this.emitState();
+  }
+
+  public setMode(mode: DevEditorMode): void {
+    if (this.devMode === mode) return;
+    const prevWasModelStage = this.devMode === 'asset' && this.assetTab === 'model';
+    this.devMode = mode;
+    if (mode === 'asset' && this.assetTab === 'model') {
+      this.focusModelStage();
+    } else if (prevWasModelStage) {
+      this.cameraController.resetView();
+    }
+    this.refreshVisuals();
+    this.emitState();
+  }
+
+  public setWorldTab(tab: DevWorldTab): void {
+    this.devMode = 'world';
+    this.worldTab = tab;
+    this.refreshVisuals();
+    this.emitState();
+  }
+
+  public setAssetTab(tab: DevAssetTab): void {
+    const prevTab = this.assetTab;
+    this.devMode = 'asset';
+    this.assetTab = tab;
+    if (tab === 'model') {
+      this.focusModelStage();
+    } else if (prevTab === 'model' || tab === 'map') {
+      this.cameraController.resetView();
     }
     this.refreshVisuals();
     this.emitState();
   }
 
   public setTab(tab: DevEditorTab): void {
-    this.tab = tab;
-    if (tab === 'model') {
-      this.focusModelStage();
-    } else if (tab === 'map') {
-      this.cameraController.resetView();
-    }
-    this.refreshVisuals();
-    this.emitState();
+    this.setAssetTab(tab);
   }
 
   public setGizmoMode(mode: DevGizmoMode): void {
@@ -560,7 +803,8 @@ export class DevEditorController {
 
   public setShowRoadOverlay(show: boolean): void {
     this.showRoadOverlay = show;
-    this.overlayGroup.visible = this.active && this.tab === 'map' && this.showRoadOverlay;
+    this.overlayGroup.visible =
+      this.active && this.devMode === 'asset' && this.assetTab === 'map' && this.showRoadOverlay;
     this.emitState();
   }
 
@@ -573,6 +817,93 @@ export class DevEditorController {
       STUDIO_ORIGIN.y + 4.4,
       STUDIO_ORIGIN.z + 7.2,
     );
+  }
+
+  // --- World Instance Mode Operations ---
+
+  public refreshWorldEntities(): void {
+    this.emitState();
+  }
+
+  public selectWorldEntity(kind: WorldEntityKind | null, id: string | null): void {
+    this.selectedWorldEntityUid = kind && id ? `${kind}:${id}` : null;
+    this.refreshWorldSelectionHighlight();
+    this.attachGizmo();
+    this.emitState();
+  }
+
+  public spawnWorldEntity(
+    kind:
+      | 'police_sedan'
+      | 'police_suv'
+      | 'police_van'
+      | 'police_apc'
+      | 'civilian'
+      | 'pedestrian'
+      | 'crime'
+      | 'pursuit',
+  ): WorldEntitySummary | null {
+    const target = this.cameraController.controls.target;
+    const spawned = this.callbacks.spawnWorldEntity?.(kind, {
+      x: round2(target.x),
+      z: round2(target.z),
+    });
+    if (spawned) {
+      this.selectedWorldEntityUid = spawned.uid;
+      this.refreshWorldSelectionHighlight();
+      this.attachGizmo();
+      this.emitState();
+    }
+    return spawned ?? null;
+  }
+
+  public deleteSelectedWorldEntity(): void {
+    const parsed = parseWorldUid(this.selectedWorldEntityUid);
+    if (!parsed) return;
+    const ok = this.callbacks.deleteWorldEntity?.(parsed.kind, parsed.id);
+    if (ok) {
+      this.selectedWorldEntityUid = null;
+      this.clearGroup(this.selectionHighlightGroup);
+      this.attachGizmo();
+      this.emitState();
+    }
+  }
+
+  public modifySelectedWorldEntity(
+    action:
+      | 'repair_heal'
+      | 'toggle_lights'
+      | 'toggle_siren'
+      | 'toggle_mount'
+      | 'clear_impatience',
+  ): void {
+    const parsed = parseWorldUid(this.selectedWorldEntityUid);
+    if (!parsed) return;
+    if (this.callbacks.modifyWorldEntity?.(parsed.kind, parsed.id, action)) {
+      this.refreshWorldSelectionHighlight();
+      this.emitState();
+    }
+  }
+
+  public focusSelectedWorldEntity(): void {
+    const parsed = parseWorldUid(this.selectedWorldEntityUid);
+    if (!parsed) return;
+    this.callbacks.focusWorldEntity?.(parsed.kind, parsed.id);
+  }
+
+  public setAIDebugFlags(patch: Partial<AIDebugFlags>): void {
+    this.callbacks.setAIDebugFlags?.(patch);
+    this.emitState();
+  }
+
+  private refreshWorldSelectionHighlight(): void {
+    this.clearGroup(this.selectionHighlightGroup);
+    const parsed = parseWorldUid(this.selectedWorldEntityUid);
+    if (!parsed) return;
+    const obj = this.callbacks.getWorldEntityObject?.(parsed.kind, parsed.id);
+    if (obj) {
+      this.refreshMeshHighlight(obj, 0x38bdf8);
+    }
   }
 
   // --- Map Editor: Buildings ---
@@ -781,7 +1112,10 @@ export class DevEditorController {
     this.emitState();
   }
 
-  public updateSelectedSign(patch: Partial<MapRoadSignDef>, needsVisualRebuild = false): void {
+  public updateSelectedSign(
+    patch: Partial<MapRoadSignDef>,
+    needsVisualRebuild = false,
+  ): void {
     const map = this.assets?.map;
     if (!map?.signs || !this.selectedSignId) return;
     const sign = map.signs.find((s) => s.id === this.selectedSignId);
@@ -856,8 +1190,8 @@ export class DevEditorController {
     }
     this.selectedEdgeIndex = index;
     this.dirtyMap = true;
-    this.refreshMapOverlay();
-    this.attachGizmo();
+    this.callbacks.onRebuildMap();
+    this.refreshVisuals();
     this.emitState();
   }
 
@@ -871,8 +1205,8 @@ export class DevEditorController {
       this.selectedEdgeIndex -= 1;
     }
     this.dirtyMap = true;
-    this.refreshMapOverlay();
-    this.attachGizmo();
+    this.callbacks.onRebuildMap();
+    this.refreshVisuals();
     this.emitState();
   }
 
@@ -893,6 +1227,9 @@ export class DevEditorController {
       x: round2(THREE.MathUtils.clamp(target.x, -map.bounds.halfSize, map.bounds.halfSize)),
       z: round2(THREE.MathUtils.clamp(target.z, -map.bounds.halfSize, map.bounds.halfSize)),
       label: `Node ${newId}`,
+      nodeType: 'junction',
+      hasCrosswalk: false,
+      priority: 'none',
     };
     map.roadNetwork.nodes.push(node);
     if (this.selectedNodeId !== null) {
@@ -901,8 +1238,8 @@ export class DevEditorController {
     this.clearMapSelections();
     this.selectedNodeId = newId;
     this.dirtyMap = true;
-    this.refreshMapOverlay();
-    this.attachGizmo();
+    this.callbacks.onRebuildMap();
+    this.refreshVisuals();
     this.emitState();
   }
 
@@ -918,22 +1255,36 @@ export class DevEditorController {
     this.selectedNodeId = map.roadNetwork.nodes[0]?.id ?? null;
     this.selectedEdgeIndex = null;
     this.dirtyMap = true;
-    this.refreshMapOverlay();
-    this.attachGizmo();
+    this.callbacks.onRebuildMap();
+    this.refreshVisuals();
     this.emitState();
   }
 
   public updateSelectedNode(x: number, z: number, label?: string): void {
+    this.updateSelectedNodeProps({ x, z, label });
+  }
+
+  public updateSelectedNodeProps(patch: Partial<MapRoadNodeDef>): void {
     const map = this.assets?.map;
     if (!map || this.selectedNodeId === null) return;
     const node = map.roadNetwork.nodes.find((n) => n.id === this.selectedNodeId);
     if (!node) return;
-    node.x = round2(x);
-    node.z = round2(z);
-    if (label !== undefined) node.label = label;
+    if (patch.x !== undefined) node.x = round2(patch.x);
+    if (patch.z !== undefined) node.z = round2(patch.z);
+    if (patch.label !== undefined) node.label = patch.label;
+    if (patch.nodeType !== undefined) {
+      node.nodeType = patch.nodeType;
+      if (patch.nodeType === 'join') {
+        node.hasCrosswalk = false;
+        node.priority = 'none';
+      }
+    }
+    if (patch.hasCrosswalk !== undefined) node.hasCrosswalk = patch.hasCrosswalk;
+    if (patch.priority !== undefined) node.priority = patch.priority;
+
     this.dirtyMap = true;
-    this.refreshMapOverlay();
-    this.attachGizmo();
+    this.callbacks.onRebuildMap();
+    this.refreshVisuals();
     this.emitState();
   }
 
@@ -953,13 +1304,12 @@ export class DevEditorController {
     }
     this.linkFromNodeId = null;
     this.dirtyMap = true;
-    this.refreshMapOverlay();
-    this.attachGizmo();
+    this.callbacks.onRebuildMap();
+    this.refreshVisuals();
     this.emitState();
   }
 
   public applyMapRebuild(): void {
-    this.dirtyMap = false;
     this.callbacks.onRebuildMap();
     this.refreshVisuals();
     this.emitState();
@@ -971,7 +1321,7 @@ export class DevEditorController {
     this.assets.map = parsed;
     this.clearMapSelections();
     this.selectedBuildingId = parsed.buildings[0]?.id ?? null;
-    this.dirtyMap = false;
+    this.dirtyMap = true;
     this.callbacks.onRebuildMap();
     this.refreshVisuals();
     this.emitState();
@@ -983,6 +1333,59 @@ export class DevEditorController {
       filename: `${this.assets.map.id || 'custom_map'}.json`,
       content: JSON.stringify(this.assets.map, null, 2),
     };
+  }
+
+  // --- Shared Pack Materials ---
+
+  public selectPackMaterial(id: string): void {
+    if (!this.assets?.materials?.[id]) return;
+    this.selectedMaterialId = id;
+    this.emitState();
+  }
+
+  public upsertPackMaterial(
+    key: string,
+    def: ModelMaterialDef,
+    renameFrom?: string,
+  ): void {
+    if (!this.assets) return;
+    if (!this.assets.materials) this.assets.materials = {};
+    const cleanKey = key.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!cleanKey) return;
+    if (renameFrom && renameFrom !== cleanKey && this.assets.materials[renameFrom]) {
+      delete this.assets.materials[renameFrom];
+    }
+    this.assets.materials[cleanKey] = { ...def };
+    this.selectedMaterialId = cleanKey;
+    this.dirtyMaterials = true;
+    if (this.devMode === 'asset' && this.assetTab === 'model') {
+      this.refreshModelPreview();
+      this.attachGizmo();
+    }
+    this.emitState();
+  }
+
+  public deletePackMaterial(key: string): void {
+    if (!this.assets?.materials?.[key]) return;
+    delete this.assets.materials[key];
+    const remaining = Object.keys(this.assets.materials);
+    this.selectedMaterialId = remaining[0] ?? '';
+    this.dirtyMaterials = true;
+    this.emitState();
+  }
+
+  public applyPackMaterialToSelectedPart(matId: string): void {
+    if (!this.assets?.materials?.[matId]) return;
+    const model = this.assets.models[this.selectedModelId];
+    if (!model || !this.selectedPartId) return;
+    const found = findPartInTree(model.parts, this.selectedPartId);
+    if (!found) return;
+    model.materials[matId] = { ...this.assets.materials[matId] };
+    found.part.materialRef = matId;
+    this.dirtyModel = true;
+    this.refreshModelPreview();
+    this.attachGizmo();
+    this.emitState();
   }
 
   // --- Model Editor & Hierarchy Operations ---
@@ -1001,11 +1404,9 @@ export class DevEditorController {
     if (!this.assets) return;
     const cleanId = id.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
     if (!cleanId) return;
-    const uniqueId = this.assets.models[uniqueKeyOrNext(this.assets.models, cleanId)]
-      ? uniqueKeyOrNext(this.assets.models, cleanId)
-      : cleanId;
+    const uniqueId = uniqueKeyOrNext(this.assets.models, cleanId);
     const model: ProceduralModelAsset = {
-      format: 'jdata-model-v1',
+      format: 'jdata-model-v2',
       id: uniqueId,
       seed: Math.floor(100000 + Math.random() * 899999),
       flags: {
@@ -1338,7 +1739,6 @@ export class DevEditorController {
   }
 
   public applyModelChanges(): void {
-    this.dirtyModel = false;
     this.callbacks.onRebuildModels();
     this.emitState();
   }
@@ -1352,7 +1752,7 @@ export class DevEditorController {
     };
   }
 
-  // --- Texture Studio Operations ---
+  // --- Texture Studio & Media Operations ---
 
   public selectTexture(id: string): void {
     if (!this.assets?.textures[id]) return;
@@ -1366,7 +1766,7 @@ export class DevEditorController {
     if (!cleanId) return;
     const finalId = uniqueKeyOrNext(this.assets.textures, cleanId);
     const texAsset: ProceduralTextureAsset = {
-      format: 'jdata-texture-v1',
+      format: 'jdata-texture-v2',
       id: finalId,
       seed: Math.floor(100000 + Math.random() * 899999),
       width: 256,
@@ -1391,9 +1791,97 @@ export class DevEditorController {
     this.assets.textures[id] = deepClone(next);
     this.textures.upsertTexture(id, next);
     this.dirtyTextures = true;
-    if (this.tab === 'model') {
+    if (this.devMode === 'asset' && this.assetTab === 'model') {
       this.refreshModelPreview();
     }
+    this.emitState();
+  }
+
+  public async importImageFileToPack(file: File): Promise<ImportedMediaAsset | null> {
+    if (!this.assets || !this.textures) return null;
+    const media = await importMediaImageFile(file);
+    if (!this.assets.media) this.assets.media = {};
+    const finalMediaId = uniqueKeyOrNext(this.assets.media, media.id);
+    media.id = finalMediaId;
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'png';
+    media.path = `media/${finalMediaId}.${ext}`;
+
+    this.assets.media[finalMediaId] = media;
+    this.assets.manifest.formatVersion = '2.0';
+    if (!this.assets.manifest.media) this.assets.manifest.media = {};
+    this.assets.manifest.media[finalMediaId] = {
+      kind: 'image',
+      path: media.path,
+      mimeType: media.mimeType,
+      filename: media.filename,
+    };
+
+    this.textures.setMedia(this.assets.media);
+
+    // Also create a ready-to-use texture asset wrapping the imported image
+    const w = Math.max(16, Math.min(1024, media.width ?? 256));
+    const h = Math.max(16, Math.min(1024, media.height ?? 256));
+    const texId = uniqueKeyOrNext(this.assets.textures, `img_${finalMediaId}`);
+    const texAsset: ProceduralTextureAsset = {
+      format: 'jdata-texture-v2',
+      id: texId,
+      seed: Math.floor(100000 + Math.random() * 899999),
+      width: w,
+      height: h,
+      colorSpace: 'srgb',
+      layers: [
+        { op: 'fill', color: '#000000' },
+        { op: 'image_stamp', mediaId: finalMediaId, x: 0, y: 0, w, h, opacity: 1 },
+      ],
+    };
+    this.assets.textures[texId] = texAsset;
+    this.assets.manifest.textures[texId] = `textures/${texId}.json`;
+    this.textures.upsertTexture(texId, texAsset);
+    this.selectedTextureId = texId;
+    this.dirtyTextures = true;
+    this.lastSavedStatus = `Imported image "${finalMediaId}" & created texture "${texId}"`;
+    this.emitState();
+    return media;
+  }
+
+  public deleteMedia(mediaId: string): void {
+    if (!this.assets?.media?.[mediaId]) return;
+    const existing = this.assets.media[mediaId];
+    if (existing.objectUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(existing.objectUrl);
+    }
+    delete this.assets.media[mediaId];
+    if (this.assets.manifest.media) {
+      delete this.assets.manifest.media[mediaId];
+    }
+    this.textures?.setMedia(this.assets.media);
+    this.audio?.setMediaAssets(this.assets.media);
+    this.emitState();
+  }
+
+  public assignTextureToLivery(
+    liveryId: string,
+    textureId: string,
+    slot: 'door' | 'stripe',
+  ): void {
+    if (!this.assets || !this.textures) return;
+    const livery = this.assets.config.vehicles.liveries[liveryId];
+    const tex = this.assets.textures[textureId];
+    if (!livery || !tex) return;
+
+    if (slot === 'door') {
+      livery.doorTextureRef = textureId;
+    } else {
+      const stripeTexId = `livery_${liveryId}_stripe`;
+      const cloned = deepClone(tex);
+      cloned.id = stripeTexId;
+      this.assets.textures[stripeTexId] = cloned;
+      this.assets.manifest.textures[stripeTexId] = `textures/${stripeTexId}.json`;
+      this.textures.upsertTexture(stripeTexId, cloned);
+    }
+    this.dirtyTextures = true;
+    this.callbacks.onRebuildModels();
+    this.lastSavedStatus = `Applied "${textureId}" to livery "${liveryId}" (${slot})`;
     this.emitState();
   }
 
@@ -1418,8 +1906,8 @@ export class DevEditorController {
   }
 
   public applyTexturesLive(): void {
-    this.dirtyTextures = false;
     this.callbacks.onRebuildMap();
+    this.callbacks.onRebuildModels();
     this.emitState();
   }
 
@@ -1442,7 +1930,7 @@ export class DevEditorController {
     const asset: ProceduralAudioAsset =
       kind === 'siren_sweep' || kind === 'siren_hilo'
         ? {
-            format: 'jdata-audio-v1',
+            format: 'jdata-audio-v2',
             id: finalId,
             seed: Math.floor(100000 + Math.random() * 899999),
             kind,
@@ -1461,21 +1949,40 @@ export class DevEditorController {
           }
         : kind === 'filtered_noise_burst'
         ? {
-            format: 'jdata-audio-v1',
+            format: 'jdata-audio-v2',
             id: finalId,
             seed: Math.floor(100000 + Math.random() * 899999),
             kind,
             gain: 0.65,
             noiseBurst: {
               duration: 0.35,
-              envelope: { attack: 0.002, decay: 0.28, duration: 0.35, curveExponent: 2.6 },
+              envelope: {
+                attack: 0.002,
+                decay: 0.28,
+                duration: 0.35,
+                curveExponent: 2.6,
+              },
               filterType: 'bandpass',
               freqStart: 2400,
               freqEnd: 420,
             },
           }
+        : kind === 'audio_clip'
+        ? {
+            format: 'jdata-audio-v2',
+            id: finalId,
+            seed: Math.floor(100000 + Math.random() * 899999),
+            kind: 'audio_clip',
+            gain: 0.75,
+            clip: {
+              mediaId:
+                Object.values(this.assets.media).find((m) => m.kind === 'audio')?.id ?? '',
+              playbackRate: 1.0,
+              loop: true,
+            },
+          }
         : {
-            format: 'jdata-audio-v1',
+            format: 'jdata-audio-v2',
             id: finalId,
             seed: Math.floor(100000 + Math.random() * 899999),
             kind: 'chirp_sequence',
@@ -1494,6 +2001,7 @@ export class DevEditorController {
     this.assets.manifest.audio[finalId] = `audio/${finalId}.json`;
     this.audio?.upsertAudioAsset(finalId, asset);
     this.selectedAudioId = finalId;
+    this.dirtyAudio = true;
     this.emitState();
   }
 
@@ -1501,13 +2009,87 @@ export class DevEditorController {
     if (!this.assets) return;
     this.assets.audio[next.id] = deepClone(next);
     this.audio?.upsertAudioAsset(next.id, next);
+    this.dirtyAudio = true;
+    const pState = this.audio?.getPreviewState();
+    if (pState?.playing && pState.assetId === next.id) {
+      this.audio?.updateAudioPreview(next, this.audioLoopEnabled);
+    }
+    this.emitState();
+  }
+
+  public startAudioPreview(): void {
+    const asset = this.assets?.audio[this.selectedAudioId];
+    if (!asset) return;
+    this.audio?.startAudioPreview(asset, this.audioLoopEnabled);
+    this.emitState();
+  }
+
+  public stopAudioPreview(): void {
+    this.audio?.stopAudioPreview();
+    this.emitState();
+  }
+
+  public setAudioPreviewLoop(loop: boolean): void {
+    this.audioLoopEnabled = loop;
+    const asset = this.assets?.audio[this.selectedAudioId];
+    const pState = this.audio?.getPreviewState();
+    if (asset && pState?.playing && pState.assetId === asset.id) {
+      this.audio?.updateAudioPreview(asset, loop);
+    }
     this.emitState();
   }
 
   public previewSelectedAudio(): void {
-    const asset = this.assets?.audio[this.selectedAudioId];
-    if (!asset) return;
-    this.audio?.previewAudioAsset(asset);
+    const pState = this.audio?.getPreviewState();
+    if (pState?.playing && pState.assetId === this.selectedAudioId) {
+      this.stopAudioPreview();
+    } else {
+      this.startAudioPreview();
+    }
+  }
+
+  public async importAudioFileToPack(file: File): Promise<ProceduralAudioAsset | null> {
+    if (!this.assets) return null;
+    const media = await importMediaAudioFile(file);
+    if (!this.assets.media) this.assets.media = {};
+    const finalMediaId = uniqueKeyOrNext(this.assets.media, media.id);
+    media.id = finalMediaId;
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'wav';
+    media.path = `media/${finalMediaId}.${ext}`;
+
+    this.assets.media[finalMediaId] = media;
+    this.assets.manifest.formatVersion = '2.0';
+    if (!this.assets.manifest.media) this.assets.manifest.media = {};
+    this.assets.manifest.media[finalMediaId] = {
+      kind: 'audio',
+      path: media.path,
+      mimeType: media.mimeType,
+      filename: media.filename,
+    };
+
+    this.audio?.setMediaAssets(this.assets.media);
+
+    const audioId = uniqueKeyOrNext(this.assets.audio, finalMediaId);
+    const asset: ProceduralAudioAsset = {
+      format: 'jdata-audio-v2',
+      id: audioId,
+      seed: Math.floor(100000 + Math.random() * 899999),
+      kind: 'audio_clip',
+      gain: 0.75,
+      clip: {
+        mediaId: finalMediaId,
+        playbackRate: 1.0,
+        loop: true,
+      },
+    };
+    this.assets.audio[audioId] = asset;
+    this.assets.manifest.audio[audioId] = `audio/${audioId}.json`;
+    this.audio?.upsertAudioAsset(audioId, asset);
+    this.selectedAudioId = audioId;
+    this.dirtyAudio = true;
+    this.lastSavedStatus = `Imported audio "${media.filename}" as "${audioId}"`;
+    this.emitState();
+    return asset;
   }
 
   public importAudioJson(jsonText: string): void {
@@ -1517,6 +2099,7 @@ export class DevEditorController {
     this.assets.manifest.audio[parsed.id] = `audio/${parsed.id}.json`;
     this.audio?.upsertAudioAsset(parsed.id, parsed);
     this.selectedAudioId = parsed.id;
+    this.dirtyAudio = true;
     this.emitState();
   }
 
@@ -1527,6 +2110,65 @@ export class DevEditorController {
       filename: `${aud.id || 'audio'}.json`,
       content: JSON.stringify(aud, null, 2),
     };
+  }
+
+  // --- Save Current Assets to Active Asset Pack (Format 2.0) ---
+
+  public saveCurrentAssetToPack(
+    scope: 'map' | 'model' | 'material' | 'texture' | 'audio' | 'all' = 'all',
+  ): void {
+    if (!this.assets) return;
+    const manifest = this.assets.manifest;
+    manifest.formatVersion = '2.0';
+
+    if (Object.keys(this.assets.materials).length > 0 || manifest.materials) {
+      manifest.materials = manifest.materials || 'materials.json';
+    }
+
+    if (scope === 'map' || scope === 'all') {
+      this.callbacks.onRebuildMap();
+      this.dirtyMap = false;
+    }
+
+    if (scope === 'model' || scope === 'all') {
+      const m = this.assets.models[this.selectedModelId];
+      if (m) {
+        manifest.models[m.id] = manifest.models[m.id] || `models/${m.id}.json`;
+      }
+      this.callbacks.onRebuildModels();
+      this.dirtyModel = false;
+    }
+
+    if (scope === 'material' || scope === 'all') {
+      this.callbacks.onRebuildMap();
+      this.callbacks.onRebuildModels();
+      this.dirtyMaterials = false;
+    }
+
+    if (scope === 'texture' || scope === 'all') {
+      const t = this.assets.textures[this.selectedTextureId];
+      if (t) {
+        manifest.textures[t.id] = manifest.textures[t.id] || `textures/${t.id}.json`;
+        this.textures?.upsertTexture(t.id, t);
+      }
+      this.callbacks.onRebuildMap();
+      this.callbacks.onRebuildModels();
+      this.dirtyTextures = false;
+    }
+
+    if (scope === 'audio' || scope === 'all') {
+      const a = this.assets.audio[this.selectedAudioId];
+      if (a) {
+        manifest.audio[a.id] = manifest.audio[a.id] || `audio/${a.id}.json`;
+        this.audio?.upsertAudioAsset(a.id, a);
+      }
+      this.dirtyAudio = false;
+    }
+
+    this.refreshVisuals();
+    const label = scope === 'all' ? 'all changes' : scope;
+    this.lastSavedStatus = `Saved ${label} to pack "${manifest.packName}" (v2.0)`;
+    this.emitState();
   }
 
   // --- Vehicle & Pedestrian Template Builders ---
@@ -1592,7 +2234,8 @@ export class DevEditorController {
           : opts.sourceModelId === 'police_apc'
           ? 'apc'
           : 'sedan';
-      const baseChassis = config.vehicles.chassis[baseKind] ?? config.vehicles.chassis.sedan;
+      const baseChassis =
+        config.vehicles.chassis[baseKind] ?? config.vehicles.chassis.sedan;
       config.vehicles.chassis[finalId] = {
         ...deepClone(baseChassis),
         modelRef: finalId,
@@ -1604,9 +2247,10 @@ export class DevEditorController {
         id: `unit-${bayIndex + 1}`,
         callsign: (opts.callsign || finalId.toUpperCase()).slice(0, 14),
         vehicleKind: finalId,
-        liveryId: opts.liveryId && config.vehicles.liveries[opts.liveryId]
-          ? opts.liveryId
-          : 'classic_bw',
+        liveryId:
+          opts.liveryId && config.vehicles.liveries[opts.liveryId]
+            ? opts.liveryId
+            : 'classic_bw',
         weaponKind: opts.weaponKind ?? 'pistol',
         isHeavyUnit: Boolean(opts.isHeavyUnit),
         parkPos: [
@@ -1624,7 +2268,8 @@ export class DevEditorController {
     this.selectedPartId = flattenParts(cloned.parts)[0]?.id ?? null;
     this.dirtyModel = false;
     if (opts.openInStudio) {
-      this.tab = 'model';
+      this.devMode = 'asset';
+      this.assetTab = 'model';
       this.focusModelStage();
     }
     this.refreshVisuals();
@@ -1717,7 +2362,8 @@ export class DevEditorController {
     this.selectedPartId = flattenParts(cloned.parts)[0]?.id ?? null;
     this.dirtyModel = false;
     if (opts.openInStudio) {
-      this.tab = 'model';
+      this.devMode = 'asset';
+      this.assetTab = 'model';
       this.focusModelStage();
     }
     this.refreshVisuals();
@@ -1728,15 +2374,27 @@ export class DevEditorController {
   // --- Visual Sync & Gizmo Attachment ---
 
   public refreshVisuals(): void {
-    this.overlayGroup.visible = this.active && this.tab === 'map' && this.showRoadOverlay;
-    this.selectionHighlightGroup.visible = this.active && this.tab === 'map';
-    this.studioGroup.visible = this.active && this.tab === 'model';
+    const inAssetMap = this.active && this.devMode === 'asset' && this.assetTab === 'map';
+    const inAssetModel = this.active && this.devMode === 'asset' && this.assetTab === 'model';
+    const inWorldMode = this.active && this.devMode === 'world';
 
-    if (this.active && this.tab === 'map') {
+    this.overlayGroup.visible = inAssetMap && this.showRoadOverlay;
+    this.selectionHighlightGroup.visible = inAssetMap || inWorldMode;
+    this.studioGroup.visible = inAssetModel;
+
+    if (inAssetMap) {
       this.refreshMapOverlay();
-    } else if (this.active && this.tab === 'model') {
+    } else if (inAssetModel) {
       this.refreshModelPreview();
+    } else if (inWorldMode) {
+      this.clearGroup(this.nodeMarkersGroup);
+      this.clearGroup(this.edgeLinesGroup);
+      this.clearGroup(this.edgeHitGroup);
+      this.refreshWorldSelectionHighlight();
+    } else {
+      this.clearGroup(this.selectionHighlightGroup);
     }
+
     this.attachGizmo();
   }
 
@@ -1754,21 +2412,50 @@ export class DevEditorController {
     }
   }
 
+  private addEdgeHitSegment(
+    x1: number,
+    z1: number,
+    x2: number,
+    z2: number,
+    y: number,
+    width: number,
+    edgeIndex: number,
+  ): void {
+    const dx = x2 - x1;
+    const dz = z2 - z1;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.2) return;
+
+    const hitMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.max(2, width), 0.35, len),
+      new THREE.MeshBasicMaterial({
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      }),
+    );
+    hitMesh.position.set((x1 + x2) * 0.5, y, (z1 + z2) * 0.5);
+    hitMesh.rotation.y = Math.atan2(dx, dz);
+    hitMesh.userData.devSelectEdgeIndex = edgeIndex;
+    this.edgeHitGroup.add(hitMesh);
+  }
+
   private refreshMapOverlay(): void {
     this.clearGroup(this.nodeMarkersGroup);
     this.clearGroup(this.edgeLinesGroup);
+    this.clearGroup(this.edgeHitGroup);
     this.clearGroup(this.selectionHighlightGroup);
 
     const map = this.assets?.map;
     if (!map) return;
 
     const roadY = map.surfaceHeights.road + 0.35;
+    const hitWidth = Math.max(6, (map.roadNetwork.roadWidth || 12) * 0.72);
     const nodeById = new Map<number, MapRoadNodeDef>();
     for (const n of map.roadNetwork.nodes) {
       nodeById.set(n.id, n);
     }
 
-    // Edges wireframe (straight & quadratic Bezier curves)
     const normalPts: number[] = [];
     const selectedPts: number[] = [];
 
@@ -1780,20 +2467,32 @@ export class DevEditorController {
       const curved = e.ctrlX !== undefined && e.ctrlZ !== undefined;
       if (!curved) {
         targetArr.push(a.x, roadY, a.z, b.x, roadY, b.z);
+        this.addEdgeHitSegment(a.x, a.z, b.x, b.z, roadY, hitWidth, idx);
       } else {
         const segs = 16;
         for (let s = 0; s < segs; s++) {
           const p0 = sampleEdgeBezier(a.x, a.z, b.x, b.z, e.ctrlX!, e.ctrlZ!, s / segs);
           const p1 = sampleEdgeBezier(a.x, a.z, b.x, b.z, e.ctrlX!, e.ctrlZ!, (s + 1) / segs);
           targetArr.push(p0.x, roadY, p0.z, p1.x, roadY, p1.z);
+          if (s % 2 === 0) {
+            const pNext = sampleEdgeBezier(
+              a.x,
+              a.z,
+              b.x,
+              b.z,
+              e.ctrlX!,
+              e.ctrlZ!,
+              Math.min(1, (s + 2) / segs),
+            );
+            this.addEdgeHitSegment(p0.x, p0.z, pNext.x, pNext.z, roadY, hitWidth, idx);
+          }
         }
-        // Bezier control handle sphere
         const isSel = idx === this.selectedEdgeIndex;
         const handle = new THREE.Mesh(
-          new THREE.SphereGeometry(isSel ? 1.35 : 0.95, 10, 8),
+          new THREE.SphereGeometry(isSel ? 1.4 : 1.0, 10, 8),
           new THREE.MeshBasicMaterial({ color: isSel ? 0xfbbf24 : 0xf97316 }),
         );
-        handle.position.set(e.ctrlX!, roadY + 0.25, e.ctrlZ!);
+        handle.position.set(e.ctrlX!, roadY + 0.28, e.ctrlZ!);
         handle.userData.devEdgeIndex = idx;
         this.nodeMarkersGroup.add(handle);
       }
@@ -1814,18 +2513,35 @@ export class DevEditorController {
       );
     }
 
-    // Node spheres
+    // Node spheres with type/priority colors + optional crosswalk ring
     for (const n of map.roadNetwork.nodes) {
       const isSelected = n.id === this.selectedNodeId;
       const isLinkSource = n.id === this.linkFromNodeId;
-      const color = isSelected ? 0x22c55e : isLinkSource ? 0xf59e0b : 0x38bdf8;
+      let color = 0xa78bfa;
+      if (isSelected) color = 0x22c55e;
+      else if (isLinkSource) color = 0xf59e0b;
+      else if (n.nodeType === 'join') color = 0x38bdf8;
+      else if (n.priority === 'stop') color = 0xef4444;
+      else if (n.priority === 'yield') color = 0xf59e0b;
+      else if (n.priority === 'major') color = 0x10b981;
+
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(isSelected || isLinkSource ? 1.35 : 0.95, 12, 10),
+        new THREE.SphereGeometry(isSelected || isLinkSource ? 1.4 : 1.0, 12, 10),
         new THREE.MeshBasicMaterial({ color }),
       );
       mesh.position.set(n.x, roadY, n.z);
       mesh.userData.devNodeId = n.id;
       this.nodeMarkersGroup.add(mesh);
+
+      if (n.hasCrosswalk === true) {
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(1.45, 1.9, 16),
+          new THREE.MeshBasicMaterial({ color: 0xf8fafc, side: THREE.DoubleSide }),
+        );
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(n.x, roadY + 0.05, n.z);
+        this.edgeLinesGroup.add(ring);
+      }
     }
 
     // Selected building / object / sign highlight box
@@ -1941,6 +2657,8 @@ export class DevEditorController {
       undefined,
       undefined,
       this.textures.magentaFallback,
+      undefined,
+      this.assets.materials,
     );
     this.modelPreviewHolder.add(built.root);
     this.studioGroup.updateMatrixWorld(true);
@@ -1962,7 +2680,21 @@ export class DevEditorController {
 
     if (!this.active || !this.assets) return;
 
-    if (this.tab === 'map') {
+    if (this.devMode === 'world') {
+      const parsed = parseWorldUid(this.selectedWorldEntityUid);
+      if (!parsed) return;
+      const obj = this.callbacks.getWorldEntityObject?.(parsed.kind, parsed.id);
+      if (!obj) return;
+      this.worldProxy.position.copy(obj.position);
+      this.worldProxy.rotation.set(0, obj.rotation.y, 0);
+      this.worldProxy.scale.set(1, 1, 1);
+      this.transform.setMode(this.gizmoMode === 'scale' ? 'translate' : this.gizmoMode);
+      this.transform.attach(this.worldProxy);
+      this.gizmoHelper.visible = true;
+      return;
+    }
+
+    if (this.assetTab === 'map') {
       const map = this.assets.map;
       if (this.selectedNodeId !== null) {
         const node = map.roadNetwork.nodes.find((n) => n.id === this.selectedNodeId);
@@ -2016,7 +2748,7 @@ export class DevEditorController {
       return;
     }
 
-    if (this.tab === 'model' && this.selectedPartId) {
+    if (this.assetTab === 'model' && this.selectedPartId) {
       const target = this.modelPreviewHolder.getObjectByName(this.selectedPartId);
       if (!target) return;
       this.attachedPartObject = target;
@@ -2031,10 +2763,32 @@ export class DevEditorController {
     }
   }
 
-  public update(): void {
+  public update(dt = 0.016): void {
     if (this.partHighlightBox && this.attachedPartObject) {
       this.attachedPartObject.updateMatrixWorld(true);
       this.partHighlightBox.update();
+    }
+
+    if (this.active && this.devMode === 'world') {
+      const parsed = parseWorldUid(this.selectedWorldEntityUid);
+      if (parsed && !this.isDraggingGizmo) {
+        const obj = this.callbacks.getWorldEntityObject?.(parsed.kind, parsed.id);
+        if (obj) {
+          this.worldProxy.position.copy(obj.position);
+          this.worldProxy.rotation.set(0, obj.rotation.y, 0);
+          this.refreshMeshHighlight(obj, 0x38bdf8);
+        } else {
+          this.selectedWorldEntityUid = null;
+          this.clearGroup(this.selectionHighlightGroup);
+          this.attachGizmo();
+        }
+      }
+
+      this.worldRefreshTimer += dt;
+      if (this.worldRefreshTimer >= 0.35) {
+        this.worldRefreshTimer = 0;
+        this.emitState();
+      }
     }
   }
 
@@ -2044,7 +2798,7 @@ export class DevEditorController {
     this.cameraController.setGizmoDragging(dragging);
 
     if (dragging) {
-      if (this.tab === 'map' && this.assets) {
+      if (this.devMode === 'asset' && this.assetTab === 'map' && this.assets) {
         if (this.selectedBuildingId) {
           const b = this.assets.map.buildings.find((i) => i.id === this.selectedBuildingId);
           if (b) {
@@ -2061,7 +2815,12 @@ export class DevEditorController {
             this.dragStartSignHeight = s.height ?? 2.8;
           }
         }
-      } else if (this.tab === 'model' && this.selectedPartId && this.assets) {
+      } else if (
+        this.devMode === 'asset' &&
+        this.assetTab === 'model' &&
+        this.selectedPartId &&
+        this.assets
+      ) {
         const m = this.assets.models[this.selectedModelId];
         const found = m ? findPartInTree(m.parts, this.selectedPartId) : null;
         if (found?.part.dimensions) {
@@ -2069,17 +2828,23 @@ export class DevEditorController {
         }
       }
     } else {
-      if (this.tab === 'map' && this.assets) {
+      if (this.devMode === 'asset' && this.assetTab === 'map' && this.assets) {
         const wasBuildingScale = this.gizmoMode === 'scale' && this.selectedBuildingId;
         const wasSignScale = this.gizmoMode === 'scale' && this.selectedSignId;
+        const wasRoadEdit = this.selectedNodeId !== null || this.selectedEdgeIndex !== null;
         this.dragStartBuildingDims = null;
         this.dragStartSignHeight = null;
-        if (wasBuildingScale || wasSignScale) {
+        if (wasBuildingScale || wasSignScale || wasRoadEdit) {
           this.mapProxy.scale.set(1, 1, 1);
           this.callbacks.onRebuildMap();
           this.refreshVisuals();
         }
-      } else if (this.tab === 'model' && this.gizmoMode === 'scale' && this.attachedPartObject) {
+      } else if (
+        this.devMode === 'asset' &&
+        this.assetTab === 'model' &&
+        this.gizmoMode === 'scale' &&
+        this.attachedPartObject
+      ) {
         this.dragStartPartDims = null;
         this.refreshModelPreview();
         this.attachGizmo();
@@ -2091,7 +2856,20 @@ export class DevEditorController {
   private handleObjectChange = (): void => {
     if (!this.active || !this.assets) return;
 
-    if (this.tab === 'map') {
+    if (this.devMode === 'world') {
+      const parsed = parseWorldUid(this.selectedWorldEntityUid);
+      if (!parsed) return;
+      this.callbacks.modifyWorldEntity?.(parsed.kind, parsed.id, 'set_transform', {
+        x: round2(this.worldProxy.position.x),
+        y: round2(this.worldProxy.position.y),
+        z: round2(this.worldProxy.position.z),
+        yaw: round3(this.worldProxy.rotation.y),
+      });
+      this.refreshWorldSelectionHighlight();
+      return;
+    }
+
+    if (this.assetTab === 'map') {
       const map = this.assets.map;
       if (this.selectedNodeId !== null) {
         const node = map.roadNetwork.nodes.find((n) => n.id === this.selectedNodeId);
@@ -2173,7 +2951,7 @@ export class DevEditorController {
       return;
     }
 
-    if (this.tab === 'model' && this.attachedPartObject && this.selectedPartId) {
+    if (this.assetTab === 'model' && this.attachedPartObject && this.selectedPartId) {
       const model = this.assets.models[this.selectedModelId];
       const found = model ? findPartInTree(model.parts, this.selectedPartId) : null;
       if (!found) return;
@@ -2237,7 +3015,9 @@ export class DevEditorController {
 
   private handlePointerUp = (e: PointerEvent): void => {
     if (!this.active || e.button !== 0 || this.isDraggingGizmo || !this.assets) return;
-    if (Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y) > 5) {
+    if (
+      Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y) > 5
+    ) {
       return;
     }
 
@@ -2246,7 +3026,19 @@ export class DevEditorController {
     _pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     _raycaster.setFromCamera(_pointer, this.cameraController.camera);
 
-    if (this.tab === 'map') {
+    if (this.devMode === 'world') {
+      const entityHits = _raycaster.intersectObjects(this.hierarchy.entitiesRoot.children, true);
+      for (const h of entityHits) {
+        const match = this.callbacks.findWorldEntityByObject?.(h.object);
+        if (match) {
+          this.selectWorldEntity(match.kind, match.id);
+          return;
+        }
+      }
+      return;
+    }
+
+    if (this.assetTab === 'map') {
       if (this.showRoadOverlay && this.nodeMarkersGroup.children.length > 0) {
         const markerHits = _raycaster.intersectObjects(this.nodeMarkersGroup.children, false);
         if (markerHits.length > 0) {
@@ -2267,7 +3059,23 @@ export class DevEditorController {
         }
       }
 
-      const worldHits = _raycaster.intersectObjects(this.hierarchy.world.buildings.children, true);
+      if (this.showRoadOverlay && this.edgeHitGroup.children.length > 0) {
+        const edgeHits = _raycaster.intersectObjects(this.edgeHitGroup.children, false);
+        if (edgeHits.length > 0) {
+          const edgeIdx = edgeHits[0].object.userData.devSelectEdgeIndex as
+            | number
+            | undefined;
+          if (edgeIdx !== undefined) {
+            this.selectEdge(edgeIdx);
+            return;
+          }
+        }
+      }
+
+      const worldHits = _raycaster.intersectObjects(
+        this.hierarchy.world.buildings.children,
+        true,
+      );
       for (const h of worldHits) {
         let cur: THREE.Object3D | null = h.object;
         while (
@@ -2291,7 +3099,7 @@ export class DevEditorController {
           return;
         }
       }
-    } else if (this.tab === 'model') {
+    } else if (this.assetTab === 'model') {
       const partHits = _raycaster.intersectObjects(this.modelPreviewHolder.children, true);
       for (const h of partHits) {
         let cur: THREE.Object3D | null = h.object;
@@ -2310,6 +3118,8 @@ export class DevEditorController {
   };
 
   public dispose(): void {
+    this.unsubAudioPreview?.();
+    this.unsubAudioPreview = null;
     this.transform.removeEventListener('dragging-changed', this.handleDraggingChanged);
     this.transform.removeEventListener('objectChange', this.handleObjectChange);
     this.domElement.removeEventListener('pointerdown', this.handlePointerDown);
@@ -2318,8 +3128,10 @@ export class DevEditorController {
     this.transform.dispose();
     this.scene.remove(this.gizmoHelper);
     this.scene.remove(this.mapProxy);
+    this.scene.remove(this.worldProxy);
     this.clearGroup(this.nodeMarkersGroup);
     this.clearGroup(this.edgeLinesGroup);
+    this.clearGroup(this.edgeHitGroup);
     this.clearGroup(this.selectionHighlightGroup);
     this.scene.remove(this.overlayGroup);
     this.scene.remove(this.selectionHighlightGroup);

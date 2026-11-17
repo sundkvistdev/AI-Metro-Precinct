@@ -76,6 +76,17 @@ export function spawnCivilianTraffic(
     rig.root.rotation.y = yaw;
     hierarchy.entities.traffic.add(rig.root);
 
+    const reachable = roadGraph.getReachableNodeIds(startNode.id).filter((id) => id !== startNode.id && id !== nextNode.id);
+    const destNodeId =
+      reachable.length > 0
+        ? reachable[(i * 7 + 3) % reachable.length]
+        : nextNode.id;
+    const plannedNodes =
+      destNodeId !== nextNode.id
+        ? roadGraph.findNodePath(nextNode.id, destNodeId)
+        : [];
+    const routeQueue = plannedNodes.slice(1).map((n) => n.id);
+
     civilianCars.push({
       id: `civ-${i}`,
       rig,
@@ -87,6 +98,10 @@ export function spawnCivilianTraffic(
       currentNodeId: startNode.id,
       nextNodeId: nextNode.id,
       prevNodeId: startNode.id,
+      routeQueue,
+      destinationNodeId: destNodeId,
+      junctionPauseTimer: 0,
+      junctionWaitNodeId: undefined,
       turnApex: null,
       lateralYield: 0,
       stunTimer: 0,
@@ -275,9 +290,19 @@ export function updateCivilianTraffic(
       }
     }
 
+    if (car.junctionPauseTimer > 0) {
+      car.junctionPauseTimer = Math.max(0, car.junctionPauseTimer - dt);
+    }
+
     const dx = targetX - car.pos.x;
     const dz = targetZ - car.pos.z;
     const dist = Math.hypot(dx, dz);
+    if (!car.debugNextTarget) {
+      car.debugNextTarget = new THREE.Vector3(targetX, car.pos.y, targetZ);
+    } else {
+      car.debugNextTarget.set(targetX, car.pos.y, targetZ);
+    }
+
     const endDist = car.turnApex ? dist : Math.hypot(endTargetX - car.pos.x, endTargetZ - car.pos.z);
     const fwdX = Math.sin(car.yaw);
     const fwdZ = Math.cos(car.yaw);
@@ -287,29 +312,57 @@ export function updateCivilianTraffic(
       if (car.turnApex) {
         car.turnApex = null;
       } else {
-        const candidates = nextNode.neighbors.filter((n) => n !== car.currentNodeId);
-        const pick =
-          candidates.length > 0
-            ? candidates[Math.floor(rng() * candidates.length)]
-            : car.currentNodeId;
+        let pick: number | undefined;
+        while (car.routeQueue.length > 0 && pick === undefined) {
+          const cand = car.routeQueue.shift()!;
+          if (cand !== car.nextNodeId && nextNode.neighbors.includes(cand)) {
+            pick = cand;
+          }
+        }
+        if (pick === undefined) {
+          const reachable = roadGraph
+            .getReachableNodeIds(nextNode.id)
+            .filter((id) => id !== nextNode.id && id !== car.currentNodeId);
+          if (reachable.length > 0) {
+            const destId = reachable[Math.floor(rng() * reachable.length)];
+            car.destinationNodeId = destId;
+            const path = roadGraph.findNodePath(nextNode.id, destId);
+            if (path.length >= 2) {
+              pick = path[1].id;
+              car.routeQueue = path.slice(2).map((n) => n.id);
+            }
+          }
+        }
+        if (pick === undefined) {
+          const candidates = nextNode.neighbors.filter((n) => n !== car.currentNodeId);
+          pick =
+            candidates.length > 0
+              ? candidates[Math.floor(rng() * candidates.length)]
+              : nextNode.neighbors[0] ?? car.currentNodeId;
+        }
+
         const afterNode = roadGraph.getNodeById(pick) ?? nextNode;
         const nextEntry = roadGraph.sampleDirectedEdge(nextNode, afterNode, 0.06);
         const nrx = -nextEntry.tz * baseLaneOffset;
         const nrz = nextEntry.tx * baseLaneOffset;
 
-        car.turnApex = new THREE.Vector3(
-          nextNode.x + (rx + nrx) * 0.5,
-          roadGraph.roadSurfaceY,
-          nextNode.z + (rz + nrz) * 0.5,
-        );
+        // 'join' nodes connect two segments smoothly without intersection stop/pinch
+        if (nextNode.nodeType !== 'join') {
+          car.turnApex = new THREE.Vector3(
+            nextNode.x + (rx + nrx) * 0.5,
+            roadGraph.roadSurfaceY,
+            nextNode.z + (rz + nrz) * 0.5,
+          );
+        }
         car.prevNodeId = car.currentNodeId;
         car.currentNodeId = car.nextNodeId;
         car.nextNodeId = pick;
+        car.junctionWaitNodeId = undefined;
       }
     } else {
       const baseDesiredYaw = Math.atan2(dx, dz);
       const yawDiff = normalizeAngle(baseDesiredYaw - car.yaw);
-      const turnPenalty = Math.abs(yawDiff) > 0.75 ? 0.52 : 1.0;
+      const turnPenalty = nextNode.nodeType === 'join' ? 0.92 : Math.abs(yawDiff) > 0.75 ? 0.52 : 1.0;
       const spikeAhead = isPointNearArmedNailMat(
         car.pos.x,
         car.pos.z,
@@ -317,7 +370,46 @@ export function updateCivilianTraffic(
         fwdZ,
         nailMats,
       );
-      const baseGoal = spikeAhead ? 0 : sirenNear ? 1.5 : car.maxSpeed * turnPenalty;
+
+      // Honor junction traffic priority (stop / yield) unless node is a smooth join
+      let junctionHold = false;
+      let junctionSlowFactor = 1.0;
+      if (!car.turnApex && nextNode.nodeType !== 'join' && endDist < 12.5) {
+        if (nextNode.priority === 'stop') {
+          if (car.junctionWaitNodeId !== nextNode.id) {
+            car.junctionWaitNodeId = nextNode.id;
+            car.junctionPauseTimer = 0.65;
+          }
+          if (car.junctionPauseTimer > 0) {
+            junctionHold = true;
+          } else {
+            for (const other of allVehicles) {
+              if (other.id === car.id) continue;
+              const dSq = (other.x - nextNode.x) ** 2 + (other.z - nextNode.z) ** 2;
+              if (dSq < 12 * 12 && other.speed > 1.2) {
+                junctionHold = true;
+                break;
+              }
+            }
+          }
+        } else if (nextNode.priority === 'yield') {
+          for (const other of allVehicles) {
+            if (other.id === car.id) continue;
+            const dSq = (other.x - nextNode.x) ** 2 + (other.z - nextNode.z) ** 2;
+            if (dSq < 12 * 12 && other.speed > 1.2) {
+              junctionSlowFactor = 0.25;
+              break;
+            }
+          }
+        }
+      }
+
+      const baseGoal =
+        spikeAhead || junctionHold
+          ? 0
+          : sirenNear
+          ? 1.5
+          : car.maxSpeed * turnPenalty * junctionSlowFactor;
 
       const avoid = computeAvoidanceSteerAndSpeed({
         selfId: car.id,
@@ -329,7 +421,7 @@ export function updateCivilianTraffic(
         baseDesiredYaw,
         baseSpeed: baseGoal,
         prevSteerBias: 0,
-        canOvertake: car.impatience >= 0.5 && !spikeAhead,
+        canOvertake: car.impatience >= 0.5 && !spikeAhead && !junctionHold,
         allVehicles,
         pedestrians,
         staticBvh,
@@ -337,6 +429,7 @@ export function updateCivilianTraffic(
         recklessness: car.impatience * 0.42,
         impatience: car.impatience,
       });
+      car.debugAvoidActive = avoid.blocked || avoid.steerActive;
 
       const revState = {
         impatience: car.impatience,
@@ -345,7 +438,7 @@ export function updateCivilianTraffic(
         reverseSteerDir: car.reverseSteerDir,
       };
       const revStep = updateImpatienceAndReverse(revState, {
-        baseGoalSpeed: spikeAhead || sirenNear ? 0 : baseGoal,
+        baseGoalSpeed: spikeAhead || sirenNear || junctionHold ? 0 : baseGoal,
         actualSpeed: car.speed,
         avoid,
         patienceRate: car.patienceRate,
@@ -364,6 +457,7 @@ export function updateCivilianTraffic(
         );
         if (alt.length > 0) {
           car.turnApex = null;
+          car.routeQueue = [];
           car.nextNodeId = alt[Math.floor(rng() * alt.length)];
         }
       }

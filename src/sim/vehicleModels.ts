@@ -278,8 +278,13 @@ function attachLiveryDecals(
   livery: PoliceLiverySpec,
   chassis: VehiclesConfig['chassis'][PoliceVehicleKind],
   unitNumber: number,
+  textures: TextureRegistry,
 ): void {
-  const stripeTex = getLiveryStripeTexture(livery, unitNumber);
+  const customStripeKey = `livery_${livery.id}_stripe`;
+  const stripeTex =
+    textures.byId[customStripeKey] instanceof THREE.CanvasTexture
+      ? (textures.byId[customStripeKey] as THREE.CanvasTexture)
+      : getLiveryStripeTexture(livery, unitNumber);
   const roofTex = getRoofCallsignTexture(livery, unitNumber);
   const chevronTex = getRearChevronTexture(livery);
 
@@ -399,6 +404,7 @@ function buildModelOrMagentaCube(
         message: `Texture "${missingTexRef}" referenced by "${modelKey}" is missing (magenta texture fallback applied)`,
       });
     },
+    assets.materials,
   );
 }
 
@@ -456,7 +462,7 @@ export function createPoliceCruiser(
 
   const bodyGroup = (built.tags['bodyGroup']?.[0] as THREE.Group) ?? new THREE.Group();
   if (!built.isFallbackCube) {
-    attachLiveryDecals(bodyGroup, livery, chassis, unitNumber);
+    attachLiveryDecals(bodyGroup, livery, chassis, unitNumber, textures);
   }
 
   const cabinCrewGroup = (built.tags['cabinCrewGroup']?.[0] as THREE.Group) ?? new THREE.Group();

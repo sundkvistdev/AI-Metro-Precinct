@@ -93,6 +93,12 @@ function buildMaterial(
     fallbackTexture,
     onMissingTexture,
   );
+  const roughnessMapTex = resolveTextureOrFallback(
+    def.roughnessTextureRef,
+    textureMap,
+    fallbackTexture,
+    onMissingTexture,
+  );
 
   if (def.type === 'basic') {
     return new THREE.MeshBasicMaterial({
@@ -118,6 +124,7 @@ function buildMaterial(
       depthWrite: def.depthWrite ?? true,
       map: mapTex,
       emissiveMap: emissiveMapTex,
+      roughnessMap: roughnessMapTex,
     });
   }
 
@@ -132,6 +139,7 @@ function buildMaterial(
     depthWrite: def.depthWrite ?? true,
     map: mapTex,
     emissiveMap: emissiveMapTex,
+    roughnessMap: roughnessMapTex,
   });
 }
 
@@ -220,6 +228,7 @@ export function buildJsonModel(
   textureOverrides?: Record<string, string>,
   fallbackTexture?: THREE.Texture,
   onMissingTexture?: (ref: string) => void,
+  sharedMaterials?: Record<string, ModelMaterialDef>,
 ): BuiltJsonModel {
   const root = new THREE.Group();
   root.name = asset.id;
@@ -228,7 +237,11 @@ export function buildJsonModel(
   }
 
   const materials: Record<string, THREE.Material> = {};
-  for (const [key, def] of Object.entries(asset.materials)) {
+  const mergedDefs: Record<string, ModelMaterialDef> = {
+    ...(sharedMaterials ?? {}),
+    ...asset.materials,
+  };
+  for (const [key, def] of Object.entries(mergedDefs)) {
     materials[key] = buildMaterial(
       def,
       textureMap,

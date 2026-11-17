@@ -1,15 +1,40 @@
+export type MediaKind = 'image' | 'audio';
+
+export interface ImportedMediaAsset {
+  id: string;
+  kind: MediaKind;
+  path: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  objectUrl: string;
+  filename?: string;
+  width?: number;
+  height?: number;
+  imageElement?: HTMLImageElement;
+}
+
 export interface AssetManifest {
   formatVersion: string;
   packName: string;
   config: string;
   map: string;
+  materials?: string;
   textures: Record<string, string>;
   models: Record<string, string>;
   audio: Record<string, string>;
+  media?: Record<
+    string,
+    {
+      kind: MediaKind;
+      path: string;
+      mimeType?: string;
+      filename?: string;
+    }
+  >;
 }
 
 export interface EngineConfigAsset {
-  format: 'jdata-config-v1';
+  format: 'jdata-config-v1' | 'jdata-config-v2';
   version: string;
   world: {
     roadCoords: number[];
@@ -209,6 +234,72 @@ export type TextureLayerOp =
       w: number;
       h: number;
       color: string;
+      strokeColor?: string;
+      strokeWidth?: number;
+      opacity?: number;
+    }
+  | {
+      op: 'circle';
+      cx: number;
+      cy: number;
+      r: number;
+      color: string;
+      strokeColor?: string;
+      strokeWidth?: number;
+      opacity?: number;
+    }
+  | {
+      op: 'ellipse';
+      cx: number;
+      cy: number;
+      rx: number;
+      ry: number;
+      rotation?: number;
+      color: string;
+      strokeColor?: string;
+      strokeWidth?: number;
+      opacity?: number;
+    }
+  | {
+      op: 'line';
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      width: number;
+      color: string;
+      opacity?: number;
+    }
+  | {
+      op: 'polygon';
+      points: Array<[number, number]>;
+      color: string;
+      strokeColor?: string;
+      strokeWidth?: number;
+      opacity?: number;
+    }
+  | {
+      op: 'text';
+      x: number;
+      y: number;
+      text: string;
+      fontSize: number;
+      fontWeight?: string;
+      align?: CanvasTextAlign;
+      color: string;
+      strokeColor?: string;
+      strokeWidth?: number;
+      opacity?: number;
+    }
+  | {
+      op: 'image_stamp';
+      mediaId: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      rotation?: number;
+      opacity?: number;
     }
   | {
       op: 'noise_speckle';
@@ -318,7 +409,7 @@ export type TextureLayerOp =
     };
 
 export interface ProceduralTextureAsset {
-  format: 'jdata-texture-v1';
+  format: 'jdata-texture-v1' | 'jdata-texture-v2';
   id: string;
   seed: number;
   width: number;
@@ -405,7 +496,7 @@ export interface ModelFlagsDef {
 }
 
 export interface ProceduralModelAsset {
-  format: 'jdata-model-v1';
+  format: 'jdata-model-v1' | 'jdata-model-v2';
   id: string;
   seed: number;
   flags?: ModelFlagsDef;
@@ -413,11 +504,17 @@ export interface ProceduralModelAsset {
   parts: ModelPartDef[];
 }
 
+export type RoadNodeType = 'join' | 'junction';
+export type RoadNodePriority = 'none' | 'yield' | 'stop' | 'major';
+
 export interface MapRoadNodeDef {
   id: number;
   x: number;
   z: number;
   label?: string;
+  nodeType?: RoadNodeType;
+  hasCrosswalk?: boolean;
+  priority?: RoadNodePriority;
 }
 
 export interface MapRoadEdgeDef {
@@ -531,7 +628,7 @@ export interface MapDynamicObjectDef {
 }
 
 export interface CustomMapAsset {
-  format: 'jdata-map-v1';
+  format: 'jdata-map-v1' | 'jdata-map-v2';
   id: string;
   version: string;
   name: string;
@@ -573,10 +670,15 @@ export interface AudioEnvelopeDef {
 }
 
 export interface ProceduralAudioAsset {
-  format: 'jdata-audio-v1';
+  format: 'jdata-audio-v1' | 'jdata-audio-v2';
   id: string;
   seed: number;
-  kind: 'siren_sweep' | 'siren_hilo' | 'chirp_sequence' | 'filtered_noise_burst';
+  kind:
+    | 'siren_sweep'
+    | 'siren_hilo'
+    | 'chirp_sequence'
+    | 'filtered_noise_burst'
+    | 'audio_clip';
   gain: number;
   siren?: {
     waveform1: OscillatorType;
@@ -602,6 +704,11 @@ export interface ProceduralAudioAsset {
     freqStart: number;
     freqEnd: number;
   };
+  clip?: {
+    mediaId: string;
+    playbackRate?: number;
+    loop?: boolean;
+  };
 }
 
 export type AssetIssueSeverity = 'fatal' | 'error';
@@ -609,9 +716,11 @@ export type AssetIssueCategory =
   | 'manifest'
   | 'config'
   | 'map'
+  | 'material'
   | 'texture'
   | 'model'
-  | 'audio';
+  | 'audio'
+  | 'media';
 
 export interface AssetIssue {
   severity: AssetIssueSeverity;
@@ -625,9 +734,11 @@ export interface LoadedJsonAssets {
   manifest: AssetManifest;
   config: EngineConfigAsset;
   map: CustomMapAsset;
+  materials: Record<string, ModelMaterialDef>;
   textures: Record<string, ProceduralTextureAsset>;
   models: Record<string, ProceduralModelAsset>;
   audio: Record<string, ProceduralAudioAsset>;
+  media: Record<string, ImportedMediaAsset>;
 }
 
 export interface AssetLoadResult {
