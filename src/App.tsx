@@ -5,6 +5,7 @@ import {
   loadJsonAssetBundle,
   loadJsonAssetBundleFromZip,
 } from './assets/jsonAssetLoader';
+import { BottomControlBar } from './components/BottomControlBar';
 import { ErrorDialog } from './components/ErrorDialog';
 import { MainMenu, MainMenuSettings } from './components/MainMenu';
 import { SidebarPaneId, SidebarPanel } from './components/SidebarPanel';
@@ -55,7 +56,7 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   assetSourceLabel: '/jdataassets/manifest.json',
   configVersion: '1.0.0',
   mapName: 'Metro Grid',
-  assetCounts: { textures: 0, models: 0, audio: 0 },
+  assetCounts: { textures: 0, models: 0, audio: 0, materials: 0, media: 0 },
   assetsLoaded: false,
   assetIssues: [],
   fatalError: null,
@@ -426,6 +427,16 @@ export default function App() {
               }}
             />
           </div>
+
+          <BottomControlBar
+            snapshot={snapshot}
+            onSetCameraMode={handleSetCameraMode}
+            onResetCamera={handleResetCamera}
+            onToggleSimSpeed={handleToggleSimSpeed}
+            onToggleAudio={handleToggleAudio}
+            onTriggerCrime={handleTriggerCrime}
+            onTriggerPursuit={handleTriggerPursuit}
+          />
         </>
       )}
 

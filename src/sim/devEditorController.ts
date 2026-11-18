@@ -570,6 +570,10 @@ export class DevEditorController {
     this.selectedSignId = null;
   }
 
+  public getMediaLookup(): Record<string, ImportedMediaAsset> {
+    return this.assets?.media ?? {};
+  }
+
   public getState(): DevEditorState {
     const map = this.assets?.map;
     const model = this.assets?.models[this.selectedModelId];

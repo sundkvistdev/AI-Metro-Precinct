@@ -18,7 +18,7 @@ export interface AssetManagerPaneProps {
   onOpenErrorDialog: () => void;
 }
 
-type AssetTab = 'textures' | 'models' | 'audio' | 'map' | 'config';
+type AssetTab = 'textures' | 'models' | 'materials' | 'audio' | 'media' | 'map' | 'config';
 
 export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
   snapshot,
@@ -53,12 +53,28 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
           meta: `${mdl.parts.length} parts · ${Object.keys(mdl.materials).length} mats`,
         }));
     }
+    if (tab === 'materials') {
+      return Object.entries(loadedAssets.materials)
+        .filter(([id]) => !q || id.toLowerCase().includes(q))
+        .map(([id, mat]) => ({
+          id,
+          meta: `${mat.type} · ${mat.color}`,
+        }));
+    }
     if (tab === 'audio') {
       return Object.entries(loadedAssets.audio)
         .filter(([id]) => !q || id.toLowerCase().includes(q))
         .map(([id, aud]) => ({
           id,
           meta: aud.kind,
+        }));
+    }
+    if (tab === 'media') {
+      return Object.values(loadedAssets.media)
+        .filter((m) => !q || m.id.toLowerCase().includes(q) || m.path.toLowerCase().includes(q))
+        .map((m) => ({
+          id: m.id,
+          meta: `${m.kind}${m.width && m.height ? ` · ${m.width}×${m.height}` : ''}`,
         }));
     }
     if (tab === 'map') {
@@ -123,13 +139,17 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
           <span className="text-zinc-200 truncate">{snapshot.mapName}</span>
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-zinc-400">Config</span>
-          <span className="text-zinc-200">v{snapshot.configVersion}</span>
+          <span className="text-zinc-400">Format</span>
+          <span className="text-zinc-200">
+            v{loadedAssets?.manifest.formatVersion ?? '1.0'} · cfg {snapshot.configVersion}
+          </span>
         </div>
-        <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px] text-zinc-300">
-          <span>{snapshot.assetCounts.textures} tex</span>
+        <div className="flex flex-wrap items-center justify-between gap-1.5 pt-0.5 text-[10px] text-zinc-300">
           <span>{snapshot.assetCounts.models} mdl</span>
+          <span>{snapshot.assetCounts.materials} mat</span>
+          <span>{snapshot.assetCounts.textures} tex</span>
           <span>{snapshot.assetCounts.audio} sfx</span>
+          <span>{snapshot.assetCounts.media} media</span>
         </div>
       </div>
 
@@ -159,7 +179,7 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
           }`}
         >
           <Download className="h-3.5 w-3.5" />
-          Export ZIP
+          Export Pack 2.0
         </button>
 
         <button
@@ -191,12 +211,14 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
         </button>
       </div>
 
-      <div className="grid grid-cols-5 gap-0.5 bg-zinc-900/50 p-0.5 border border-zinc-600">
+      <div className="grid grid-cols-7 gap-0.5 bg-zinc-900/50 p-0.5 border border-zinc-600">
         {(
           [
-            { key: 'models', label: 'Models' },
+            { key: 'models', label: 'Mdl' },
+            { key: 'materials', label: 'Mat' },
             { key: 'textures', label: 'Tex' },
-            { key: 'audio', label: 'Audio' },
+            { key: 'audio', label: 'Sfx' },
+            { key: 'media', label: 'Med' },
             { key: 'map', label: 'Map' },
             { key: 'config', label: 'Cfg' },
           ] as const
@@ -205,7 +227,7 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
             key={item.key}
             type="button"
             onClick={() => setTab(item.key)}
-            className={`py-1 text-[11px] font-medium cursor-pointer rounded-none ${
+            className={`py-1 text-[10px] font-medium cursor-pointer rounded-none ${
               tab === item.key
                 ? 'bg-zinc-600 text-white'
                 : 'text-zinc-400 hover:bg-zinc-700/60 hover:text-zinc-200'

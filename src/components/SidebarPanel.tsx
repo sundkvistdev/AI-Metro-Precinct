@@ -183,7 +183,9 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
               {id === 'devtools' &&
                 (devTools.state?.dirtyMap ||
                   devTools.state?.dirtyModel ||
-                  devTools.state?.dirtyTextures) && (
+                  devTools.state?.dirtyMaterials ||
+                  devTools.state?.dirtyTextures ||
+                  devTools.state?.dirtyAudio) && (
                   <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 bg-sky-400" />
                 )}
             </button>
@@ -194,7 +196,7 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
       {/* Collapsible active pane */}
       {activePane && (
         <aside
-          className={`pointer-events-auto ui-panel max-h-[calc(100vh-58px)] flex flex-col shadow-xl ${
+          className={`pointer-events-auto ui-panel max-h-[calc(100vh-108px)] flex flex-col shadow-xl ${
             activePane === 'devtools' ? 'w-[420px]' : 'w-[296px]'
           }`}
         >
@@ -862,7 +864,9 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
               />
             )}
 
-            {activePane === 'devtools' && <DevToolsPane {...devTools} />}
+            {activePane === 'devtools' && (
+              <DevToolsPane {...devTools} onExportZipPack={onExportZipPack} />
+            )}
           </div>
         </aside>
       )}

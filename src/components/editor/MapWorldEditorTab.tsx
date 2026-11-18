@@ -7,12 +7,19 @@ import {
   Package,
   Plus,
   RefreshCw,
+  RotateCcw,
+  Save,
   Signpost,
   Spline,
   Trash2,
   Upload,
 } from 'lucide-react';
-import { MapBuildingDef, RoadSignStyle } from '../../assets/assetTypes';
+import {
+  MapBuildingDef,
+  RoadNodePriority,
+  RoadNodeType,
+  RoadSignStyle,
+} from '../../assets/assetTypes';
 import { DevEditorController, DevEditorState } from '../../sim/devEditorController';
 import { downloadJsonText, readFileAsText } from './editorFileUtils';
 
@@ -51,7 +58,7 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
   controller,
   state,
 }) => {
-  const [subMode, setSubMode] = useState<MapSubMode>('objects');
+  const [subMode, setSubMode] = useState<MapSubMode>('roads');
   const [newObjectModel, setNewObjectModel] = useState<string>(
     state.modelIds[0] ?? 'police_cruiser',
   );
@@ -65,6 +72,8 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
   const selE = state.selectedEdge;
   const selO = state.selectedObject;
   const selS = state.selectedSign;
+
+  const isJoinNode = (selN?.nodeType ?? 'junction') === 'join';
 
   const handleImportMap = async (file: File | undefined) => {
     if (!file || !controller) return;
@@ -83,9 +92,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
       <div className="grid grid-cols-4 gap-0.5 border border-zinc-600 bg-zinc-900/60 p-0.5">
         {(
           [
+            { id: 'roads', label: 'Roads', icon: <Spline className="h-3 w-3" /> },
             { id: 'objects', label: 'Objects', icon: <Package className="h-3 w-3" /> },
             { id: 'signs', label: 'Signs', icon: <Signpost className="h-3 w-3" /> },
-            { id: 'roads', label: 'Roads', icon: <Spline className="h-3 w-3" /> },
             { id: 'buildings', label: 'Blocks', icon: <Building2 className="h-3 w-3" /> },
           ] as const
         ).map((m) => (
@@ -108,6 +117,303 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
       {importError && (
         <div className="border border-red-500/70 bg-red-950/60 p-1.5 text-[10px] text-red-200 rounded-none">
           {importError}
+        </div>
+      )}
+
+      {/* ROADS, NODES (JOIN vs JUNCTION, PRIORITY, OPTIONAL CROSSWALK) & CURVED EDGES */}
+      {subMode === 'roads' && (
+        <div className="space-y-2">
+          <div className="ui-subpanel p-2 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+              <span>Road Nodes ({state.nodeList.length})</span>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => controller?.addRoadNode()}
+                  className="flex items-center gap-0.5 border border-emerald-500/70 bg-emerald-700/40 px-1.5 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-600/60 cursor-pointer rounded-none"
+                >
+                  <Plus className="h-3 w-3" />
+                  Node
+                </button>
+                <button
+                  type="button"
+                  disabled={!selN}
+                  onClick={() => controller?.deleteSelectedNode()}
+                  className={`flex items-center gap-0.5 border px-1.5 py-0.5 text-[10px] rounded-none ${
+                    selN
+                      ? 'border-red-500/70 bg-red-800/40 text-red-100 hover:bg-red-700/60 cursor-pointer'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+
+            <select
+              value={state.selectedNodeId ?? ''}
+              onChange={(e) =>
+                controller?.selectNode(
+                  e.target.value !== '' ? Number(e.target.value) : null,
+                )
+              }
+              className="w-full border border-zinc-600 bg-zinc-900 px-1.5 py-1 text-[11px] font-mono-tabular text-zinc-100 rounded-none"
+            >
+              <option value="">-- Click node sphere or pick --</option>
+              {state.nodeList.map((n) => (
+                <option key={n.id} value={n.id}>
+                  #{n.id} [{(n.nodeType ?? 'junction').toUpperCase()}] ({n.x}, {n.z})
+                  {n.hasCrosswalk ? ' · XWALK' : ''}
+                  {n.priority && n.priority !== 'none'
+                    ? ` · ${n.priority.toUpperCase()}`
+                    : ''}
+                </option>
+              ))}
+            </select>
+
+            {selN && (
+              <div className="space-y-1.5 pt-0.5 text-[11px] font-mono-tabular">
+                <div className="grid grid-cols-3 gap-1">
+                  <label className="space-y-0.5">
+                    <span className="text-[10px] text-zinc-400">Node X</span>
+                    <input
+                      type="number"
+                      step={1}
+                      value={selN.x}
+                      onChange={(e) =>
+                        controller?.updateSelectedNodeProps({
+                          x: Number(e.target.value),
+                        })
+                      }
+                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                    />
+                  </label>
+                  <label className="space-y-0.5">
+                    <span className="text-[10px] text-zinc-400">Node Z</span>
+                    <input
+                      type="number"
+                      step={1}
+                      value={selN.z}
+                      onChange={(e) =>
+                        controller?.updateSelectedNodeProps({
+                          z: Number(e.target.value),
+                        })
+                      }
+                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                    />
+                  </label>
+                  <label className="space-y-0.5">
+                    <span className="text-[10px] text-zinc-400">Node Type</span>
+                    <select
+                      value={selN.nodeType ?? 'junction'}
+                      onChange={(e) =>
+                        controller?.updateSelectedNodeProps({
+                          nodeType: e.target.value as RoadNodeType,
+                        })
+                      }
+                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-[10px] text-zinc-100 rounded-none"
+                    >
+                      <option value="join">join (flow-through)</option>
+                      <option value="junction">junction (intersection)</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1 items-center">
+                  <label className="space-y-0.5">
+                    <span className="text-[10px] text-zinc-400">
+                      Traffic Priority
+                    </span>
+                    <select
+                      disabled={isJoinNode}
+                      value={isJoinNode ? 'none' : selN.priority ?? 'none'}
+                      onChange={(e) =>
+                        controller?.updateSelectedNodeProps({
+                          priority: e.target.value as RoadNodePriority,
+                        })
+                      }
+                      className={`w-full border px-1 py-0.5 text-[10px] rounded-none ${
+                        isJoinNode
+                          ? 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                          : 'border-zinc-600 bg-zinc-900 text-zinc-100'
+                      }`}
+                    >
+                      <option value="none">none (uncontrolled)</option>
+                      <option value="major">major (free flow)</option>
+                      <option value="yield">yield (slow check)</option>
+                      <option value="stop">stop (brief pause)</option>
+                    </select>
+                  </label>
+
+                  <label
+                    className={`flex items-center gap-1.5 pt-4 text-[10px] ${
+                      isJoinNode
+                        ? 'text-zinc-500 cursor-not-allowed'
+                        : 'text-zinc-200 cursor-pointer'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={isJoinNode}
+                      checked={!isJoinNode && Boolean(selN.hasCrosswalk)}
+                      onChange={(e) =>
+                        controller?.updateSelectedNodeProps({
+                          hasCrosswalk: e.target.checked,
+                        })
+                      }
+                    />
+                    Crosswalk Markings
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      controller?.setLinkFromNode(
+                        state.linkFromNodeId === selN.id ? null : selN.id,
+                      )
+                    }
+                    className={`flex items-center gap-1 border px-2 py-0.5 text-[10px] cursor-pointer rounded-none ${
+                      state.linkFromNodeId === selN.id
+                        ? 'border-amber-400 bg-amber-600 text-white'
+                        : 'border-zinc-500 bg-zinc-700 text-zinc-200 hover:bg-zinc-600'
+                    }`}
+                  >
+                    <GitBranch className="h-3 w-3" />
+                    {state.linkFromNodeId === selN.id
+                      ? 'Click 2nd Node'
+                      : 'Click-Link'}
+                  </button>
+
+                  <select
+                    value={linkTargetId}
+                    onChange={(e) => setLinkTargetId(Number(e.target.value))}
+                    className="flex-1 border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-[10px] text-zinc-100 rounded-none"
+                  >
+                    {state.nodeList
+                      .filter((n) => n.id !== selN.id)
+                      .map((n) => (
+                        <option key={n.id} value={n.id}>
+                          #{n.id}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => controller?.toggleEdge(selN.id, linkTargetId)}
+                    className="border border-sky-500/70 bg-sky-700/50 px-1.5 py-0.5 text-[10px] text-sky-100 hover:bg-sky-600 cursor-pointer rounded-none"
+                  >
+                    Link
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Edges & Bezier Curves */}
+          <div className="ui-subpanel p-2 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+              <span>Road Segments ({state.edgeList.length})</span>
+              {state.selectedEdgeIndex !== null && (
+                <button
+                  type="button"
+                  onClick={() => controller?.deleteEdge(state.selectedEdgeIndex!)}
+                  className="border border-red-500/70 bg-red-800/40 px-1.5 py-0.5 text-[10px] text-red-100 hover:bg-red-700/60 cursor-pointer rounded-none"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
+            <select
+              value={state.selectedEdgeIndex ?? ''}
+              onChange={(e) =>
+                controller?.selectEdge(
+                  e.target.value !== '' ? Number(e.target.value) : null,
+                )
+              }
+              className="w-full border border-zinc-600 bg-zinc-900 px-1.5 py-1 text-[11px] font-mono-tabular text-zinc-100 rounded-none"
+            >
+              <option value="">-- Click any road segment in 3D or pick --</option>
+              {state.edgeList.map((edge) => (
+                <option key={edge.index} value={edge.index}>
+                  Seg #{edge.index}: {edge.from} &lt;-&gt; {edge.to}{' '}
+                  {edge.ctrlX !== undefined ? '[CURVED]' : '[STRAIGHT]'}
+                </option>
+              ))}
+            </select>
+
+            {selE && state.selectedEdgeIndex !== null && (
+              <div className="space-y-1.5 pt-0.5 text-[11px] font-mono-tabular">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="flex items-center gap-1.5 text-[10px] text-zinc-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selE.ctrlX !== undefined && selE.ctrlZ !== undefined}
+                      onChange={(e) =>
+                        controller?.setEdgeCurve(
+                          state.selectedEdgeIndex!,
+                          e.target.checked,
+                        )
+                      }
+                    />
+                    Bezier Curve
+                  </label>
+                  {selE.ctrlX !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        controller?.setEdgeCurve(state.selectedEdgeIndex!, false)
+                      }
+                      className="flex items-center gap-1 border border-zinc-600 bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-200 hover:bg-zinc-700 cursor-pointer rounded-none"
+                    >
+                      <RotateCcw className="h-2.5 w-2.5" />
+                      Straighten
+                    </button>
+                  )}
+                </div>
+                {selE.ctrlX !== undefined && selE.ctrlZ !== undefined && (
+                  <div className="grid grid-cols-2 gap-1">
+                    <label className="space-y-0.5">
+                      <span className="text-[10px] text-zinc-400">Curve Ctrl X</span>
+                      <input
+                        type="number"
+                        step={1}
+                        value={selE.ctrlX}
+                        onChange={(e) =>
+                          controller?.setEdgeCurve(
+                            state.selectedEdgeIndex!,
+                            true,
+                            Number(e.target.value),
+                            selE.ctrlZ,
+                          )
+                        }
+                        className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                      />
+                    </label>
+                    <label className="space-y-0.5">
+                      <span className="text-[10px] text-zinc-400">Curve Ctrl Z</span>
+                      <input
+                        type="number"
+                        step={1}
+                        value={selE.ctrlZ}
+                        onChange={(e) =>
+                          controller?.setEdgeCurve(
+                            state.selectedEdgeIndex!,
+                            true,
+                            selE.ctrlX,
+                            Number(e.target.value),
+                          )
+                        }
+                        className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -206,7 +512,10 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     value={selO.y ?? ''}
                     onChange={(e) =>
                       controller?.updateSelectedObject({
-                        y: e.target.value === '' ? undefined : Number(e.target.value),
+                        y:
+                          e.target.value === ''
+                            ? undefined
+                            : Number(e.target.value),
                       })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
@@ -231,7 +540,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     step={0.1}
                     value={Math.round((selO.rotationY ?? 0) * 100) / 100}
                     onChange={(e) =>
-                      controller?.updateSelectedObject({ rotationY: Number(e.target.value) })
+                      controller?.updateSelectedObject({
+                        rotationY: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -247,7 +558,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     min={0.1}
                     value={selO.scale ?? 1}
                     onChange={(e) =>
-                      controller?.updateSelectedObject({ scale: Number(e.target.value) })
+                      controller?.updateSelectedObject({
+                        scale: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -262,7 +575,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     value={selO.hitboxWidth ?? ''}
                     onChange={(e) =>
                       controller?.updateSelectedObject({
-                        hitboxWidth: e.target.value ? Number(e.target.value) : undefined,
+                        hitboxWidth: e.target.value
+                          ? Number(e.target.value)
+                          : undefined,
                       })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
@@ -273,7 +588,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     type="checkbox"
                     checked={selO.collidable ?? true}
                     onChange={(e) =>
-                      controller?.updateSelectedObject({ collidable: e.target.checked })
+                      controller?.updateSelectedObject({
+                        collidable: e.target.checked,
+                      })
                     }
                   />
                   Solid
@@ -358,7 +675,10 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     type="text"
                     value={selS.subtext ?? ''}
                     onChange={(e) =>
-                      controller?.updateSelectedSign({ subtext: e.target.value }, true)
+                      controller?.updateSelectedSign(
+                        { subtext: e.target.value },
+                        true,
+                      )
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -387,7 +707,10 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     value={selS.y ?? ''}
                     onChange={(e) =>
                       controller?.updateSelectedSign({
-                        y: e.target.value === '' ? undefined : Number(e.target.value),
+                        y:
+                          e.target.value === ''
+                            ? undefined
+                            : Number(e.target.value),
                       })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
@@ -412,7 +735,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     step={0.1}
                     value={Math.round((selS.rotationY ?? 0) * 100) / 100}
                     onChange={(e) =>
-                      controller?.updateSelectedSign({ rotationY: Number(e.target.value) })
+                      controller?.updateSelectedSign({
+                        rotationY: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -425,7 +750,10 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     min={1.4}
                     value={selS.height ?? 2.8}
                     onChange={(e) =>
-                      controller?.updateSelectedSign({ height: Number(e.target.value) }, true)
+                      controller?.updateSelectedSign(
+                        { height: Number(e.target.value) },
+                        true,
+                      )
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -454,7 +782,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     type="checkbox"
                     checked={selS.collidable ?? true}
                     onChange={(e) =>
-                      controller?.updateSelectedSign({ collidable: e.target.checked })
+                      controller?.updateSelectedSign({
+                        collidable: e.target.checked,
+                      })
                     }
                   />
                   Solid Post
@@ -462,220 +792,6 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* ROADS & CURVED EDGES */}
-      {subMode === 'roads' && (
-        <div className="space-y-2">
-          <div className="ui-subpanel p-2 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
-              <span>Nodes ({state.nodeList.length})</span>
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  onClick={() => controller?.addRoadNode()}
-                  className="flex items-center gap-0.5 border border-emerald-500/70 bg-emerald-700/40 px-1.5 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-600/60 cursor-pointer rounded-none"
-                >
-                  <Plus className="h-3 w-3" />
-                  Node
-                </button>
-                <button
-                  type="button"
-                  disabled={!selN}
-                  onClick={() => controller?.deleteSelectedNode()}
-                  className={`flex items-center gap-0.5 border px-1.5 py-0.5 text-[10px] rounded-none ${
-                    selN
-                      ? 'border-red-500/70 bg-red-800/40 text-red-100 hover:bg-red-700/60 cursor-pointer'
-                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                  }`}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
-            </div>
-
-            <select
-              value={state.selectedNodeId ?? ''}
-              onChange={(e) =>
-                controller?.selectNode(e.target.value !== '' ? Number(e.target.value) : null)
-              }
-              className="w-full border border-zinc-600 bg-zinc-900 px-1.5 py-1 text-[11px] font-mono-tabular text-zinc-100 rounded-none"
-            >
-              <option value="">-- Click cyan sphere or pick node --</option>
-              {state.nodeList.map((n) => (
-                <option key={n.id} value={n.id}>
-                  #{n.id} ({n.x}, {n.z}) {n.label ? `· ${n.label}` : ''}
-                </option>
-              ))}
-            </select>
-
-            {selN && (
-              <div className="space-y-1.5 pt-0.5 text-[11px] font-mono-tabular">
-                <div className="grid grid-cols-2 gap-1">
-                  <label className="space-y-0.5">
-                    <span className="text-[10px] text-zinc-400">Node X</span>
-                    <input
-                      type="number"
-                      step={1}
-                      value={selN.x}
-                      onChange={(e) =>
-                        controller?.updateSelectedNode(
-                          Number(e.target.value),
-                          selN.z,
-                          selN.label,
-                        )
-                      }
-                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                    />
-                  </label>
-                  <label className="space-y-0.5">
-                    <span className="text-[10px] text-zinc-400">Node Z</span>
-                    <input
-                      type="number"
-                      step={1}
-                      value={selN.z}
-                      onChange={(e) =>
-                        controller?.updateSelectedNode(
-                          selN.x,
-                          Number(e.target.value),
-                          selN.label,
-                        )
-                      }
-                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                    />
-                  </label>
-                </div>
-
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      controller?.setLinkFromNode(
-                        state.linkFromNodeId === selN.id ? null : selN.id,
-                      )
-                    }
-                    className={`flex items-center gap-1 border px-2 py-0.5 text-[10px] cursor-pointer rounded-none ${
-                      state.linkFromNodeId === selN.id
-                        ? 'border-amber-400 bg-amber-600 text-white'
-                        : 'border-zinc-500 bg-zinc-700 text-zinc-200 hover:bg-zinc-600'
-                    }`}
-                  >
-                    <GitBranch className="h-3 w-3" />
-                    {state.linkFromNodeId === selN.id ? 'Click 2nd Node' : 'Click-Link'}
-                  </button>
-
-                  <select
-                    value={linkTargetId}
-                    onChange={(e) => setLinkTargetId(Number(e.target.value))}
-                    className="flex-1 border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-[10px] text-zinc-100 rounded-none"
-                  >
-                    {state.nodeList
-                      .filter((n) => n.id !== selN.id)
-                      .map((n) => (
-                        <option key={n.id} value={n.id}>
-                          #{n.id}
-                        </option>
-                      ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => controller?.toggleEdge(selN.id, linkTargetId)}
-                    className="border border-sky-500/70 bg-sky-700/50 px-1.5 py-0.5 text-[10px] text-sky-100 hover:bg-sky-600 cursor-pointer rounded-none"
-                  >
-                    Link
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Edges & Bezier Curves */}
-          <div className="ui-subpanel p-2 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
-              <span>Road Edges & Curves ({state.edgeList.length})</span>
-              {state.selectedEdgeIndex !== null && (
-                <button
-                  type="button"
-                  onClick={() => controller?.deleteEdge(state.selectedEdgeIndex!)}
-                  className="border border-red-500/70 bg-red-800/40 px-1.5 py-0.5 text-[10px] text-red-100 hover:bg-red-700/60 cursor-pointer rounded-none"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-
-            <select
-              value={state.selectedEdgeIndex ?? ''}
-              onChange={(e) =>
-                controller?.selectEdge(e.target.value !== '' ? Number(e.target.value) : null)
-              }
-              className="w-full border border-zinc-600 bg-zinc-900 px-1.5 py-1 text-[11px] font-mono-tabular text-zinc-100 rounded-none"
-            >
-              <option value="">-- Select road segment to curve --</option>
-              {state.edgeList.map((edge) => (
-                <option key={edge.index} value={edge.index}>
-                  Edge #{edge.index}: {edge.from} &lt;-&gt; {edge.to}{' '}
-                  {edge.ctrlX !== undefined ? '[CURVED]' : '[STRAIGHT]'}
-                </option>
-              ))}
-            </select>
-
-            {selE && state.selectedEdgeIndex !== null && (
-              <div className="space-y-1.5 pt-0.5 text-[11px] font-mono-tabular">
-                <div className="flex items-center justify-between gap-2">
-                  <label className="flex items-center gap-1.5 text-[10px] text-zinc-200 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={selE.ctrlX !== undefined && selE.ctrlZ !== undefined}
-                      onChange={(e) =>
-                        controller?.setEdgeCurve(state.selectedEdgeIndex!, e.target.checked)
-                      }
-                    />
-                    Quadratic Bezier Curve (Drag amber handle)
-                  </label>
-                </div>
-                {selE.ctrlX !== undefined && selE.ctrlZ !== undefined && (
-                  <div className="grid grid-cols-2 gap-1">
-                    <label className="space-y-0.5">
-                      <span className="text-[10px] text-zinc-400">Curve Ctrl X</span>
-                      <input
-                        type="number"
-                        step={1}
-                        value={selE.ctrlX}
-                        onChange={(e) =>
-                          controller?.setEdgeCurve(
-                            state.selectedEdgeIndex!,
-                            true,
-                            Number(e.target.value),
-                            selE.ctrlZ,
-                          )
-                        }
-                        className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                      />
-                    </label>
-                    <label className="space-y-0.5">
-                      <span className="text-[10px] text-zinc-400">Curve Ctrl Z</span>
-                      <input
-                        type="number"
-                        step={1}
-                        value={selE.ctrlZ}
-                        onChange={(e) =>
-                          controller?.setEdgeCurve(
-                            state.selectedEdgeIndex!,
-                            true,
-                            selE.ctrlX,
-                            Number(e.target.value),
-                          )
-                        }
-                        className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                      />
-                    </label>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
         </div>
       )}
 
@@ -731,7 +847,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     step={0.5}
                     value={selB.cx}
                     onChange={(e) =>
-                      controller?.updateSelectedBuilding({ cx: Number(e.target.value) })
+                      controller?.updateSelectedBuilding({
+                        cx: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -743,7 +861,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     step={0.25}
                     value={selB.baseY ?? 0.12}
                     onChange={(e) =>
-                      controller?.updateSelectedBuilding({ baseY: Number(e.target.value) })
+                      controller?.updateSelectedBuilding({
+                        baseY: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -755,7 +875,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     step={0.5}
                     value={selB.cz}
                     onChange={(e) =>
-                      controller?.updateSelectedBuilding({ cz: Number(e.target.value) })
+                      controller?.updateSelectedBuilding({
+                        cz: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -785,7 +907,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     min={1}
                     value={selB.width}
                     onChange={(e) =>
-                      controller?.updateSelectedBuilding({ width: Number(e.target.value) })
+                      controller?.updateSelectedBuilding({
+                        width: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -798,7 +922,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     min={1}
                     value={selB.height}
                     onChange={(e) =>
-                      controller?.updateSelectedBuilding({ height: Number(e.target.value) })
+                      controller?.updateSelectedBuilding({
+                        height: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -811,7 +937,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     min={1}
                     value={selB.depth}
                     onChange={(e) =>
-                      controller?.updateSelectedBuilding({ depth: Number(e.target.value) })
+                      controller?.updateSelectedBuilding({
+                        depth: Number(e.target.value),
+                      })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
@@ -823,7 +951,8 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                   value={selB.facadeStyle ?? 'storefront'}
                   onChange={(e) =>
                     controller?.updateSelectedBuilding({
-                      facadeStyle: e.target.value as MapBuildingDef['facadeStyle'],
+                      facadeStyle: e.target
+                        .value as MapBuildingDef['facadeStyle'],
                     })
                   }
                   className="flex-1 border border-zinc-600 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-100 rounded-none"
@@ -839,7 +968,9 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     type="checkbox"
                     checked={selB.collidable}
                     onChange={(e) =>
-                      controller?.updateSelectedBuilding({ collidable: e.target.checked })
+                      controller?.updateSelectedBuilding({
+                        collidable: e.target.checked,
+                      })
                     }
                   />
                   Solid
@@ -850,7 +981,7 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
         </div>
       )}
 
-      {/* Map File Actions */}
+      {/* Map Pack Save & File Actions */}
       <input
         ref={fileInputRef}
         type="file"
@@ -861,15 +992,23 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
           e.target.value = '';
         }}
       />
-      <div className="grid grid-cols-3 gap-1">
+      <div className="grid grid-cols-2 gap-1">
         <button
           type="button"
-          onClick={() => controller?.applyMapRebuild()}
+          onClick={() => controller?.saveCurrentAssetToPack('map')}
           className={`flex items-center justify-center gap-1 border py-1.5 text-[11px] font-medium cursor-pointer rounded-none ${
             state.dirtyMap
               ? 'border-amber-400 bg-amber-600 text-white hover:bg-amber-500'
-              : 'border-zinc-500 bg-zinc-700 text-zinc-100 hover:bg-zinc-600'
+              : 'border-emerald-500/70 bg-emerald-700/45 text-emerald-100 hover:bg-emerald-600/60'
           }`}
+        >
+          <Save className="h-3 w-3" />
+          Save Map to Pack
+        </button>
+        <button
+          type="button"
+          onClick={() => controller?.applyMapRebuild()}
+          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
         >
           <RefreshCw className="h-3 w-3" />
           Rebuild
@@ -877,10 +1016,10 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
         >
           <Upload className="h-3 w-3" />
-          Load
+          Load JSON
         </button>
         <button
           type="button"
@@ -888,15 +1027,18 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
             const res = controller?.exportMapJson();
             if (res) downloadJsonText(res.filename, res.content);
           }}
-          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
         >
           <Download className="h-3 w-3" />
-          Save
+          Export JSON
         </button>
       </div>
       <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
         <MapPin className="h-3 w-3 shrink-0" />
-        <span>Click objects, signs, nodes, or orange curve handles in 3D to select.</span>
+        <span>
+          Click road segments, nodes (cyan=join), curve handles, signs, or
+          objects directly in 3D.
+        </span>
       </div>
     </div>
   );

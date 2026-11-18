@@ -973,7 +973,8 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             impatience: unit.impatience,
           });
           unit.avoidanceSteer = avoid.nextSteerBias;
-          unit.debugAvoidActive = avoid.blocked || avoid.steerActive;
+          unit.debugAvoidActive =
+            avoid.wallBlocked || avoid.vehicleBlocked || Math.abs(avoid.nextSteerBias) > 0.05;
           unit.lateralOffset = 0;
 
           const revState = {

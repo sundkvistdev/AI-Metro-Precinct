@@ -12,6 +12,7 @@ import {
   Folder,
   Plus,
   RefreshCw,
+  Save,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -123,9 +124,13 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                 onClick={() => controller?.selectPart(p.id)}
                 className="flex min-w-0 flex-1 items-center gap-1 text-left cursor-pointer truncate"
               >
-                {isGroup && <Folder className="h-3 w-3 shrink-0 text-amber-300" />}
+                {isGroup && (
+                  <Folder className="h-3 w-3 shrink-0 text-amber-300" />
+                )}
                 <span className="font-mono-tabular truncate">{p.id}</span>
-                <span className="text-[9px] text-zinc-400 shrink-0">[{p.kind}]</span>
+                <span className="text-[9px] text-zinc-400 shrink-0">
+                  [{p.kind}]
+                </span>
               </button>
             </div>
 
@@ -139,7 +144,11 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                 title={isHidden ? 'Show part' : 'Hide part'}
                 className="p-0.5 text-zinc-400 hover:text-zinc-100 cursor-pointer"
               >
-                {isHidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                {isHidden ? (
+                  <EyeOff className="h-3 w-3" />
+                ) : (
+                  <Eye className="h-3 w-3" />
+                )}
               </button>
               <button
                 type="button"
@@ -258,16 +267,21 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
         <div className="ui-subpanel p-2 space-y-1.5">
           <div className="flex flex-wrap items-center justify-between gap-1">
             <div className="flex flex-wrap gap-1">
-              {(['group', 'box', 'cylinder', 'sphere', 'plane'] as const).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => controller?.addPart(k)}
-                  className="border border-emerald-500/70 bg-emerald-700/40 px-1.5 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-600/60 cursor-pointer rounded-none"
-                >
-                  +{k === 'cylinder' ? 'Cyl' : k.charAt(0).toUpperCase() + k.slice(1)}
-                </button>
-              ))}
+              {(['group', 'box', 'cylinder', 'sphere', 'plane'] as const).map(
+                (k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => controller?.addPart(k)}
+                    className="border border-emerald-500/70 bg-emerald-700/40 px-1.5 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-600/60 cursor-pointer rounded-none"
+                  >
+                    +
+                    {k === 'cylinder'
+                      ? 'Cyl'
+                      : k.charAt(0).toUpperCase() + k.slice(1)}
+                  </button>
+                ),
+              )}
             </div>
             <div className="flex gap-1">
               <button
@@ -301,7 +315,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
 
           <div className="max-h-52 overflow-y-auto border border-zinc-700 bg-zinc-900">
             {model.parts.length === 0 ? (
-              <div className="p-2 text-[10px] text-zinc-400">No parts in model.</div>
+              <div className="p-2 text-[10px] text-zinc-400">
+                No parts in model.
+              </div>
             ) : (
               renderTreeNodes(model.parts)
             )}
@@ -354,7 +370,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                   <input
                     type="text"
                     value={selP.id}
-                    onChange={(e) => controller?.updateSelectedPart({ id: e.target.value })}
+                    onChange={(e) =>
+                      controller?.updateSelectedPart({ id: e.target.value })
+                    }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
                 </label>
@@ -364,13 +382,17 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                     type="text"
                     value={selP.tag ?? ''}
                     placeholder="e.g. frontWheel"
-                    onChange={(e) => controller?.updateSelectedPart({ tag: e.target.value })}
+                    onChange={(e) =>
+                      controller?.updateSelectedPart({ tag: e.target.value })
+                    }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
                 </label>
               </div>
 
-              <div className="text-[10px] text-zinc-400">Position (X / Y / Z)</div>
+              <div className="text-[10px] text-zinc-400">
+                Position (X / Y / Z)
+              </div>
               <div className="grid grid-cols-3 gap-1">
                 {[0, 1, 2].map((axis) => (
                   <input
@@ -392,7 +414,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                 ))}
               </div>
 
-              <div className="text-[10px] text-zinc-400">Rotation (rad X / Y / Z)</div>
+              <div className="text-[10px] text-zinc-400">
+                Rotation (rad X / Y / Z)
+              </div>
               <div className="grid grid-cols-3 gap-1">
                 {[0, 1, 2].map((axis) => (
                   <input
@@ -440,11 +464,15 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                   </div>
 
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] text-zinc-400 shrink-0">Material</span>
+                    <span className="text-[10px] text-zinc-400 shrink-0">
+                      Material
+                    </span>
                     <select
                       value={selP.materialRef ?? ''}
                       onChange={(e) =>
-                        controller?.updateSelectedPart({ materialRef: e.target.value })
+                        controller?.updateSelectedPart({
+                          materialRef: e.target.value,
+                        })
                       }
                       className="flex-1 border border-zinc-600 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-100 rounded-none"
                     >
@@ -457,13 +485,41 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                     </select>
                   </div>
 
+                  {state.materialIds.length > 0 && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-zinc-400 shrink-0">
+                        Use Shared
+                      </span>
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            controller?.applyPackMaterialToSelectedPart(
+                              e.target.value,
+                            );
+                          }
+                        }}
+                        className="flex-1 border border-zinc-600 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-200 rounded-none"
+                      >
+                        <option value="">-- Pull pack material --</option>
+                        {state.materialIds.map((mid) => (
+                          <option key={mid} value={mid}>
+                            {mid}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   <div className="flex items-center gap-3 text-[10px] text-zinc-300">
                     <label className="flex items-center gap-1 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={selP.castShadow ?? true}
                         onChange={(e) =>
-                          controller?.updateSelectedPart({ castShadow: e.target.checked })
+                          controller?.updateSelectedPart({
+                            castShadow: e.target.checked,
+                          })
                         }
                       />
                       Cast Shadow
@@ -473,7 +529,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                         type="checkbox"
                         checked={selP.receiveShadow ?? false}
                         onChange={(e) =>
-                          controller?.updateSelectedPart({ receiveShadow: e.target.checked })
+                          controller?.updateSelectedPart({
+                            receiveShadow: e.target.checked,
+                          })
                         }
                       />
                       Receive Shadow
@@ -604,11 +662,17 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                   className="border border-zinc-700 bg-zinc-900 p-1.5 space-y-1 text-[10px] font-mono-tabular"
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="font-semibold text-zinc-100 truncate">{key}</span>
+                    <span className="font-semibold text-zinc-100 truncate">
+                      {key}
+                    </span>
                     <div className="flex items-center gap-1">
                       <input
                         type="color"
-                        value={mat.color.startsWith('#') ? mat.color.slice(0, 7) : '#808080'}
+                        value={
+                          mat.color.startsWith('#')
+                            ? mat.color.slice(0, 7)
+                            : '#808080'
+                        }
                         onChange={(e) => updateMat({ color: e.target.value })}
                         className="h-4 w-6 cursor-pointer border border-zinc-600 bg-transparent p-0"
                       />
@@ -625,7 +689,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                     <select
                       value={mat.type}
                       onChange={(e) =>
-                        updateMat({ type: e.target.value as ModelMaterialDef['type'] })
+                        updateMat({
+                          type: e.target.value as ModelMaterialDef['type'],
+                        })
                       }
                       className="border border-zinc-600 bg-zinc-800 px-1 py-0.5 text-zinc-100 rounded-none"
                     >
@@ -640,7 +706,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                       max={1}
                       title="Roughness"
                       value={mat.roughness ?? 0.5}
-                      onChange={(e) => updateMat({ roughness: Number(e.target.value) })}
+                      onChange={(e) =>
+                        updateMat({ roughness: Number(e.target.value) })
+                      }
                       className="border border-zinc-600 bg-zinc-800 px-1 py-0.5 text-zinc-100 rounded-none"
                     />
                     <input
@@ -650,7 +718,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                       max={1}
                       title="Metalness"
                       value={mat.metalness ?? 0}
-                      onChange={(e) => updateMat({ metalness: Number(e.target.value) })}
+                      onChange={(e) =>
+                        updateMat({ metalness: Number(e.target.value) })
+                      }
                       className="border border-zinc-600 bg-zinc-800 px-1 py-0.5 text-zinc-100 rounded-none"
                     />
                   </div>
@@ -673,7 +743,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                       <input
                         type="checkbox"
                         checked={Boolean(mat.transparent)}
-                        onChange={(e) => updateMat({ transparent: e.target.checked })}
+                        onChange={(e) =>
+                          updateMat({ transparent: e.target.checked })
+                        }
                       />
                       Alpha
                     </label>
@@ -693,7 +765,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
             <select
               value={flags.category ?? 'custom'}
               onChange={(e) =>
-                controller?.updateModelFlags({ category: e.target.value as ModelCategory })
+                controller?.updateModelFlags({
+                  category: e.target.value as ModelCategory,
+                })
               }
               className="flex-1 border border-zinc-600 bg-zinc-900 px-1.5 py-0.5 text-[11px] font-mono-tabular text-zinc-100 rounded-none"
             >
@@ -731,7 +805,9 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
           </div>
 
           <label className="block space-y-0.5">
-            <span className="text-[10px] text-zinc-400">Custom Tags (comma separated)</span>
+            <span className="text-[10px] text-zinc-400">
+              Custom Tags (comma separated)
+            </span>
             <input
               type="text"
               value={(flags.customTags ?? []).join(', ')}
@@ -750,7 +826,7 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
         </div>
       )}
 
-      {/* Save / Load / Apply Live */}
+      {/* Save to Pack / Apply / Load / Export */}
       <input
         ref={fileInputRef}
         type="file"
@@ -761,15 +837,23 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
           e.target.value = '';
         }}
       />
-      <div className="grid grid-cols-3 gap-1">
+      <div className="grid grid-cols-2 gap-1">
         <button
           type="button"
-          onClick={() => controller?.applyModelChanges()}
+          onClick={() => controller?.saveCurrentAssetToPack('model')}
           className={`flex items-center justify-center gap-1 border py-1.5 text-[11px] font-medium cursor-pointer rounded-none ${
             state.dirtyModel
               ? 'border-amber-400 bg-amber-600 text-white hover:bg-amber-500'
-              : 'border-zinc-500 bg-zinc-700 text-zinc-100 hover:bg-zinc-600'
+              : 'border-emerald-500/70 bg-emerald-700/45 text-emerald-100 hover:bg-emerald-600/60'
           }`}
+        >
+          <Save className="h-3 w-3" />
+          Save Model to Pack
+        </button>
+        <button
+          type="button"
+          onClick={() => controller?.applyModelChanges()}
+          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
         >
           <RefreshCw className="h-3 w-3" />
           Apply Live
@@ -777,10 +861,10 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
         >
           <Upload className="h-3 w-3" />
-          Load
+          Load JSON
         </button>
         <button
           type="button"
@@ -788,10 +872,10 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
             const res = controller?.exportModelJson();
             if (res) downloadJsonText(res.filename, res.content);
           }}
-          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
         >
           <Download className="h-3 w-3" />
-          Save
+          Export JSON
         </button>
       </div>
     </div>

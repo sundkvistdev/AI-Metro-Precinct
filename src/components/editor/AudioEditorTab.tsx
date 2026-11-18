@@ -1,5 +1,14 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Download, Play, Plus, Trash2, Upload } from 'lucide-react';
+import {
+  Download,
+  FileAudio,
+  Play,
+  Plus,
+  Save,
+  Square,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { ProceduralAudioAsset } from '../../assets/assetTypes';
 import { mulberry32 } from '../../assets/prng';
 import { DevEditorController, DevEditorState } from '../../sim/devEditorController';
@@ -33,6 +42,8 @@ function buildWaveformPath(asset: ProceduralAudioAsset | null): string {
       amp = Math.sin(t * Math.PI * (12 + mod * 18)) * 0.78;
     } else if (asset.kind === 'chirp_sequence' && asset.chirp) {
       amp = Math.sin(t * Math.PI * 20) * (1 - t * 0.65) * 0.75;
+    } else if (asset.kind === 'audio_clip') {
+      amp = Math.sin(t * Math.PI * 14) * (0.35 + 0.55 * rng());
     }
     const x = (t * w).toFixed(1);
     const y = (mid - amp * (h * 0.42)).toFixed(1);
@@ -45,19 +56,27 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
   controller,
   state,
 }) => {
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const jsonInputRef = useRef<HTMLInputElement | null>(null);
+  const audioFileInputRef = useRef<HTMLInputElement | null>(null);
   const [newAudioName, setNewAudioName] = useState('custom_fx');
-  const [newKind, setNewKind] = useState<ProceduralAudioAsset['kind']>('chirp_sequence');
+  const [newKind, setNewKind] =
+    useState<ProceduralAudioAsset['kind']>('chirp_sequence');
   const [importError, setImportError] = useState<string | null>(null);
 
   const aud = state.selectedAudio;
   const wavePath = useMemo(() => buildWaveformPath(aud), [aud]);
+  const audioMedia = useMemo(
+    () => state.mediaList.filter((m) => m.kind === 'audio'),
+    [state.mediaList],
+  );
+  const isPlayingThis =
+    state.audioPreviewPlaying && state.audioPreviewAssetId === aud?.id;
 
   const updateAud = (next: ProceduralAudioAsset) => {
     controller?.updateSelectedAudio(next);
   };
 
-  const handleImport = async (file: File | undefined) => {
+  const handleImportJson = async (file: File | undefined) => {
     if (!file || !controller) return;
     try {
       setImportError(null);
@@ -68,16 +87,42 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
     }
   };
 
+  const handleImportAudioFile = async (file: File | undefined) => {
+    if (!file || !controller) return;
+    try {
+      setImportError(null);
+      await controller.importAudioFileToPack(file);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="space-y-2 text-xs">
-      {/* Audio Asset Selector + Create */}
+      {/* Audio Asset Selector + Create + Real Audio Import */}
       <div className="ui-subpanel p-2 space-y-1.5">
         <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
           <span>Audio Asset ({state.audioIds.length})</span>
-          {aud && (
-            <span className="font-mono-tabular text-[10px] text-sky-300">{aud.kind}</span>
-          )}
+          <button
+            type="button"
+            onClick={() => audioFileInputRef.current?.click()}
+            className="flex items-center gap-1 border border-sky-500/70 bg-sky-700/40 px-1.5 py-0.5 text-[10px] text-sky-100 hover:bg-sky-600/60 cursor-pointer rounded-none"
+          >
+            <FileAudio className="h-3 w-3" />
+            Import WAV/MP3/OGG
+          </button>
         </div>
+
+        <input
+          ref={audioFileInputRef}
+          type="file"
+          accept=".wav,.mp3,.ogg,.webm,audio/*"
+          className="hidden"
+          onChange={(e) => {
+            void handleImportAudioFile(e.target.files?.[0]);
+            e.target.value = '';
+          }}
+        />
 
         <select
           value={state.selectedAudioId}
@@ -101,13 +146,16 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
           />
           <select
             value={newKind}
-            onChange={(e) => setNewKind(e.target.value as ProceduralAudioAsset['kind'])}
+            onChange={(e) =>
+              setNewKind(e.target.value as ProceduralAudioAsset['kind'])
+            }
             className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-[10px] text-zinc-100 rounded-none"
           >
             <option value="chirp_sequence">Chirp</option>
             <option value="filtered_noise_burst">Noise Burst</option>
             <option value="siren_sweep">Siren Sweep</option>
             <option value="siren_hilo">Siren Hi-Lo</option>
+            <option value="audio_clip">Audio Clip</option>
           </select>
           <button
             type="button"
@@ -127,20 +175,60 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
 
       {aud && (
         <div className="ui-subpanel p-2 space-y-2">
-          {/* Waveform visualizer + Play */}
-          <div className="flex items-center gap-2 border border-zinc-700 bg-zinc-950 p-1.5">
-            <svg viewBox="0 0 240 48" className="h-12 flex-1">
-              <line x1="0" y1="24" x2="240" y2="24" stroke="#334155" strokeWidth="1" />
-              <path d={wavePath} fill="none" stroke="#38bdf8" strokeWidth="1.5" />
-            </svg>
-            <button
-              type="button"
-              onClick={() => controller?.previewSelectedAudio()}
-              className="flex items-center gap-1 border border-emerald-400/80 bg-emerald-600 px-2.5 py-2 text-[11px] font-semibold text-white hover:bg-emerald-500 cursor-pointer rounded-none shrink-0"
-            >
-              <Play className="h-3.5 w-3.5" />
-              Play
-            </button>
+          {/* Waveform visualizer + Continuous Play/Stop + Loop */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 border border-zinc-700 bg-zinc-950 p-1.5">
+              <svg viewBox="0 0 240 48" className="h-12 flex-1">
+                <line
+                  x1="0"
+                  y1="24"
+                  x2="240"
+                  y2="24"
+                  stroke="#334155"
+                  strokeWidth="1"
+                />
+                <path
+                  d={wavePath}
+                  fill="none"
+                  stroke={isPlayingThis ? '#34d399' : '#38bdf8'}
+                  strokeWidth="1.5"
+                />
+              </svg>
+
+              {isPlayingThis ? (
+                <button
+                  type="button"
+                  onClick={() => controller?.stopAudioPreview()}
+                  className="flex items-center gap-1 border border-red-400/80 bg-red-600 px-2.5 py-2 text-[11px] font-semibold text-white hover:bg-red-500 cursor-pointer rounded-none shrink-0"
+                >
+                  <Square className="h-3.5 w-3.5" />
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => controller?.startAudioPreview()}
+                  className="flex items-center gap-1 border border-emerald-400/80 bg-emerald-600 px-2.5 py-2 text-[11px] font-semibold text-white hover:bg-emerald-500 cursor-pointer rounded-none shrink-0"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  Play
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] text-zinc-300">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={state.audioPreviewLoop}
+                  onChange={(e) =>
+                    controller?.setAudioPreviewLoop(e.target.checked)
+                  }
+                />
+                Loop Preview Continuously (manual stop)
+              </label>
+              <span className="font-mono-tabular text-sky-300">{aud.kind}</span>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-1 text-[10px] font-mono-tabular">
@@ -152,7 +240,9 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
                 min={0.01}
                 max={2}
                 value={aud.gain}
-                onChange={(e) => updateAud({ ...aud, gain: Number(e.target.value) })}
+                onChange={(e) =>
+                  updateAud({ ...aud, gain: Number(e.target.value) })
+                }
                 className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
               />
             </label>
@@ -162,111 +252,203 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
                 type="number"
                 step={1}
                 value={aud.seed}
-                onChange={(e) => updateAud({ ...aud, seed: Number(e.target.value) })}
+                onChange={(e) =>
+                  updateAud({ ...aud, seed: Number(e.target.value) })
+                }
                 className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
               />
             </label>
           </div>
 
-          {/* Siren Controls */}
-          {(aud.kind === 'siren_sweep' || aud.kind === 'siren_hilo') && aud.siren && (
+          {/* Imported Audio Clip Controls */}
+          {aud.kind === 'audio_clip' && (
             <div className="space-y-1.5 border-t border-zinc-700 pt-1.5 text-[10px] font-mono-tabular">
-              <div className="grid grid-cols-2 gap-1">
+              <label className="block space-y-0.5">
+                <span className="text-zinc-400">Imported Audio Media</span>
+                <select
+                  value={aud.clip?.mediaId ?? ''}
+                  onChange={(e) =>
+                    updateAud({
+                      ...aud,
+                      clip: {
+                        mediaId: e.target.value,
+                        playbackRate: aud.clip?.playbackRate ?? 1.0,
+                        loop: aud.clip?.loop ?? true,
+                      },
+                    })
+                  }
+                  className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                >
+                  <option value="">-- Select imported audio --</option>
+                  {audioMedia.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.id} ({m.filename ?? m.path})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="grid grid-cols-2 gap-1 items-center">
                 <label className="space-y-0.5">
-                  <span className="text-zinc-400">Min Freq (Hz)</span>
-                  <input
-                    type="number"
-                    step={20}
-                    value={aud.siren.minFreq}
-                    onChange={(e) =>
-                      updateAud({
-                        ...aud,
-                        siren: { ...aud.siren!, minFreq: Number(e.target.value) },
-                      })
-                    }
-                    className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                  />
-                </label>
-                <label className="space-y-0.5">
-                  <span className="text-zinc-400">Max Freq (Hz)</span>
-                  <input
-                    type="number"
-                    step={20}
-                    value={aud.siren.maxFreq}
-                    onChange={(e) =>
-                      updateAud({
-                        ...aud,
-                        siren: { ...aud.siren!, maxFreq: Number(e.target.value) },
-                      })
-                    }
-                    className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                  />
-                </label>
-                <label className="space-y-0.5">
-                  <span className="text-zinc-400">Sweep Rate (Hz)</span>
+                  <span className="text-zinc-400">Playback Rate</span>
                   <input
                     type="number"
                     step={0.05}
-                    value={aud.siren.sweepRateHz}
+                    min={0.25}
+                    max={4}
+                    value={aud.clip?.playbackRate ?? 1.0}
                     onChange={(e) =>
                       updateAud({
                         ...aud,
-                        siren: { ...aud.siren!, sweepRateHz: Number(e.target.value) },
+                        clip: {
+                          mediaId: aud.clip?.mediaId ?? '',
+                          playbackRate: Number(e.target.value),
+                          loop: aud.clip?.loop ?? true,
+                        },
                       })
                     }
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
                 </label>
-                <label className="space-y-0.5">
-                  <span className="text-zinc-400">Bandpass (Hz)</span>
+                <label className="flex items-center gap-1.5 pt-4 text-zinc-300 cursor-pointer">
                   <input
-                    type="number"
-                    step={50}
-                    value={aud.siren.bandpassFreq}
+                    type="checkbox"
+                    checked={aud.clip?.loop ?? true}
                     onChange={(e) =>
                       updateAud({
                         ...aud,
-                        siren: { ...aud.siren!, bandpassFreq: Number(e.target.value) },
+                        clip: {
+                          mediaId: aud.clip?.mediaId ?? '',
+                          playbackRate: aud.clip?.playbackRate ?? 1.0,
+                          loop: e.target.checked,
+                        },
                       })
                     }
-                    className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
+                  Clip Loop Flag
                 </label>
-              </div>
-              <div className="grid grid-cols-2 gap-1">
-                <select
-                  value={aud.siren.waveform1}
-                  onChange={(e) =>
-                    updateAud({
-                      ...aud,
-                      siren: { ...aud.siren!, waveform1: e.target.value as OscillatorType },
-                    })
-                  }
-                  className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                >
-                  <option value="sawtooth">sawtooth</option>
-                  <option value="triangle">triangle</option>
-                  <option value="square">square</option>
-                  <option value="sine">sine</option>
-                </select>
-                <select
-                  value={aud.siren.waveform2}
-                  onChange={(e) =>
-                    updateAud({
-                      ...aud,
-                      siren: { ...aud.siren!, waveform2: e.target.value as OscillatorType },
-                    })
-                  }
-                  className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
-                >
-                  <option value="triangle">triangle</option>
-                  <option value="sawtooth">sawtooth</option>
-                  <option value="square">square</option>
-                  <option value="sine">sine</option>
-                </select>
               </div>
             </div>
           )}
+
+          {/* Siren Controls */}
+          {(aud.kind === 'siren_sweep' || aud.kind === 'siren_hilo') &&
+            aud.siren && (
+              <div className="space-y-1.5 border-t border-zinc-700 pt-1.5 text-[10px] font-mono-tabular">
+                <div className="grid grid-cols-2 gap-1">
+                  <label className="space-y-0.5">
+                    <span className="text-zinc-400">Min Freq (Hz)</span>
+                    <input
+                      type="number"
+                      step={20}
+                      value={aud.siren.minFreq}
+                      onChange={(e) =>
+                        updateAud({
+                          ...aud,
+                          siren: {
+                            ...aud.siren!,
+                            minFreq: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                    />
+                  </label>
+                  <label className="space-y-0.5">
+                    <span className="text-zinc-400">Max Freq (Hz)</span>
+                    <input
+                      type="number"
+                      step={20}
+                      value={aud.siren.maxFreq}
+                      onChange={(e) =>
+                        updateAud({
+                          ...aud,
+                          siren: {
+                            ...aud.siren!,
+                            maxFreq: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                    />
+                  </label>
+                  <label className="space-y-0.5">
+                    <span className="text-zinc-400">Sweep Rate (Hz)</span>
+                    <input
+                      type="number"
+                      step={0.05}
+                      value={aud.siren.sweepRateHz}
+                      onChange={(e) =>
+                        updateAud({
+                          ...aud,
+                          siren: {
+                            ...aud.siren!,
+                            sweepRateHz: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                    />
+                  </label>
+                  <label className="space-y-0.5">
+                    <span className="text-zinc-400">Bandpass (Hz)</span>
+                    <input
+                      type="number"
+                      step={50}
+                      value={aud.siren.bandpassFreq}
+                      onChange={(e) =>
+                        updateAud({
+                          ...aud,
+                          siren: {
+                            ...aud.siren!,
+                            bandpassFreq: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                    />
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <select
+                    value={aud.siren.waveform1}
+                    onChange={(e) =>
+                      updateAud({
+                        ...aud,
+                        siren: {
+                          ...aud.siren!,
+                          waveform1: e.target.value as OscillatorType,
+                        },
+                      })
+                    }
+                    className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                  >
+                    <option value="sawtooth">sawtooth</option>
+                    <option value="triangle">triangle</option>
+                    <option value="square">square</option>
+                    <option value="sine">sine</option>
+                  </select>
+                  <select
+                    value={aud.siren.waveform2}
+                    onChange={(e) =>
+                      updateAud({
+                        ...aud,
+                        siren: {
+                          ...aud.siren!,
+                          waveform2: e.target.value as OscillatorType,
+                        },
+                      })
+                    }
+                    className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                  >
+                    <option value="triangle">triangle</option>
+                    <option value="sawtooth">sawtooth</option>
+                    <option value="square">square</option>
+                    <option value="sine">sine</option>
+                  </select>
+                </div>
+              </div>
+            )}
 
           {/* Noise Burst Controls */}
           {aud.kind === 'filtered_noise_burst' && aud.noiseBurst && (
@@ -287,7 +469,10 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
                         noiseBurst: {
                           ...aud.noiseBurst!,
                           duration: d,
-                          envelope: { ...aud.noiseBurst!.envelope, duration: d },
+                          envelope: {
+                            ...aud.noiseBurst!.envelope,
+                            duration: d,
+                          },
                         },
                       });
                     }}
@@ -406,7 +591,10 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
                   onChange={(e) =>
                     updateAud({
                       ...aud,
-                      chirp: { ...aud.chirp!, duration: Number(e.target.value) },
+                      chirp: {
+                        ...aud.chirp!,
+                        duration: Number(e.target.value),
+                      },
                     })
                   }
                   className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
@@ -423,7 +611,10 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
                         ...aud,
                         chirp: {
                           ...aud.chirp!,
-                          steps: [...aud.chirp!.steps, { time: 0.1, freq: 1400 }],
+                          steps: [
+                            ...aud.chirp!.steps,
+                            { time: 0.1, freq: 1400 },
+                          ],
                         },
                       })
                     }
@@ -460,7 +651,9 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        const steps = aud.chirp!.steps.filter((_, i) => i !== sIdx);
+                        const steps = aud.chirp!.steps.filter(
+                          (_, i) => i !== sIdx,
+                        );
                         updateAud({ ...aud, chirp: { ...aud.chirp!, steps } });
                       }}
                       className="flex justify-center border border-red-500/60 bg-red-900/40 p-1 text-red-200 cursor-pointer rounded-none"
@@ -475,37 +668,51 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
         </div>
       )}
 
-      {/* Load / Save */}
+      {/* Save to Pack + JSON Load/Export */}
       <input
-        ref={fileInputRef}
+        ref={jsonInputRef}
         type="file"
         accept=".json,application/json"
         className="hidden"
         onChange={(e) => {
-          void handleImport(e.target.files?.[0]);
+          void handleImportJson(e.target.files?.[0]);
           e.target.value = '';
         }}
       />
-      <div className="grid grid-cols-2 gap-1">
+      <div className="space-y-1">
         <button
           type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+          onClick={() => controller?.saveCurrentAssetToPack('audio')}
+          className={`w-full flex items-center justify-center gap-1 border py-1.5 text-[11px] font-medium cursor-pointer rounded-none ${
+            state.dirtyAudio
+              ? 'border-amber-400 bg-amber-600 text-white hover:bg-amber-500'
+              : 'border-emerald-500/70 bg-emerald-700/45 text-emerald-100 hover:bg-emerald-600/60'
+          }`}
         >
-          <Upload className="h-3 w-3" />
-          Load Audio JSON
+          <Save className="h-3 w-3" />
+          Save Audio to Pack
         </button>
-        <button
-          type="button"
-          onClick={() => {
-            const res = controller?.exportAudioJson();
-            if (res) downloadJsonText(res.filename, res.content);
-          }}
-          className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1.5 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
-        >
-          <Download className="h-3 w-3" />
-          Save Audio JSON
-        </button>
+        <div className="grid grid-cols-2 gap-1">
+          <button
+            type="button"
+            onClick={() => jsonInputRef.current?.click()}
+            className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+          >
+            <Upload className="h-3 w-3" />
+            Load JSON
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const res = controller?.exportAudioJson();
+              if (res) downloadJsonText(res.filename, res.content);
+            }}
+            className="flex items-center justify-center gap-1 border border-zinc-500 bg-zinc-700 py-1 text-[11px] font-medium text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+          >
+            <Download className="h-3 w-3" />
+            Export JSON
+          </button>
+        </div>
       </div>
     </div>
   );

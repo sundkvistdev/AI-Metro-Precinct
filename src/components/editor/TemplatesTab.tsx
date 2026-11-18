@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Car, Plus, UserPlus } from 'lucide-react';
+import { Car, Plus, Save, UserPlus } from 'lucide-react';
 import { DevEditorController, DevEditorState } from '../../sim/devEditorController';
 
 export interface TemplatesTabProps {
@@ -22,19 +22,17 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({
   controller,
   state,
 }) => {
-  // Vehicle Builder state
   const [sourceModel, setSourceModel] = useState('police_cruiser');
   const [carId, setCarId] = useState('interceptor_v2');
   const [carPaint, setCarPaint] = useState('#1d4ed8');
-  const [carTarget, setCarTarget] = useState<'civilian' | 'police_bay' | 'model_only'>(
-    'police_bay',
-  );
+  const [carTarget, setCarTarget] = useState<
+    'civilian' | 'police_bay' | 'model_only'
+  >('police_bay');
   const [callsign, setCallsign] = useState('UNIT 108');
   const [liveryId, setLiveryId] = useState(state.liveryIds[0] ?? 'classic_bw');
   const [weaponKind, setWeaponKind] = useState<'pistol' | 'rifle'>('rifle');
   const [isHeavy, setIsHeavy] = useState(false);
 
-  // Ped Builder state
   const [pedId, setPedId] = useState('civilian_security');
   const [shirtColor, setShirtColor] = useState('#2563eb');
   const [pantsColor, setPantsColor] = useState('#1e293b');
@@ -135,7 +133,9 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({
             <select
               value={carTarget}
               onChange={(e) =>
-                setCarTarget(e.target.value as 'civilian' | 'police_bay' | 'model_only')
+                setCarTarget(
+                  e.target.value as 'civilian' | 'police_bay' | 'model_only',
+                )
               }
               className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
             >
@@ -179,7 +179,9 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({
               </select>
               <select
                 value={weaponKind}
-                onChange={(e) => setWeaponKind(e.target.value as 'pistol' | 'rifle')}
+                onChange={(e) =>
+                  setWeaponKind(e.target.value as 'pistol' | 'rifle')
+                }
                 className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
               >
                 <option value="pistol">Pistol</option>
@@ -192,7 +194,8 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({
                 checked={isHeavy}
                 onChange={(e) => setIsHeavy(e.target.checked)}
               />
-              Heavy Tactical / SWAT Deployment Bay (Current Bays: {state.bayCount})
+              Heavy Tactical / SWAT Deployment Bay (Current Bays:{' '}
+              {state.bayCount})
             </label>
           </div>
         )}
@@ -204,14 +207,14 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({
             className="flex items-center justify-center gap-1 border border-emerald-500/70 bg-emerald-700/50 py-1 text-[11px] font-medium text-emerald-100 hover:bg-emerald-600 cursor-pointer rounded-none"
           >
             <Plus className="h-3 w-3" />
-            Spawn Car
+            Create Car
           </button>
           <button
             type="button"
             onClick={() => handleCreateCar(true)}
             className="border border-sky-500/70 bg-sky-700/50 py-1 text-[11px] font-medium text-sky-100 hover:bg-sky-600 cursor-pointer rounded-none"
           >
-            Spawn & Edit Model
+            Create & Edit
           </button>
         </div>
       </div>
@@ -311,17 +314,26 @@ export const TemplatesTab: React.FC<TemplatesTabProps> = ({
             className="flex items-center justify-center gap-1 border border-emerald-500/70 bg-emerald-700/50 py-1 text-[11px] font-medium text-emerald-100 hover:bg-emerald-600 cursor-pointer rounded-none"
           >
             <Plus className="h-3 w-3" />
-            Spawn Ped
+            Create Ped
           </button>
           <button
             type="button"
             onClick={() => handleCreatePed(true)}
             className="border border-sky-500/70 bg-sky-700/50 py-1 text-[11px] font-medium text-sky-100 hover:bg-sky-600 cursor-pointer rounded-none"
           >
-            Spawn & Edit Model
+            Create & Edit
           </button>
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={() => controller?.saveCurrentAssetToPack('all')}
+        className="w-full flex items-center justify-center gap-1 border border-emerald-500/70 bg-emerald-700/45 py-1.5 text-[11px] font-medium text-emerald-100 hover:bg-emerald-600/60 cursor-pointer rounded-none"
+      >
+        <Save className="h-3 w-3" />
+        Save Prefabs & Config to Pack
+      </button>
     </div>
   );
 };

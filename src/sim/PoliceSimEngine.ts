@@ -1744,7 +1744,7 @@ export class PoliceSimEngine {
         : 'sedan';
     const isHeavy = vehicleKind === 'van' || vehicleKind === 'apc';
     const liveryId = isHeavy ? 'tactical_swat' : 'classic_bw';
-    const weaponKind = isHeavy ? 'rifle' : 'pistol';
+    const weaponKind: 'rifle' | 'pistol' = isHeavy ? 'rifle' : 'pistol';
     const unitNum = this.units.length + 1;
     const id = `unit-spawn-${Date.now().toString(36).slice(-4)}`;
     const rig = createPoliceCruiser(

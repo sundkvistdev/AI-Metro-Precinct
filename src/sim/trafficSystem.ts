@@ -429,7 +429,8 @@ export function updateCivilianTraffic(
         recklessness: car.impatience * 0.42,
         impatience: car.impatience,
       });
-      car.debugAvoidActive = avoid.blocked || avoid.steerActive;
+      car.debugAvoidActive =
+        avoid.wallBlocked || avoid.vehicleBlocked || Math.abs(avoid.nextSteerBias) > 0.05;
 
       const revState = {
         impatience: car.impatience,
