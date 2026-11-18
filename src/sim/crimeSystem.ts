@@ -6,6 +6,7 @@ import {
   LoadedJsonAssets,
 } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
+import { simEventLog } from '../assets/simEventLog';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { StaticObstacleBVH } from './bvh';
 import { CombatSystem } from './combatSystem';
@@ -17,12 +18,16 @@ import {
 import { isPointNearArmedNailMat } from './nailMatSystem';
 import { dismountUnit, dispatchNearestUnit } from './policeUnitSystem';
 import { getSurfaceHeight, TownRoadGraph } from './roadGraph';
-import { SceneWorldHierarchy } from './sceneHierarchy';
+import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
+  AssailantActor,
   NailMatActor,
+  OfficerActor,
   PedestrianActor,
   PoliceUnit,
+  resolveCrimePrimaryAssailant,
+  resolveUnitOfficers,
 } from './simActors';
 import {
   CrimeType,
@@ -49,6 +54,14 @@ import {
   SimVfxManager,
   stepRagdollPhysics,
 } from './vfx';
+
+let assailantIdSeq = 1;
+
+function disposeEntityObject(obj: THREE.Object3D): void {
+  const wrapper = new THREE.Group();
+  wrapper.add(obj);
+  disposeGroupContents(wrapper);
+}
 
 export function computeUrgencyLevel(urgency: number): UrgencyLevel {
   if (urgency >= 86) return 'critical';
@@ -91,6 +104,8 @@ export interface SpawnCrimeParams {
   crimes: ActiveCrime[];
   crimeCounter: number;
   units: PoliceUnit[];
+  officersById: Map<string, OfficerActor>;
+  assailants: AssailantActor[];
   hierarchy: SceneWorldHierarchy;
   roadGraph: TownRoadGraph;
   staticBvh: StaticObstacleBVH;
@@ -110,6 +125,8 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     crimes,
     crimeCounter,
     units,
+    officersById,
+    assailants,
     hierarchy,
     roadGraph,
     staticBvh,
@@ -151,7 +168,7 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
   pos.y = getSurfaceHeight(pos.x, pos.z, surface);
   suspectRig.root.position.copy(pos);
   suspectRig.root.visible = !isPursuit;
-  hierarchy.entities.crimes.add(suspectRig.root);
+  hierarchy.addEntity(suspectRig.root);
 
   const suspectWeaponKind: WeaponKind =
     !isPursuit &&
@@ -218,8 +235,37 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     );
     vehicleThreatRing.position.y = 0.06;
     vehicleRig.root.add(vehicleThreatRing);
-    hierarchy.entities.crimes.add(vehicleRig.root);
+    hierarchy.addEntity(vehicleRig.root);
   }
+
+  const assailantId = `assailant-${assailantIdSeq++}`;
+  const assailant: AssailantActor = {
+    id: assailantId,
+    crimeId: id,
+    rig: suspectRig,
+    pos: isPursuit ? vehiclePos.clone() : pos.clone(),
+    yaw: rng() * Math.PI * 2,
+    hp: 100,
+    maxHp: 100,
+    armor: suspectArmor,
+    maxArmor: suspectArmor,
+    weaponKind: suspectWeaponKind,
+    alive: true,
+    inVehicle: isPursuit,
+    ammo: magSize,
+    reloadTimer: 0,
+    recoilKick: 0,
+    strafeDir: rng() < 0.5 ? 1 : -1,
+    moveTimer: 1.5,
+    walkPhase: 0,
+    ragdoll: createRagdollState(),
+    lastHitDir: new THREE.Vector3(0, 0, 1),
+    fireCooldown: 1.1,
+    muzzleTimer: 0,
+    roamTarget: null,
+    roamTimer: 0,
+  };
+  assailants.push(assailant);
 
   const baseUrgency = computeInitialUrgency(type, suspectWeaponKind, rng);
 
@@ -238,21 +284,9 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     nearestNodeId: spot.nearestNodeId,
     segmentNodeA: spot.segmentNodeA,
     segmentNodeB: spot.segmentNodeB,
-    suspectRig,
-    suspectPos: isPursuit ? vehiclePos.clone() : pos.clone(),
-    suspectYaw: rng() * Math.PI * 2,
-    suspectHp: 100,
-    suspectArmor,
-    suspectWeaponKind,
-    suspectAlive: true,
-    suspectAmmo: magSize,
-    suspectReloadTimer: 0,
-    suspectRecoil: 0,
-    suspectStrafeDir: rng() < 0.5 ? 1 : -1,
-    suspectMoveTimer: 1.5,
-    suspectWalkPhase: 0,
-    suspectRagdoll: createRagdollState(),
-    lastHitDir: new THREE.Vector3(0, 0, 1),
+    assailantRefs: [assailantId],
+    primaryAssailantId: assailantId,
+    assignedOfficerRefs: [],
     inVehiclePursuit: isPursuit,
     vehicleRig,
     vehicleThreatRing,
@@ -280,17 +314,21 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     backupDispatched: false,
     heavyDeployed: false,
     nailMatAttempts: 0,
-    fireCooldown: 1.1,
-    muzzleTimer: 0,
     cleanupTimer: 4.5,
     elapsedSec: 0,
     engagedSec: 0,
   };
 
   crimes.push(crime);
+  simEventLog.info(
+    'dispatch',
+    `New Case #${crime.caseNumber}: ${crime.type}`,
+    `${crime.district} • Urgency ${crime.urgency}${isPursuit ? ' (Vehicle Pursuit)' : ''}`,
+  );
   dispatchNearestUnit(
     crime,
     units,
+    officersById,
     roadGraph,
     config,
     drivingMode,
@@ -307,6 +345,8 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
 export function bailOutGetawaySuspect(
   crime: ActiveCrime,
   units: PoliceUnit[],
+  officersById: Map<string, OfficerActor>,
+  assailantsById: Map<string, AssailantActor>,
   roadGraph: TownRoadGraph,
   staticBvh: StaticObstacleBVH,
   config: EngineConfigAsset,
@@ -327,22 +367,36 @@ export function bailOutGetawaySuspect(
 
   const sideX = Math.cos(crime.vehicleYaw) * 1.8;
   const sideZ = -Math.sin(crime.vehicleYaw) * 1.8;
-  crime.suspectPos.set(crime.vehiclePos.x + sideX, 0, crime.vehiclePos.z + sideZ);
-  staticBvh.resolveCircle(crime.suspectPos, 0.52);
-  crime.suspectPos.y = getSurfaceHeight(crime.suspectPos.x, crime.suspectPos.z, surface);
-  crime.pos.copy(crime.suspectPos);
+  const bailPos = new THREE.Vector3(crime.vehiclePos.x + sideX, 0, crime.vehiclePos.z + sideZ);
+  staticBvh.resolveCircle(bailPos, 0.52);
+  bailPos.y = getSurfaceHeight(bailPos.x, bailPos.z, surface);
+
+  crime.assailantRefs.forEach((aid, idx) => {
+    const a = assailantsById.get(aid);
+    if (!a) return;
+    a.inVehicle = false;
+    a.pos.copy(bailPos);
+    if (idx > 0) {
+      a.pos.x += (idx % 2 === 1 ? 1 : -1) * 1.1;
+      staticBvh.resolveCircle(a.pos, 0.52);
+      a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface);
+    }
+    a.rig.root.position.copy(a.pos);
+    a.rig.root.visible = true;
+  });
+
+  crime.pos.copy(bailPos);
   crime.roadPullOverPos.copy(crime.vehiclePos);
   crime.nearestNodeId = roadGraph.findNearestNode(crime.vehiclePos.x, crime.vehiclePos.z).id;
   crime.segmentNodeA = crime.vehicleNodeId;
   crime.segmentNodeB = crime.vehicleNextNodeId;
   crime.incidentStatus = 'on_scene';
-  crime.suspectRig.root.position.copy(crime.suspectPos);
-  crime.suspectRig.root.visible = true;
+  simEventLog.warn('combat', `Case #${crime.caseNumber} suspect bailed out on foot`, crime.district);
 
   for (const u of units) {
     if (u.targetCrimeId === crime.id && u.status === UnitStatus.Pursuing) {
       if (u.pos.distanceToSquared(crime.vehiclePos) < 22 * 22) {
-        dismountUnit(u, cowardiceLevel, staticBvh, config, rng, false, map);
+        dismountUnit(u, officersById, cowardiceLevel, staticBvh, config, rng, false, map);
       } else {
         u.status = UnitStatus.Responding;
         u.repathTimer = 0;
@@ -354,6 +408,8 @@ export function bailOutGetawaySuspect(
 export function updateGetawayVehicle(
   crime: ActiveCrime,
   units: PoliceUnit[],
+  officersById: Map<string, OfficerActor>,
+  assailantsById: Map<string, AssailantActor>,
   pedestrians: PedestrianActor[],
   allVehicles: AvoidanceVehicleProxy[],
   nailMats: NailMatActor[],
@@ -370,6 +426,7 @@ export function updateGetawayVehicle(
 ): void {
   const surface = map ?? config.world;
   const laneOffset = roadGraph.laneOffset;
+  const primary = resolveCrimePrimaryAssailant(crime, assailantsById);
 
   if (crime.vehicleTireBlowoutTimer > 0 && !crime.vehicleImmobilized) {
     crime.vehicleTireBlowoutTimer = Math.max(0, crime.vehicleTireBlowoutTimer - dt);
@@ -420,7 +477,18 @@ export function updateGetawayVehicle(
     crime.vehiclePos.y = getSurfaceHeight(crime.vehiclePos.x, crime.vehiclePos.z, surface);
     crime.vehicleRig!.root.position.copy(crime.vehiclePos);
     crime.vehicleRig!.root.rotation.y = crime.vehicleYaw;
-    bailOutGetawaySuspect(crime, units, roadGraph, staticBvh, config, cowardiceLevel, rng, map);
+    bailOutGetawaySuspect(
+      crime,
+      units,
+      officersById,
+      assailantsById,
+      roadGraph,
+      staticBvh,
+      config,
+      cowardiceLevel,
+      rng,
+      map,
+    );
     return;
   }
 
@@ -622,7 +690,9 @@ export function updateGetawayVehicle(
 
   crime.vehiclePos.y = getSurfaceHeight(crime.vehiclePos.x, crime.vehiclePos.z, surface);
   crime.pos.copy(crime.vehiclePos);
-  crime.suspectPos.copy(crime.vehiclePos);
+  if (primary) {
+    primary.pos.copy(crime.vehiclePos);
+  }
 
   if (crime.vehicleRig) {
     crime.vehicleRig.root.position.copy(crime.vehiclePos);
@@ -643,13 +713,28 @@ export function updateGetawayVehicle(
   }
 
   if (crime.vehicleHp <= 0 || crime.vehiclePinnedTimer >= 2.2) {
-    bailOutGetawaySuspect(crime, units, roadGraph, staticBvh, config, cowardiceLevel, rng, map);
+    bailOutGetawaySuspect(
+      crime,
+      units,
+      officersById,
+      assailantsById,
+      roadGraph,
+      staticBvh,
+      config,
+      cowardiceLevel,
+      rng,
+      map,
+    );
   }
 }
 
 export interface UpdateCrimesParams {
   crimes: ActiveCrime[];
   units: PoliceUnit[];
+  officers: OfficerActor[];
+  officersById: Map<string, OfficerActor>;
+  assailants: AssailantActor[];
+  assailantsById: Map<string, AssailantActor>;
   pedestrians: PedestrianActor[];
   allVehicles: AvoidanceVehicleProxy[];
   nailMats: NailMatActor[];
@@ -672,6 +757,10 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
   const {
     crimes,
     units,
+    officers,
+    officersById,
+    assailants,
+    assailantsById,
     pedestrians,
     allVehicles,
     nailMats,
@@ -699,8 +788,21 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
       (u) => u.targetCrimeId === c.id && u.status !== UnitStatus.Retreating,
     );
     c.assignedUnitIds = assignedUnits.map((u) => u.id);
+    c.assignedOfficerRefs = assignedUnits.flatMap((u) => u.officerRefs);
 
-    if (!c.suspectAlive) {
+    const crimeAssailants: AssailantActor[] = [];
+    for (const aid of c.assailantRefs) {
+      const a = assailantsById.get(aid);
+      if (a) crimeAssailants.push(a);
+    }
+    const primary = resolveCrimePrimaryAssailant(c, assailantsById);
+    const anyAlive = crimeAssailants.some((a) => a.alive);
+
+    if (primary && !c.inVehiclePursuit) {
+      c.pos.copy(primary.pos);
+    }
+
+    if (!anyAlive) {
       c.incidentStatus = 'resolved';
     } else if (c.inVehiclePursuit) {
       c.incidentStatus = 'pursuit';
@@ -716,7 +818,7 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
       c.incidentStatus = 'reported';
     }
 
-    if (c.suspectAlive) {
+    if (anyAlive) {
       const activelyEngaged = assignedUnits.some(
         (u) =>
           u.status === UnitStatus.Dismounting ||
@@ -732,7 +834,7 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
       let injuredOfficers = 0;
       let fleeingOfficers = 0;
       for (const u of assignedUnits) {
-        for (const o of u.officers) {
+        for (const o of resolveUnitOfficers(u, officersById)) {
           if (o.hp <= 0) kiaOfficers++;
           else if (o.hp < 65) injuredOfficers++;
           if (o.hp > 0 && o.cowardiceState === 'fleeing') fleeingOfficers++;
@@ -752,13 +854,6 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
       c.urgencyLevel = computeUrgencyLevel(c.urgency);
     }
 
-    if (c.muzzleTimer > 0) {
-      c.muzzleTimer -= dt;
-      if (c.muzzleTimer <= 0 && c.suspectRig.muzzleFlash) {
-        c.suspectRig.muzzleFlash.visible = false;
-      }
-    }
-
     if (c.vehicleRig && c.vehicleSmokeTimer > 0) {
       c.vehicleSmokeTimer -= dt;
       c.vehicleSmokeAccum += dt;
@@ -770,10 +865,12 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
       }
     }
 
-    if (c.suspectAlive && c.inVehiclePursuit && c.vehicleRig) {
+    if (anyAlive && c.inVehiclePursuit && c.vehicleRig) {
       updateGetawayVehicle(
         c,
         units,
+        officersById,
+        assailantsById,
         pedestrians,
         allVehicles,
         nailMats,
@@ -791,23 +888,34 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
       continue;
     }
 
-    if (c.suspectAlive) {
-      combat.updateFootCrimeSuspect(
-        c,
-        units,
-        cowardiceLevel,
-        staticBvh,
-        audio,
-        simTime,
-        dt,
-      );
+    if (anyAlive) {
+      for (const a of crimeAssailants) {
+        combat.updateAssailantCombat(
+          a,
+          officers,
+          cowardiceLevel,
+          staticBvh,
+          audio,
+          simTime,
+          dt,
+        );
+      }
     } else {
-      stepRagdollPhysics(c.suspectRagdoll, c.suspectPos, c.suspectRig, staticBvh, surface, dt);
+      for (const a of crimeAssailants) {
+        stepRagdollPhysics(a.ragdoll, a.pos, a.rig, staticBvh, surface, dt);
+      }
       c.cleanupTimer -= dt;
       if (c.cleanupTimer <= 0) {
-        hierarchy.entities.crimes.remove(c.suspectRig.root);
+        for (const a of crimeAssailants) {
+          hierarchy.removeEntity(a.rig.root);
+          disposeEntityObject(a.rig.root);
+          const aIdx = assailants.indexOf(a);
+          if (aIdx >= 0) assailants.splice(aIdx, 1);
+          assailantsById.delete(a.id);
+        }
         if (c.vehicleRig) {
-          hierarchy.entities.crimes.remove(c.vehicleRig.root);
+          hierarchy.removeEntity(c.vehicleRig.root);
+          disposeEntityObject(c.vehicleRig.root);
         }
         crimes.splice(i, 1);
         onCrimeCleared();
@@ -815,3 +923,4 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
     }
   }
 }
+

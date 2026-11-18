@@ -1,0 +1,14 @@
+{
+  "format": "jdata-model-v1",
+  "id": "prop_beacon",
+  "seed": 910203,
+  "flags": { "collidable": false, "castShadow": true, "receiveShadow": false },
+  "materials": {
+    "mast": { "type": "standard", "color": "#94a3b8", "metalness": 0.8, "roughness": 0.3 },
+    "beacon_bulb": { "type": "standard", "color": "#ef4444", "emissive": "#ff2222", "emissiveIntensity": 2.2, "roughness": 0.2 }
+  },
+  "parts": [
+    { "id": "mast", "kind": "cylinder", "dimensions": [0.18, 0.45, 0.9], "position": [0, 0.45, 0], "radiusSegments": 8, "materialRef": "mast" },
+    { "id": "beacon", "kind": "sphere", "dimensions": [0.34, 10, 10], "position": [0, 0.98, 0], "materialRef": "beacon_bulb" }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "format": "jdata-model-v1",
+  "id": "prop_sign",
+  "seed": 910202,
+  "flags": { "collidable": false, "castShadow": false, "receiveShadow": false },
+  "materials": {
+    "sign_face": { "type": "standard", "color": "#ffffff", "emissive": "#ffffff", "emissiveIntensity": 0.45, "roughness": 0.3, "textureRef": "precinct_sign", "emissiveTextureRef": "precinct_sign" }
+  },
+  "parts": [
+    { "id": "sign_panel", "kind": "box", "dimensions": [1.0, 1.0, 1.0], "position": [0, 0.5, 0], "materialRef": "sign_face" }
+  ]
+}

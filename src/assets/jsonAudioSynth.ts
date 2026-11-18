@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { resolveEventAudio } from '../sim/eventBindings';
 import { SirenPattern } from '../sim/types';
-import { ImportedMediaAsset, ProceduralAudioAsset } from './assetTypes';
+import { EngineConfigAsset, ImportedMediaAsset, ProceduralAudioAsset } from './assetTypes';
 import { mulberry32 } from './prng';
 
 export type AudioVoiceQuality = 'low' | 'normal' | 'high';
@@ -446,6 +447,7 @@ export class JsonAudioSynth {
     pattern: SirenPattern,
     simTime: number,
     dt: number,
+    config?: EngineConfigAsset | null,
   ): void {
     if (!this.ctx || this.ctx.state !== 'running') return;
     if (!isFiniteVec3(worldPos)) return;
@@ -482,14 +484,20 @@ export class JsonAudioSynth {
       else resolvedPattern = SirenPattern.Phaser;
     }
 
-    const assetId =
+    const eventId =
       resolvedPattern === SirenPattern.Wail
-        ? 'siren_standard_wail'
+        ? 'siren_wail'
         : resolvedPattern === SirenPattern.Yelp
-        ? 'siren_aggressive_yelp'
+        ? 'siren_yelp'
         : resolvedPattern === SirenPattern.Phaser
         ? 'siren_phaser'
         : 'siren_hilo';
+    const binding = resolveEventAudio(eventId, config);
+    if (binding.enabled === false) {
+      voice.gain.gain.setTargetAtTime(0, now, 0.08);
+      return;
+    }
+    const assetId = binding.audioId;
 
     const asset = this.audioAssets[assetId];
     const spec = asset?.siren;
@@ -511,7 +519,8 @@ export class JsonAudioSynth {
     voice.filter.frequency.setTargetAtTime(spec?.bandpassFreq ?? 1150, now, 0.04);
     voice.osc1.frequency.setTargetAtTime(freq, now, 0.02);
     voice.osc2.frequency.setTargetAtTime(freq * detune, now, 0.02);
-    voice.gain.gain.setTargetAtTime(asset?.gain ?? 0.22, now, 0.05);
+    const gainScale = binding.gainScale ?? 1.0;
+    voice.gain.gain.setTargetAtTime((asset?.gain ?? 0.22) * gainScale, now, 0.05);
   }
 
   private canSpawnTransient(key: string, worldPos?: THREE.Vector3, maxDistance = 320): boolean {
@@ -855,7 +864,7 @@ export class JsonAudioSynth {
     return 1.65;
   }
 
-  public playAssetAt(assetId: string, worldPos?: THREE.Vector3): void {
+  public playAssetAt(assetId: string, worldPos?: THREE.Vector3, gainScale = 1.0): void {
     if (!this.enabled) return;
     if (!this.ctx || this.ctx.state !== 'running' || !this.dryBus || !this.echoInput) return;
 
@@ -872,6 +881,7 @@ export class JsonAudioSynth {
     const maxDist = isGunshot ? 520 : 260;
     if (!this.canSpawnTransient(assetId, worldPos, maxDist)) return;
 
+    const scaledGain = THREE.MathUtils.clamp((asset.gain || 0.25) * gainScale, 0.005, 1.5);
     const now = this.ctx.currentTime;
 
     if (asset.kind === 'audio_clip' && asset.clip?.mediaId) {
@@ -887,7 +897,7 @@ export class JsonAudioSynth {
         now,
       );
       const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(Math.max(0.01, asset.gain), now);
+      gain.gain.setValueAtTime(Math.max(0.01, scaledGain), now);
       src.connect(gain);
 
       const nodesToDisconnect: AudioNode[] = [src, gain];
@@ -917,9 +927,9 @@ export class JsonAudioSynth {
       for (const step of asset.chirp.steps) {
         osc.frequency.setValueAtTime(step.freq, now + step.time);
       }
-      gain.gain.setValueAtTime(Math.max(0.01, asset.gain), now);
+      gain.gain.setValueAtTime(Math.max(0.01, scaledGain), now);
       gain.gain.exponentialRampToValueAtTime(
-        Math.max(0.001, asset.chirp.endGain),
+        Math.max(0.001, asset.chirp.endGain * gainScale),
         now + asset.chirp.duration,
       );
       osc.connect(gain);
@@ -948,7 +958,7 @@ export class JsonAudioSynth {
       // Slight gain scaling when many voices overlap avoids harsh compressor ducking
       const overlapAtten = this.activeTransients > 6 ? 0.72 : 1.0;
       const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(Math.max(0.005, asset.gain * overlapAtten), now);
+      gain.gain.setValueAtTime(Math.max(0.005, scaledGain * overlapAtten), now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + Math.max(0.02, nb.duration));
 
       noise.connect(filter);
@@ -992,7 +1002,7 @@ export class JsonAudioSynth {
           thumpOsc.frequency.exponentialRampToValueAtTime(42, now + 0.095);
 
           const thumpGain = this.ctx.createGain();
-          thumpGain.gain.setValueAtTime(asset.gain * overlapAtten * (isRifle ? 0.95 : 0.8), now);
+          thumpGain.gain.setValueAtTime(scaledGain * overlapAtten * (isRifle ? 0.95 : 0.8), now);
           thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
           thumpOsc.connect(thumpGain);
           thumpGain.connect(destinationNode);
@@ -1009,7 +1019,7 @@ export class JsonAudioSynth {
           const snapShaper = this.ctx.createWaveShaper();
           snapShaper.curve = this.getGunshotShaperCurve();
           const snapGain = this.ctx.createGain();
-          snapGain.gain.setValueAtTime(asset.gain * overlapAtten * (isRifle ? 1.15 : 0.98), now);
+          snapGain.gain.setValueAtTime(scaledGain * overlapAtten * (isRifle ? 1.15 : 0.98), now);
           snapGain.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
 
           snap.connect(snapBp);

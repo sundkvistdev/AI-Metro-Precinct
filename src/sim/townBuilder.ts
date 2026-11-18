@@ -3,10 +3,15 @@ import {
   AssetIssue,
   CustomMapAsset,
   LoadedJsonAssets,
+  MapBuildingDef,
   MapRoadSignDef,
   ProceduralTextureAsset,
 } from '../assets/assetTypes';
-import { buildJsonModel, buildMagentaCubeModel } from '../assets/jsonModelBuilder';
+import {
+  buildJsonModel,
+  buildMagentaCubeModel,
+  BuiltJsonModel,
+} from '../assets/jsonModelBuilder';
 import { renderJsonTexture } from '../assets/jsonTextureRenderer';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { makeObstacleBox, ObstacleAABB } from './bvh';
@@ -295,267 +300,141 @@ export function buildTownEnvironment(
     }
   }
 
-  const roofMat = new THREE.MeshStandardMaterial({
-    color: 0x3b424d,
-    roughnessMap: textures.roughnessConcrete,
-    roughness: 0.92,
-  });
-  const hvacMat = new THREE.MeshStandardMaterial({
-    color: 0x94a3b8,
-    roughness: 0.48,
-    metalness: 0.55,
-  });
-  const awningMat = new THREE.MeshStandardMaterial({
-    color: 0x1e3a8a,
-    roughness: 0.62,
-  });
-  const storefrontMat = new THREE.MeshStandardMaterial({
-    map: textures.storefrontFacade,
-    roughnessMap: textures.roughnessConcrete,
-    roughness: 0.52,
-    metalness: 0.16,
-  });
-  const facadeMats = textures.buildingFacades.map(
-    (tex) =>
-      new THREE.MeshStandardMaterial({
-        map: tex,
-        roughnessMap: textures.roughnessConcrete,
-        roughness: 0.74,
-        metalness: 0.08,
-      }),
-  );
-  const brickMat = new THREE.MeshStandardMaterial({
+  const buildingCacheMats = new Map<string, THREE.Material>();
+
+  const instantiateBuildingFromPack = (
+    b: MapBuildingDef,
+    idx: number,
+  ): THREE.Object3D | null => {
+    if (!assets) return null;
+    const styleKey = b.facadeStyle ?? 'concrete';
+    const mappedModelId =
+      b.modelRef ??
+      assets.config.world.buildingModels?.[styleKey] ??
+      assets.config.world.buildingModels?.concrete ??
+      'building_concrete';
+    const modelDef = assets.models[mappedModelId];
+    if (!modelDef) {
+      if (b.modelRef) {
+        onAssetIssue?.({
+          severity: 'error',
+          category: 'model',
+          id: b.modelRef,
+          path: `map.building:${b.id}`,
+          message: `Building "${b.id}" references missing model "${b.modelRef}"`,
+        });
+      }
+      return null;
+    }
+
+    // Rotate facade textures cleanly per building index if generic style
+    let texOverrides: Record<string, string> | undefined;
+    if (!b.modelRef && styleKey === 'storefront' && !b.hasAwning) {
+      const upperCycle = ['facade_concrete', 'facade_brick', 'facade_office'];
+      texOverrides = { facade: upperCycle[idx % upperCycle.length] };
+    } else if (
+      !b.modelRef &&
+      (styleKey === 'brick' || styleKey === 'concrete' || styleKey === 'limestone' || styleKey === 'office') &&
+      Object.keys(modelDef.materials).length === 2
+    ) {
+      const matKeys = Object.keys(modelDef.materials);
+      if (matKeys[0] && modelDef.materials[matKeys[0]].textureRef) {
+        texOverrides = { [matKeys[0]]: modelDef.materials[matKeys[0]].textureRef! };
+      }
+    }
+
+    const built = buildJsonModel(
+      modelDef,
+      textures.byId,
+      undefined,
+      texOverrides,
+      textures.magentaFallback,
+      (missingTex) => {
+        onAssetIssue?.({
+          severity: 'error',
+          category: 'texture',
+          id: missingTex,
+          path: `map.building:${b.id}`,
+          message: `Texture "${missingTex}" referenced by "${mappedModelId}" is missing`,
+        });
+      },
+      assets.materials,
+    );
+
+    // Optional HVAC toggle on storefront/office roof if flagged false
+    if (b.hasHvac === false) {
+      const hvacObj = built.root.getObjectByName('rooftop_hvac') ?? built.root.getObjectByName('hvac_unit');
+      if (hvacObj) hvacObj.visible = false;
+    }
+
+    // Fit model root to [b.width, b.height, b.depth] cleanly (keeping base at local y=0)
+    const isBeacon = styleKey === 'beacon';
+    const isFountain = styleKey === 'fountain' || b.kind === 'fountain';
+    if (isBeacon) {
+      built.root.scale.set(1, Math.max(0.5, b.height), 1);
+    } else if (isFountain) {
+      const rSpan = Math.min(b.width, b.depth);
+      built.root.scale.set(rSpan, Math.max(2.5, b.height), rSpan);
+    } else {
+      built.root.updateMatrixWorld(true);
+      _box3.setFromObject(built.root);
+      _box3.getSize(_size3);
+      const sx = _size3.x > 0.05 ? b.width / _size3.x : b.width;
+      const sy = _size3.y > 0.05 ? b.height / _size3.y : b.height;
+      const sz = _size3.z > 0.05 ? b.depth / _size3.z : b.depth;
+      built.root.scale.set(sx, sy, sz);
+    }
+
+    built.root.traverse((ch) => {
+      ch.userData.mapBuildingId = b.id;
+    });
+    return built.root;
+  };
+
+  const fallbackBrickMat = new THREE.MeshStandardMaterial({
     color: 0x334155,
     roughnessMap: textures.roughnessConcrete,
     roughness: 0.82,
   });
-  const trimMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.55 });
-  const glassMat = new THREE.MeshPhysicalMaterial({
-    color: 0x1e3a5f,
-    roughness: 0.12,
-    metalness: 0.2,
-    clearcoat: 0.8,
-  });
-  const stoneMat = new THREE.MeshStandardMaterial({
-    color: 0x94a3b8,
-    roughnessMap: textures.roughnessConcrete,
-    roughness: 0.74,
-  });
-  const signMat = new THREE.MeshStandardMaterial({
-    map: textures.precinctSign,
-    emissiveMap: textures.precinctSign,
-    emissive: 0xffffff,
-    emissiveIntensity: 0.45,
-    roughness: 0.3,
-  });
-
-  const hvacGeo = new THREE.BoxGeometry(3.2, 1.3, 2.4);
+  buildingCacheMats.set('fallback', fallbackBrickMat);
 
   map.buildings.forEach((b, idx) => {
     const rotY = b.rotationY ?? 0;
     const baseY = b.baseY ?? map.surfaceHeights.sidewalk;
 
-    if (b.facadeStyle === 'fountain' || b.kind === 'fountain') {
-      const fGroup = new THREE.Group();
-      fGroup.position.set(b.cx, baseY, b.cz);
-      fGroup.rotation.y = rotY;
-      fGroup.userData.mapBuildingId = b.id;
-
-      const r = Math.min(b.width, b.depth) * 0.5;
-      const basin = new THREE.Mesh(
-        new THREE.CylinderGeometry(r * 0.92, r, 0.85, 20),
-        stoneMat,
-      );
-      basin.position.y = 0.42;
-      basin.castShadow = true;
-      basin.receiveShadow = true;
-      basin.userData.mapBuildingId = b.id;
-
-      const water = new THREE.Mesh(
-        new THREE.CylinderGeometry(r * 0.83, r * 0.83, 0.15, 20),
-        new THREE.MeshPhysicalMaterial({ color: 0x38bdf8, roughness: 0.08, clearcoat: 1.0 }),
-      );
-      water.position.y = 0.76;
-
-      const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 1.0, 2.8, 12), stoneMat);
-      spire.position.y = 1.64;
-
-      fGroup.add(basin, water, spire);
-      freezeStatic(fGroup);
-      hierarchy.world.buildings.add(fGroup);
-      buildingMeshesById.set(b.id, fGroup);
-      if (b.collidable) {
-        obstacles.push(makeObstacleBox(b.cx, b.cz, b.width, b.depth, 'fountain', rotY));
-      }
-      return;
-    }
-
-    if (b.facadeStyle === 'station_hall') {
-      const hall = new THREE.Mesh(new THREE.BoxGeometry(b.width, b.height, b.depth), brickMat);
-      hall.position.set(b.cx, baseY + b.height * 0.5, b.cz);
-      hall.rotation.y = rotY;
-      hall.castShadow = true;
-      hall.receiveShadow = true;
-      hall.userData.mapBuildingId = b.id;
-      freezeStatic(hall);
-      hierarchy.world.buildings.add(hall);
-      buildingMeshesById.set(b.id, hall);
-      if (b.collidable) {
-        obstacles.push(makeObstacleBox(b.cx, b.cz, b.width, b.depth, 'station', rotY));
-      }
-      return;
-    }
-
-    if (b.facadeStyle === 'station_glass') {
-      const lobby = new THREE.Mesh(new THREE.BoxGeometry(b.width, b.height, b.depth), glassMat);
-      lobby.position.set(b.cx, baseY + b.height * 0.5, b.cz);
-      lobby.rotation.y = rotY;
-      lobby.userData.mapBuildingId = b.id;
-      freezeStatic(lobby);
-      hierarchy.world.buildings.add(lobby);
-      buildingMeshesById.set(b.id, lobby);
-      if (b.collidable) {
-        obstacles.push(makeObstacleBox(b.cx, b.cz, b.width, b.depth, 'station', rotY));
-      }
-      return;
-    }
-
-    if (b.facadeStyle === 'trim') {
-      const canopy = new THREE.Mesh(new THREE.BoxGeometry(b.width, b.height, b.depth), trimMat);
-      canopy.position.set(b.cx, baseY + b.height * 0.5, b.cz);
-      canopy.rotation.y = rotY;
-      canopy.castShadow = true;
-      canopy.userData.mapBuildingId = b.id;
-      freezeStatic(canopy);
-      hierarchy.world.buildings.add(canopy);
-      buildingMeshesById.set(b.id, canopy);
-      if (b.collidable) {
-        obstacles.push(makeObstacleBox(b.cx, b.cz, b.width, b.depth, 'station', rotY));
-      }
-      return;
-    }
-
-    if (b.facadeStyle === 'sign') {
-      const sign = new THREE.Mesh(new THREE.BoxGeometry(b.width, b.height, b.depth), signMat);
-      sign.position.set(b.cx, baseY + b.height * 0.5, b.cz);
-      sign.rotation.y = rotY;
-      sign.userData.mapBuildingId = b.id;
-      freezeStatic(sign);
-      hierarchy.world.buildings.add(sign);
-      buildingMeshesById.set(b.id, sign);
-      return;
-    }
-
-    if (b.facadeStyle === 'beacon') {
-      const bGroup = new THREE.Group();
-      bGroup.position.set(b.cx, baseY, b.cz);
-      bGroup.rotation.y = rotY;
-      bGroup.userData.mapBuildingId = b.id;
-      const mast = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.18, 0.45, b.height, 8),
-        new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8, roughness: 0.3 }),
-      );
-      mast.position.y = b.height * 0.5;
-      const beacon = new THREE.Mesh(
-        new THREE.SphereGeometry(0.32, 10, 10),
-        new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xff2222, emissiveIntensity: 2.2 }),
-      );
-      beacon.position.y = b.height + 0.25;
-      bGroup.add(mast, beacon);
-      freezeStatic(bGroup);
-      hierarchy.world.buildings.add(bGroup);
-      buildingMeshesById.set(b.id, bGroup);
-      return;
-    }
-
-    // Standard city building or tower
-    const bGroup = new THREE.Group();
-    bGroup.position.set(b.cx, baseY, b.cz);
-    bGroup.rotation.y = rotY;
-    bGroup.userData.mapBuildingId = b.id;
-
-    const groundH = Math.min(b.height * 0.45, b.groundHeight ?? 4.2);
-    const upperH = Math.max(2.5, b.height - groundH);
-
-    if (b.hasAwning || b.facadeStyle === 'storefront') {
-      const ground = new THREE.Mesh(
-        new THREE.BoxGeometry(b.width + 0.5, groundH, b.depth + 0.5),
-        storefrontMat,
-      );
-      ground.position.y = groundH * 0.5;
-      ground.castShadow = true;
-      ground.receiveShadow = true;
-      ground.userData.mapBuildingId = b.id;
-      bGroup.add(ground);
-
-      const awning = new THREE.Mesh(
-        new THREE.BoxGeometry(b.width + 1.2, 0.28, b.depth + 1.2),
-        awningMat,
-      );
-      awning.position.y = groundH + 0.14;
-      bGroup.add(awning);
-
-      const styleIdx =
-        b.facadeStyle === 'concrete'
-          ? 0
-          : b.facadeStyle === 'brick'
-          ? 1
-          : b.facadeStyle === 'office'
-          ? 2
-          : idx;
-      const upperMat =
-        facadeMats.length > 0 ? facadeMats[styleIdx % facadeMats.length] : brickMat;
-      const upper = new THREE.Mesh(new THREE.BoxGeometry(b.width, upperH, b.depth), upperMat);
-      upper.position.y = groundH + upperH * 0.5;
-      upper.castShadow = true;
-      upper.receiveShadow = true;
-      upper.userData.mapBuildingId = b.id;
-      bGroup.add(upper);
-
-      const roofCap = new THREE.Mesh(
-        new THREE.BoxGeometry(b.width + 0.4, 0.45, b.depth + 0.4),
-        roofMat,
-      );
-      roofCap.position.y = groundH + upperH + 0.22;
-      bGroup.add(roofCap);
-
-      if (b.hasHvac) {
-        const hvac = new THREE.Mesh(hvacGeo, hvacMat);
-        hvac.position.set((idx % 3) - 1, groundH + upperH + 1.0, 0);
-        hvac.castShadow = true;
-        bGroup.add(hvac);
-      }
+    const modelObj = instantiateBuildingFromPack(b, idx);
+    if (modelObj) {
+      modelObj.position.set(b.cx, baseY, b.cz);
+      modelObj.rotation.y = rotY;
+      modelObj.userData.mapBuildingId = b.id;
+      freezeStatic(modelObj);
+      hierarchy.world.buildings.add(modelObj);
+      buildingMeshesById.set(b.id, modelObj);
     } else {
-      const facadeMat =
-        facadeMats.length > 0 ? facadeMats[idx % facadeMats.length] : brickMat;
-      const mesh = new THREE.Mesh(
+      const fallbackMesh = new THREE.Mesh(
         new THREE.BoxGeometry(b.width, b.height, b.depth),
-        facadeMat,
+        fallbackBrickMat,
       );
-      mesh.position.y = b.height * 0.5;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.userData.mapBuildingId = b.id;
-      bGroup.add(mesh);
+      fallbackMesh.position.set(b.cx, baseY + b.height * 0.5, b.cz);
+      fallbackMesh.rotation.y = rotY;
+      fallbackMesh.castShadow = true;
+      fallbackMesh.receiveShadow = true;
+      fallbackMesh.userData.mapBuildingId = b.id;
+      freezeStatic(fallbackMesh);
+      hierarchy.world.buildings.add(fallbackMesh);
+      buildingMeshesById.set(b.id, fallbackMesh);
     }
-
-    freezeStatic(bGroup);
-    hierarchy.world.buildings.add(bGroup);
-    buildingMeshesById.set(b.id, bGroup);
 
     if (b.collidable) {
       const obsW = b.hasAwning || b.facadeStyle === 'storefront' ? b.width + 0.5 : b.width;
       const obsD = b.hasAwning || b.facadeStyle === 'storefront' ? b.depth + 0.5 : b.depth;
-      obstacles.push(
-        makeObstacleBox(
-          b.cx,
-          b.cz,
-          obsW,
-          obsD,
-          b.kind === 'station' ? 'station' : 'building',
-          rotY,
-        ),
-      );
+      const obsKind =
+        b.facadeStyle === 'fountain' || b.kind === 'fountain'
+          ? 'fountain'
+          : b.kind === 'station' || b.facadeStyle === 'station_hall' || b.facadeStyle === 'station_glass' || b.facadeStyle === 'trim'
+          ? 'station'
+          : 'building';
+      obstacles.push(makeObstacleBox(b.cx, b.cz, obsW, obsD, obsKind, rotY));
     }
   });
 
@@ -628,11 +507,11 @@ export function buildTownEnvironment(
 
   // Procedural road signs
   if (map.signs && map.signs.length > 0) {
-    buildRoadSigns(hierarchy, map, signMeshesById, obstacles);
+    buildRoadSigns(hierarchy, map, signMeshesById, obstacles, assets, textures);
   }
 
-  buildInstancedTrees(hierarchy, treePalette, map.trees);
-  buildInstancedStreetlights(hierarchy, map.streetlights, textures);
+  buildInstancedTrees(hierarchy, treePalette, map.trees, assets, textures);
+  buildInstancedStreetlights(hierarchy, map.streetlights, textures, assets);
 
   return {
     obstacles,
@@ -725,6 +604,8 @@ function buildRoadSigns(
   map: CustomMapAsset,
   signMeshesById: Map<string, THREE.Object3D>,
   obstacles: ObstacleAABB[],
+  assets?: LoadedJsonAssets,
+  textures?: TextureRegistry,
 ): void {
   const signs = map.signs ?? [];
   if (signs.length === 0) return;
@@ -735,6 +616,7 @@ function buildRoadSigns(
     metalness: 0.65,
     roughness: 0.38,
   });
+  const defaultSignModelId = assets?.config.world.propModels?.roadSign ?? 'prop_road_sign';
 
   for (const sign of signs) {
     const spec = getSignVisualSpec(sign);
@@ -747,21 +629,42 @@ function buildRoadSigns(
     group.rotation.y = rotY;
     group.userData.mapSignId = sign.id;
 
-    const poleMat = sign.poleColor
-      ? new THREE.MeshStandardMaterial({
-          color: parseInt(sign.poleColor.replace('#', ''), 16),
-          metalness: 0.65,
-          roughness: 0.38,
-        })
-      : poleBackMat;
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.045, 0.055, poleH, 8),
-      poleMat,
-    );
-    pole.position.y = poleH * 0.5;
-    pole.castShadow = true;
-    pole.userData.mapSignId = sign.id;
-    group.add(pole);
+    const signModelId = sign.modelRef ?? defaultSignModelId;
+    const signModelDef = assets?.models[signModelId];
+    if (signModelDef && textures) {
+      const builtPost = buildJsonModel(
+        signModelDef,
+        textures.byId,
+        sign.poleColor
+          ? { pole: parseInt(sign.poleColor.replace('#', ''), 16) }
+          : undefined,
+        undefined,
+        textures.magentaFallback,
+        undefined,
+        assets.materials,
+      );
+      builtPost.root.scale.set(1, poleH, 1);
+      builtPost.root.traverse((ch) => {
+        ch.userData.mapSignId = sign.id;
+      });
+      group.add(builtPost.root);
+    } else {
+      const poleMat = sign.poleColor
+        ? new THREE.MeshStandardMaterial({
+            color: parseInt(sign.poleColor.replace('#', ''), 16),
+            metalness: 0.65,
+            roughness: 0.38,
+          })
+        : poleBackMat;
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.045, 0.055, poleH, 8),
+        poleMat,
+      );
+      pole.position.y = poleH * 0.5;
+      pole.castShadow = true;
+      pole.userData.mapSignId = sign.id;
+      group.add(pole);
+    }
 
     const cacheKey = `${spec.shape}:${sign.text}:${sign.subtext ?? ''}:${spec.bgColor}:${spec.borderColor}:${spec.textColor}`;
     let plateTex = texCache.get(cacheKey);
@@ -825,23 +728,62 @@ function buildRoadSigns(
   }
 }
 
+function extractPartGeoAndMat(
+  built: BuiltJsonModel | null,
+  tagName: string,
+  fallbackGeo: THREE.BufferGeometry,
+  fallbackMat: THREE.Material,
+): { geo: THREE.BufferGeometry; mat: THREE.Material } {
+  if (built) {
+    const tagged = built.tags[tagName]?.[0] as THREE.Mesh | undefined;
+    const candidate = tagged ?? (built.root.getObjectByName(tagName) as THREE.Mesh | undefined);
+    if (candidate && candidate instanceof THREE.Mesh && candidate.geometry) {
+      const geo = candidate.geometry.clone();
+      geo.translate(candidate.position.x, candidate.position.y, candidate.position.z);
+      const mat = Array.isArray(candidate.material) ? candidate.material[0] : candidate.material;
+      return { geo, mat: mat ?? fallbackMat };
+    }
+  }
+  return { geo: fallbackGeo, mat: fallbackMat };
+}
+
 function buildInstancedTrees(
   hierarchy: SceneWorldHierarchy,
   treePalette: string[],
   trees: CustomMapAsset['trees'],
+  assets?: LoadedJsonAssets,
+  textures?: TextureRegistry,
 ): void {
   if (trees.length === 0) return;
 
-  const trunkGeo = new THREE.CylinderGeometry(0.24, 0.34, 2.6, 7);
-  trunkGeo.translate(0, 1.3, 0);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.92 });
+  const treeModelId = assets?.config.world.propModels?.tree ?? 'prop_tree';
+  const treeModelDef = assets?.models[treeModelId];
+  const builtTree =
+    treeModelDef && textures
+      ? buildJsonModel(
+          treeModelDef,
+          textures.byId,
+          undefined,
+          undefined,
+          textures.magentaFallback,
+          undefined,
+          assets.materials,
+        )
+      : null;
 
-  const crownGeo = new THREE.DodecahedronGeometry(2.3, 1);
-  crownGeo.translate(0, 4.1, 0);
-  const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
+  const fallbackTrunkGeo = new THREE.CylinderGeometry(0.24, 0.34, 2.6, 7);
+  fallbackTrunkGeo.translate(0, 1.3, 0);
+  const fallbackTrunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.92 });
 
-  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
-  const crowns = new THREE.InstancedMesh(crownGeo, crownMat, trees.length);
+  const fallbackCrownGeo = new THREE.DodecahedronGeometry(2.3, 1);
+  fallbackCrownGeo.translate(0, 4.1, 0);
+  const fallbackCrownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
+
+  const trunkSpec = extractPartGeoAndMat(builtTree, 'trunk', fallbackTrunkGeo, fallbackTrunkMat);
+  const crownSpec = extractPartGeoAndMat(builtTree, 'crown', fallbackCrownGeo, fallbackCrownMat);
+
+  const trunks = new THREE.InstancedMesh(trunkSpec.geo, trunkSpec.mat, trees.length);
+  const crowns = new THREE.InstancedMesh(crownSpec.geo, crownSpec.mat, trees.length);
   trunks.castShadow = true;
   crowns.castShadow = true;
   crowns.receiveShadow = true;
@@ -876,27 +818,45 @@ function buildInstancedStreetlights(
   hierarchy: SceneWorldHierarchy,
   streetlights: CustomMapAsset['streetlights'],
   textures: TextureRegistry,
+  assets?: LoadedJsonAssets,
 ): void {
   if (streetlights.length === 0) return;
 
-  const poleGeo = new THREE.CylinderGeometry(0.11, 0.16, 6.2, 8);
-  poleGeo.translate(0, 3.1, 0);
-  const poleMat = new THREE.MeshStandardMaterial({
+  const lightModelId = assets?.config.world.propModels?.streetlight ?? 'prop_streetlight';
+  const lightModelDef = assets?.models[lightModelId];
+  const builtLight = lightModelDef
+    ? buildJsonModel(
+        lightModelDef,
+        textures.byId,
+        undefined,
+        undefined,
+        textures.magentaFallback,
+        undefined,
+        assets.materials,
+      )
+    : null;
+
+  const fallbackPoleGeo = new THREE.CylinderGeometry(0.11, 0.16, 6.2, 8);
+  fallbackPoleGeo.translate(0, 3.1, 0);
+  const fallbackPoleMat = new THREE.MeshStandardMaterial({
     color: 0x334155,
     metalness: 0.7,
     roughness: 0.35,
   });
 
-  const bulbGeo = new THREE.BoxGeometry(0.45, 0.16, 0.45);
-  bulbGeo.translate(0, 6.2, 0);
-  const bulbMat = new THREE.MeshStandardMaterial({
+  const fallbackBulbGeo = new THREE.BoxGeometry(0.45, 0.16, 0.45);
+  fallbackBulbGeo.translate(0, 6.2, 0);
+  const fallbackBulbMat = new THREE.MeshStandardMaterial({
     color: 0xfef3c7,
     emissive: 0xfde68a,
     emissiveIntensity: 1.5,
   });
 
-  const poles = new THREE.InstancedMesh(poleGeo, poleMat, streetlights.length);
-  const bulbs = new THREE.InstancedMesh(bulbGeo, bulbMat, streetlights.length);
+  const poleSpec = extractPartGeoAndMat(builtLight, 'pole', fallbackPoleGeo, fallbackPoleMat);
+  const bulbSpec = extractPartGeoAndMat(builtLight, 'bulb', fallbackBulbGeo, fallbackBulbMat);
+
+  const poles = new THREE.InstancedMesh(poleSpec.geo, poleSpec.mat, streetlights.length);
+  const bulbs = new THREE.InstancedMesh(bulbSpec.geo, bulbSpec.mat, streetlights.length);
 
   const haloMat = new THREE.SpriteMaterial({
     map: textures.lightHalo,

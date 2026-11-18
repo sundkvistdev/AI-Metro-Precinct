@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
+import { playBoundAudioEvent } from './eventBindings';
 import { getSurfaceHeight, WorldConfig } from './roadGraph';
 import {
   ActiveCrime,
+  AssailantActor,
   BulletTracer,
   CivilianVehicle,
   OfficerActor,
@@ -147,6 +149,7 @@ export class CombatSystem {
   private vfx: SimVfxManager;
   private tracers: BulletTracer[] = [];
 
+  private config: EngineConfigAsset | null = null;
   private weapons: WeaponsConfig | null = null;
   private world: WorldConfig | null = null;
   private map: CustomMapAsset | null = null;
@@ -165,6 +168,7 @@ export class CombatSystem {
   }
 
   public configure(config: EngineConfigAsset, map?: CustomMapAsset): void {
+    this.config = config;
     this.weapons = config.weapons;
     this.world = config.world;
     this.map = map ?? null;
@@ -189,12 +193,12 @@ export class CombatSystem {
   public resolveVehicleHumanoidCollisions(
     vehicles: VehicleHumanoidCollider[],
     pedestrians: PedestrianActor[],
-    units: PoliceUnit[],
-    crimes: ActiveCrime[],
+    officers: OfficerActor[],
+    assailants: AssailantActor[],
     staticBvh: StaticObstacleBVH,
     audio: JsonAudioSynth | null,
     onPedCasualty?: () => void,
-    onSuspectNeutralized?: () => void,
+    onSuspectNeutralized?: (assailant: AssailantActor) => void,
   ): void {
     if (!this.world && !this.map) return;
     const surface = this.surfaceSource;
@@ -280,84 +284,83 @@ export class CombatSystem {
             Math.min(1.5, v.speed / 8.5),
             diedNow || v.speed > 5.0,
           );
-          audio?.playAssetAt('ped_impact', ped.pos);
+          playBoundAudioEvent(audio, this.config, 'ped_impact', ped.pos);
           ped.panicTimer = 10.0;
         }
         if (!ped.ragdoll.active) {
-          ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surface);
+          ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surface) + ped.jumpY;
           ped.rig.root.position.copy(ped.pos);
         }
       }
 
-      // 2) Dismounted Police Officers
-      for (const u of units) {
-        if (u.mounted) continue;
-        for (const off of u.officers) {
-          if (off.mountPhase === 'boarding') continue;
-          const res = testHitAndPush(off.pos, v);
-          if (!res.hit) continue;
+      // 2) Dismounted Police Officers (both unit-assigned & standalone)
+      for (const off of officers) {
+        if (off.boardingState !== 'dismounted' || off.mountPhase === 'boarding') continue;
+        const res = testHitAndPush(off.pos, v);
+        if (!res.hit) continue;
 
-          if (off.hp > 0 && !off.ragdoll.active && v.speed >= 1.25) {
-            const dmg = v.speed >= 10.5 ? 100 : (v.speed - 0.9) * 9.5;
-            off.hp = Math.max(0, off.hp - dmg);
-            off.morale = Math.max(0, off.morale - 36);
-            const died = off.hp <= 0;
-            const knockSpd = Math.min(13, v.speed * 0.72);
-            triggerRagdoll(
-              off.ragdoll,
-              this.rng,
-              fwdX * knockSpd + res.pushX * 3.4,
-              2.8 + Math.min(3.4, v.speed * 0.16),
-              fwdZ * knockSpd + res.pushZ * 3.4,
-              died ? 9999 : 3.2,
-            );
-            this.vfx.spawnBloodImpact(
-              off.pos.x,
-              off.pos.y + 0.85,
-              off.pos.z,
-              fwdX,
-              fwdZ,
-              Math.min(1.4, v.speed / 9),
-              died || v.speed > 5.5,
-            );
-            audio?.playAssetAt('ped_impact', off.pos);
+        if (off.hp > 0 && !off.ragdoll.active && v.speed >= 1.25) {
+          const dmg = v.speed >= 10.5 ? 100 : (v.speed - 0.9) * 9.5;
+          off.hp = Math.max(0, off.hp - dmg);
+          off.morale = Math.max(0, off.morale - 36);
+          const died = off.hp <= 0;
+          const knockSpd = Math.min(13, v.speed * 0.72);
+          triggerRagdoll(
+            off.ragdoll,
+            this.rng,
+            fwdX * knockSpd + res.pushX * 3.4,
+            2.8 + Math.min(3.4, v.speed * 0.16),
+            fwdZ * knockSpd + res.pushZ * 3.4,
+            died ? 9999 : 3.2,
+          );
+          this.vfx.spawnBloodImpact(
+            off.pos.x,
+            off.pos.y + 0.85,
+            off.pos.z,
+            fwdX,
+            fwdZ,
+            Math.min(1.4, v.speed / 9),
+            died || v.speed > 5.5,
+          );
+          playBoundAudioEvent(audio, this.config, 'ped_impact', off.pos);
 
-            if (died) {
-              if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
-              for (const partner of u.officers) {
-                if (partner !== off && partner.hp > 0) {
+          if (died) {
+            if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
+            if (off.unitId) {
+              for (const partner of officers) {
+                if (partner.unitId === off.unitId && partner !== off && partner.hp > 0) {
                   partner.morale = Math.max(0, partner.morale - (partner.isHeavy ? 14 : 40));
                 }
               }
             }
           }
-          if (!off.ragdoll.active) {
-            off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, surface);
-            off.rig.root.position.copy(off.pos);
-          }
+        }
+        if (!off.ragdoll.active) {
+          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, surface);
+          off.rig.root.position.copy(off.pos);
         }
       }
 
-      // 3) Foot Suspects
-      for (const c of crimes) {
-        if (!c.suspectAlive || c.inVehiclePursuit) continue;
-        const res = testHitAndPush(c.suspectPos, v);
+      // 3) Foot Assailants (crime-linked & standalone)
+      for (const as of assailants) {
+        if (!as.alive || as.inVehicle) continue;
+        const res = testHitAndPush(as.pos, v);
         if (!res.hit) continue;
 
-        if (!c.suspectRagdoll.active && v.speed >= 1.15) {
+        if (!as.ragdoll.active && v.speed >= 1.15) {
           const dmg = v.speed >= 9.0 ? 130 : (v.speed - 0.8) * 12.5;
-          c.suspectHp = Math.max(0, c.suspectHp - dmg);
-          const knockedOut = c.suspectHp <= 0;
+          as.hp = Math.max(0, as.hp - dmg);
+          const knockedOut = as.hp <= 0;
           const knockSpd = Math.min(14, v.speed * 0.76);
 
           if (knockedOut) {
-            c.suspectAlive = false;
-            onSuspectNeutralized?.();
-            if (c.suspectRig.threatRing) c.suspectRig.threatRing.visible = false;
-            if (c.suspectRig.muzzleFlash) c.suspectRig.muzzleFlash.visible = false;
+            as.alive = false;
+            onSuspectNeutralized?.(as);
+            if (as.rig.threatRing) as.rig.threatRing.visible = false;
+            if (as.rig.muzzleFlash) as.rig.muzzleFlash.visible = false;
           }
           triggerRagdoll(
-            c.suspectRagdoll,
+            as.ragdoll,
             this.rng,
             fwdX * knockSpd + res.pushX * 3.5,
             3.0 + Math.min(3.5, v.speed * 0.17),
@@ -365,19 +368,19 @@ export class CombatSystem {
             knockedOut ? 9999 : 2.6,
           );
           this.vfx.spawnBloodImpact(
-            c.suspectPos.x,
-            c.suspectPos.y + 0.85,
-            c.suspectPos.z,
+            as.pos.x,
+            as.pos.y + 0.85,
+            as.pos.z,
             fwdX,
             fwdZ,
             Math.min(1.5, v.speed / 8.5),
             knockedOut || v.speed > 5.0,
           );
-          audio?.playAssetAt('ped_impact', c.suspectPos);
+          playBoundAudioEvent(audio, this.config, 'ped_impact', as.pos);
         }
-        if (!c.suspectRagdoll.active) {
-          c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, surface);
-          c.suspectRig.root.position.copy(c.suspectPos);
+        if (!as.ragdoll.active) {
+          as.pos.y = getSurfaceHeight(as.pos.x, as.pos.z, surface);
+          as.rig.root.position.copy(as.pos);
         }
       }
     }
@@ -385,38 +388,38 @@ export class CombatSystem {
 
   public resolveHumanoidMutualCollisions(
     pedestrians: PedestrianActor[],
-    units: PoliceUnit[],
-    crimes: ActiveCrime[],
+    officers: OfficerActor[],
+    assailants: AssailantActor[],
     staticBvh: StaticObstacleBVH,
   ): void {
     if (!this.world && !this.map) return;
     const surface = this.surfaceSource;
-    const entries: Array<{ pos: THREE.Vector3; root: THREE.Object3D; mobile: boolean }> = [];
+    const entries: Array<{ pos: THREE.Vector3; root: THREE.Object3D; mobile: boolean; yAdd: number }> = [];
 
     for (const p of pedestrians) {
       entries.push({
         pos: p.pos,
         root: p.rig.root,
         mobile: !p.dead && !p.ragdoll.active,
+        yAdd: p.jumpY,
       });
     }
-    for (const u of units) {
-      if (u.mounted) continue;
-      for (const o of u.officers) {
-        if (o.mountPhase === 'boarding') continue;
-        entries.push({
-          pos: o.pos,
-          root: o.rig.root,
-          mobile: o.hp > 0 && !o.ragdoll.active,
-        });
-      }
-    }
-    for (const c of crimes) {
-      if (c.inVehiclePursuit) continue;
+    for (const o of officers) {
+      if (o.boardingState !== 'dismounted' || o.mountPhase === 'boarding') continue;
       entries.push({
-        pos: c.suspectPos,
-        root: c.suspectRig.root,
-        mobile: c.suspectAlive && !c.suspectRagdoll.active,
+        pos: o.pos,
+        root: o.rig.root,
+        mobile: o.hp > 0 && !o.ragdoll.active,
+        yAdd: 0,
+      });
+    }
+    for (const a of assailants) {
+      if (a.inVehicle) continue;
+      entries.push({
+        pos: a.pos,
+        root: a.rig.root,
+        mobile: a.alive && !a.ragdoll.active,
+        yAdd: 0,
       });
     }
 
@@ -445,21 +448,21 @@ export class CombatSystem {
           b.pos.z += nz * push * 0.5;
           staticBvh.resolveCircle(a.pos, 0.44);
           staticBvh.resolveCircle(b.pos, 0.44);
-          a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface);
-          b.pos.y = getSurfaceHeight(b.pos.x, b.pos.z, surface);
+          a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface) + a.yAdd;
+          b.pos.y = getSurfaceHeight(b.pos.x, b.pos.z, surface) + b.yAdd;
           a.root.position.copy(a.pos);
           b.root.position.copy(b.pos);
         } else if (a.mobile) {
           a.pos.x -= nx * push;
           a.pos.z -= nz * push;
           staticBvh.resolveCircle(a.pos, 0.44);
-          a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface);
+          a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface) + a.yAdd;
           a.root.position.copy(a.pos);
         } else {
           b.pos.x += nx * push;
           b.pos.z += nz * push;
           staticBvh.resolveCircle(b.pos, 0.44);
-          b.pos.y = getSurfaceHeight(b.pos.x, b.pos.z, surface);
+          b.pos.y = getSurfaceHeight(b.pos.x, b.pos.z, surface) + b.yAdd;
           b.root.position.copy(b.pos);
         }
       }
@@ -469,8 +472,8 @@ export class CombatSystem {
   public updateOfficerCombat(
     off: OfficerActor,
     idx: number,
-    crime: ActiveCrime,
-    unit: PoliceUnit,
+    targetAssailant: AssailantActor,
+    anchorPos: THREE.Vector3 | null,
     cowardiceLevel: number,
     staticBvh: StaticObstacleBVH,
     pedestrians: PedestrianActor[],
@@ -507,8 +510,8 @@ export class CombatSystem {
       return;
     }
 
-    const dx = crime.suspectPos.x - off.pos.x;
-    const dz = crime.suspectPos.z - off.pos.z;
+    const dx = targetAssailant.pos.x - off.pos.x;
+    const dz = targetAssailant.pos.z - off.pos.z;
     const dist = Math.hypot(dx, dz) || 1;
     const ux = dx / dist;
     const uz = dz / dist;
@@ -529,14 +532,16 @@ export class CombatSystem {
     }
 
     if (off.cowardiceState === 'fleeing') {
-      const fleeDx = unit.pos.x - off.pos.x;
-      const fleeDz = unit.pos.z - off.pos.z;
-      const fleeDist = Math.hypot(fleeDx, fleeDz);
       let dirX = -ux;
       let dirZ = -uz;
-      if (fleeDist > 1.8) {
-        dirX = fleeDx / fleeDist;
-        dirZ = fleeDz / fleeDist;
+      if (anchorPos) {
+        const fleeDx = anchorPos.x - off.pos.x;
+        const fleeDz = anchorPos.z - off.pos.z;
+        const fleeDist = Math.hypot(fleeDx, fleeDz);
+        if (fleeDist > 1.8) {
+          dirX = fleeDx / fleeDist;
+          dirZ = fleeDz / fleeDist;
+        }
       }
       off.yaw = Math.atan2(dirX, dirZ);
       off.pos.x += dirX * 5.8 * dt;
@@ -569,8 +574,8 @@ export class CombatSystem {
     const hasLos = staticBvh.raycastSegment(
       off.pos.x,
       off.pos.z,
-      crime.suspectPos.x,
-      crime.suspectPos.z,
+      targetAssailant.pos.x,
+      targetAssailant.pos.z,
     ).clear;
 
     off.strafeTimer -= dt;
@@ -579,14 +584,15 @@ export class CombatSystem {
       off.strafeSign = off.strafeSign === 1 ? -1 : 1;
     }
 
-    const perpX = -uz * (idx === 0 ? 1 : -1) * off.strafeSign;
-    const perpZ = ux * (idx === 0 ? 1 : -1) * off.strafeSign;
+    const perpX = -uz * (idx % 2 === 0 ? 1 : -1) * off.strafeSign;
+    const perpZ = ux * (idx % 2 === 0 ? 1 : -1) * off.strafeSign;
 
     let moveX = 0;
     let moveZ = 0;
     let moving = false;
     const isSuppressed = off.cowardiceState === 'suppressed';
-    const preferredRange = off.weaponKind === 'rifle' ? (idx === 0 ? 14.5 : 17.5) : idx === 0 ? 9.5 : 12.0;
+    const preferredRange =
+      off.weaponKind === 'rifle' ? (idx % 2 === 0 ? 14.5 : 17.5) : idx % 2 === 0 ? 9.5 : 12.0;
 
     if (isSuppressed) {
       off.rig.torso.position.y = THREE.MathUtils.damp(
@@ -720,18 +726,20 @@ export class CombatSystem {
         off.pos.x + Math.sin(off.yaw) * muzzleAdvance,
         off.pos.y + 1.38,
         off.pos.z + Math.cos(off.yaw) * muzzleAdvance,
-        crime.suspectPos.x,
-        crime.suspectPos.y + 1.24,
-        crime.suspectPos.z,
+        targetAssailant.pos.x,
+        targetAssailant.pos.y + 1.24,
+        targetAssailant.pos.z,
         spread,
         off.weaponKind,
         dmg,
         spec.armorPen,
         false,
-        unit.id,
+        off.unitId,
       );
-      audio?.playAssetAt(
-        off.weaponKind === 'rifle' ? 'gunshot_rifle' : 'gunshot_police',
+      playBoundAudioEvent(
+        audio,
+        this.config,
+        off.weaponKind === 'rifle' ? 'weapon_fire_rifle' : 'weapon_fire_pistol',
         off.pos,
       );
 
@@ -749,7 +757,7 @@ export class CombatSystem {
   public updateOfficerFreeRoam(
     off: OfficerActor,
     idx: number,
-    unit: PoliceUnit,
+    anchorPos: THREE.Vector3 | null,
     staticBvh: StaticObstacleBVH,
     dt: number,
   ): void {
@@ -810,8 +818,10 @@ export class CombatSystem {
 
     off.roamTimer -= dt;
     if (!off.roamTarget || off.roamTimer <= 0) {
-      const anchorX = THREE.MathUtils.lerp(off.pos.x, unit.pos.x, 0.2);
-      const anchorZ = THREE.MathUtils.lerp(off.pos.z, unit.pos.z, 0.2);
+      const baseAnchorX = anchorPos ? anchorPos.x : off.pos.x;
+      const baseAnchorZ = anchorPos ? anchorPos.z : off.pos.z;
+      const anchorX = THREE.MathUtils.lerp(off.pos.x, baseAnchorX, 0.2);
+      const anchorZ = THREE.MathUtils.lerp(off.pos.z, baseAnchorZ, 0.2);
       let picked: THREE.Vector3 | null = null;
       for (let attempt = 0; attempt < 6; attempt++) {
         const ang = this.rng() * Math.PI * 2;
@@ -826,7 +836,11 @@ export class CombatSystem {
           break;
         }
       }
-      const fbX = THREE.MathUtils.clamp(off.pos.x + (idx === 0 ? 12 : -12), -roamBound + 4, roamBound - 4);
+      const fbX = THREE.MathUtils.clamp(
+        off.pos.x + (idx % 2 === 0 ? 12 : -12),
+        -roamBound + 4,
+        roamBound - 4,
+      );
       const fbZ = THREE.MathUtils.clamp(off.pos.z + 10, -roamBound + 4, roamBound - 4);
       off.roamTarget = picked ?? new THREE.Vector3(fbX, getSurfaceHeight(fbX, fbZ, world), fbZ);
       off.roamTimer = 7 + this.rng() * 5;
@@ -851,7 +865,7 @@ export class CombatSystem {
 
       const moved = Math.hypot(off.pos.x - prevX, off.pos.z - prevZ);
       if (moved < spd * dt * 0.25) {
-        const slideSign = idx === 0 ? 1 : -1;
+        const slideSign = idx % 2 === 0 ? 1 : -1;
         off.pos.x += -uz * slideSign * spd * dt;
         off.pos.z += ux * slideSign * spd * dt;
         staticBvh.resolveCircle(off.pos, 0.48);
@@ -884,9 +898,9 @@ export class CombatSystem {
     off.rig.root.rotation.y = off.yaw;
   }
 
-  public updateFootCrimeSuspect(
-    c: ActiveCrime,
-    units: PoliceUnit[],
+  public updateAssailantCombat(
+    assailant: AssailantActor,
+    officers: OfficerActor[],
     cowardiceLevel: number,
     staticBvh: StaticObstacleBVH,
     audio: JsonAudioSynth | null,
@@ -897,63 +911,78 @@ export class CombatSystem {
     const world = this.surfaceSource;
     const roamBound = Math.max(120, this.mapHalfSize - 35);
 
-    if (c.suspectRig.threatRing) {
-      const s = 1 + Math.sin(simTime * 5) * 0.12;
-      c.suspectRig.threatRing.scale.set(s, s, 1);
+    if (assailant.muzzleTimer > 0) {
+      assailant.muzzleTimer -= dt;
+      if (assailant.muzzleTimer <= 0 && assailant.rig.muzzleFlash) {
+        assailant.rig.muzzleFlash.visible = false;
+      }
     }
 
-    if (c.suspectRagdoll.active) {
-      stepRagdollPhysics(c.suspectRagdoll, c.suspectPos, c.suspectRig, staticBvh, world, dt);
-      c.suspectRagdoll.recoverTimer -= dt;
-      if (c.suspectRagdoll.recoverTimer <= 0 && c.suspectAlive) {
-        c.suspectRagdoll.active = false;
-        c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, world);
-        c.suspectRig.root.rotation.set(0, c.suspectYaw, 0);
-        c.suspectRig.torso.position.y = c.suspectRig.torsoBaseY;
+    if (assailant.rig.threatRing) {
+      assailant.rig.threatRing.visible = assailant.alive && !assailant.inVehicle;
+      if (assailant.rig.threatRing.visible) {
+        const s = 1 + Math.sin(simTime * 5) * 0.12;
+        assailant.rig.threatRing.scale.set(s, s, 1);
+      }
+    }
+
+    if (assailant.inVehicle) return;
+
+    if (!assailant.alive) {
+      if (assailant.ragdoll.active) {
+        stepRagdollPhysics(assailant.ragdoll, assailant.pos, assailant.rig, staticBvh, world, dt);
+      }
+      return;
+    }
+
+    if (assailant.ragdoll.active) {
+      stepRagdollPhysics(assailant.ragdoll, assailant.pos, assailant.rig, staticBvh, world, dt);
+      assailant.ragdoll.recoverTimer -= dt;
+      if (assailant.ragdoll.recoverTimer <= 0 && assailant.alive) {
+        assailant.ragdoll.active = false;
+        assailant.pos.y = getSurfaceHeight(assailant.pos.x, assailant.pos.z, world);
+        assailant.rig.root.rotation.set(0, assailant.yaw, 0);
+        assailant.rig.torso.position.y = assailant.rig.torsoBaseY;
       }
       return;
     }
 
     let targetOfficer: OfficerActor | null = null;
     let minD = Infinity;
-    for (const u of units) {
-      if (!u.mounted) {
-        for (const o of u.officers) {
-          if (o.hp <= 0 || o.ragdoll.active) continue;
-          const d = o.pos.distanceToSquared(c.suspectPos);
-          if (d < minD) {
-            minD = d;
-            targetOfficer = o;
-          }
-        }
+    for (const o of officers) {
+      if (o.boardingState !== 'dismounted' || o.hp <= 0 || o.ragdoll.active) continue;
+      const d = o.pos.distanceToSquared(assailant.pos);
+      if (d < minD) {
+        minD = d;
+        targetOfficer = o;
       }
     }
 
-    c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, world);
+    assailant.pos.y = getSurfaceHeight(assailant.pos.x, assailant.pos.z, world);
 
-    if (targetOfficer && minD < 40 * 40) {
-      const dx = targetOfficer.pos.x - c.suspectPos.x;
-      const dz = targetOfficer.pos.z - c.suspectPos.z;
+    if (targetOfficer && minD < 44 * 44) {
+      const dx = targetOfficer.pos.x - assailant.pos.x;
+      const dz = targetOfficer.pos.z - assailant.pos.z;
       const dist = Math.hypot(dx, dz) || 1;
       const ux = dx / dist;
       const uz = dz / dist;
       const hasLos = staticBvh.raycastSegment(
-        c.suspectPos.x,
-        c.suspectPos.z,
+        assailant.pos.x,
+        assailant.pos.z,
         targetOfficer.pos.x,
         targetOfficer.pos.z,
       ).clear;
 
-      c.suspectYaw = Math.atan2(ux, uz);
-      c.suspectRig.root.rotation.y = c.suspectYaw;
+      assailant.yaw = Math.atan2(ux, uz);
+      assailant.rig.root.rotation.y = assailant.yaw;
 
-      c.suspectMoveTimer -= dt;
-      if (c.suspectMoveTimer <= 0) {
-        c.suspectMoveTimer = 1.4 + this.rng() * 1.6;
-        c.suspectStrafeDir = c.suspectStrafeDir === 1 ? -1 : 1;
+      assailant.moveTimer -= dt;
+      if (assailant.moveTimer <= 0) {
+        assailant.moveTimer = 1.4 + this.rng() * 1.6;
+        assailant.strafeDir = assailant.strafeDir === 1 ? -1 : 1;
       }
-      const perpX = -uz * c.suspectStrafeDir;
-      const perpZ = ux * c.suspectStrafeDir;
+      const perpX = -uz * assailant.strafeDir;
+      const perpZ = ux * assailant.strafeDir;
       let moveX = perpX * 0.85;
       let moveZ = perpZ * 0.85;
       if (dist < 7.5) {
@@ -964,114 +993,142 @@ export class CombatSystem {
         moveZ += uz * 0.35;
       }
       const mLen = Math.hypot(moveX, moveZ) || 1;
-      const spd = c.suspectHp < 45 ? 4.4 : 3.2;
-      c.suspectPos.x += (moveX / mLen) * spd * dt;
-      c.suspectPos.z += (moveZ / mLen) * spd * dt;
-      staticBvh.resolveCircle(c.suspectPos, 0.5);
-      c.suspectPos.x = THREE.MathUtils.clamp(c.suspectPos.x, -roamBound, roamBound);
-      c.suspectPos.z = THREE.MathUtils.clamp(c.suspectPos.z, -roamBound, roamBound);
-      c.suspectPos.y = getSurfaceHeight(c.suspectPos.x, c.suspectPos.z, world);
-      c.suspectRig.root.position.copy(c.suspectPos);
+      const spd = assailant.hp < 45 ? 4.4 : 3.2;
+      assailant.pos.x += (moveX / mLen) * spd * dt;
+      assailant.pos.z += (moveZ / mLen) * spd * dt;
+      staticBvh.resolveCircle(assailant.pos, 0.5);
+      assailant.pos.x = THREE.MathUtils.clamp(assailant.pos.x, -roamBound, roamBound);
+      assailant.pos.z = THREE.MathUtils.clamp(assailant.pos.z, -roamBound, roamBound);
+      assailant.pos.y = getSurfaceHeight(assailant.pos.x, assailant.pos.z, world);
+      assailant.rig.root.position.copy(assailant.pos);
 
-      c.suspectWalkPhase += dt * 9;
-      const legSwing = Math.sin(c.suspectWalkPhase) * 0.42;
-      c.suspectRig.leftLeg.rotation.x = legSwing;
-      c.suspectRig.rightLeg.rotation.x = -legSwing;
+      assailant.walkPhase += dt * 9;
+      const legSwing = Math.sin(assailant.walkPhase) * 0.42;
+      assailant.rig.leftLeg.rotation.x = legSwing;
+      assailant.rig.rightLeg.rotation.x = -legSwing;
 
-      const sSpec = this.weapons[c.suspectWeaponKind];
-      if (c.suspectReloadTimer > 0) {
-        c.suspectReloadTimer -= dt;
-        c.suspectRig.rightArm.rotation.x = THREE.MathUtils.damp(
-          c.suspectRig.rightArm.rotation.x,
+      const sSpec = this.weapons[assailant.weaponKind];
+      if (assailant.reloadTimer > 0) {
+        assailant.reloadTimer -= dt;
+        assailant.rig.rightArm.rotation.x = THREE.MathUtils.damp(
+          assailant.rig.rightArm.rotation.x,
           -0.45,
           10,
           dt,
         );
-        c.suspectRig.rightArm.rotation.z = THREE.MathUtils.damp(
-          c.suspectRig.rightArm.rotation.z,
+        assailant.rig.rightArm.rotation.z = THREE.MathUtils.damp(
+          assailant.rig.rightArm.rotation.z,
           0.2,
           10,
           dt,
         );
-        if (c.suspectReloadTimer <= 0) c.suspectAmmo = sSpec.magSize;
+        if (assailant.reloadTimer <= 0) assailant.ammo = sSpec.magSize;
       } else {
-        c.suspectRecoil = THREE.MathUtils.damp(c.suspectRecoil, 0, 14, dt);
-        c.suspectRig.rightArm.rotation.x = THREE.MathUtils.damp(
-          c.suspectRig.rightArm.rotation.x,
-          -Math.PI * 0.46 - c.suspectRecoil,
+        assailant.recoilKick = THREE.MathUtils.damp(assailant.recoilKick, 0, 14, dt);
+        assailant.rig.rightArm.rotation.x = THREE.MathUtils.damp(
+          assailant.rig.rightArm.rotation.x,
+          -Math.PI * 0.46 - assailant.recoilKick,
           12,
           dt,
         );
-        c.suspectRig.rightArm.rotation.z = THREE.MathUtils.damp(
-          c.suspectRig.rightArm.rotation.z,
+        assailant.rig.rightArm.rotation.z = THREE.MathUtils.damp(
+          assailant.rig.rightArm.rotation.z,
           0.18,
           12,
           dt,
         );
-        c.suspectRig.leftArm.rotation.x = THREE.MathUtils.damp(
-          c.suspectRig.leftArm.rotation.x,
+        assailant.rig.leftArm.rotation.x = THREE.MathUtils.damp(
+          assailant.rig.leftArm.rotation.x,
           -Math.PI * 0.4,
           12,
           dt,
         );
-        c.suspectRig.leftArm.rotation.z = THREE.MathUtils.damp(
-          c.suspectRig.leftArm.rotation.z,
+        assailant.rig.leftArm.rotation.z = THREE.MathUtils.damp(
+          assailant.rig.leftArm.rotation.z,
           -0.38,
           12,
           dt,
         );
       }
 
-      c.fireCooldown -= dt;
-      if (hasLos && c.suspectReloadTimer <= 0 && c.fireCooldown <= 0) {
-        c.fireCooldown =
-          c.suspectWeaponKind === 'rifle'
+      assailant.fireCooldown -= dt;
+      if (hasLos && assailant.reloadTimer <= 0 && assailant.fireCooldown <= 0) {
+        assailant.fireCooldown =
+          assailant.weaponKind === 'rifle'
             ? 0.28 + this.rng() * 0.28
             : 0.52 + this.rng() * 0.46;
-        c.muzzleTimer = 0.06;
-        c.suspectRecoil = 0.25;
-        c.suspectAmmo--;
-        if (c.suspectAmmo <= 0) c.suspectReloadTimer = sSpec.reloadTime;
+        assailant.muzzleTimer = 0.06;
+        assailant.recoilKick = 0.25;
+        assailant.ammo--;
+        if (assailant.ammo <= 0) assailant.reloadTimer = sSpec.reloadTime;
 
-        if (c.suspectRig.muzzleFlash) c.suspectRig.muzzleFlash.visible = true;
+        if (assailant.rig.muzzleFlash) assailant.rig.muzzleFlash.visible = true;
         const dmg = sSpec.minDmg + this.rng() * (sSpec.maxDmg - sSpec.minDmg);
-        const spread = c.suspectWeaponKind === 'rifle' ? 0.068 : 0.11;
+        const spread = assailant.weaponKind === 'rifle' ? 0.068 : 0.11;
 
         this.spawnBallisticRound(
-          c.suspectPos.x + Math.sin(c.suspectYaw) * 0.62,
-          c.suspectPos.y + 1.38,
-          c.suspectPos.z + Math.cos(c.suspectYaw) * 0.62,
+          assailant.pos.x + Math.sin(assailant.yaw) * 0.62,
+          assailant.pos.y + 1.38,
+          assailant.pos.z + Math.cos(assailant.yaw) * 0.62,
           targetOfficer.pos.x,
           targetOfficer.pos.y + 1.24,
           targetOfficer.pos.z,
           spread,
-          c.suspectWeaponKind,
+          assailant.weaponKind,
           dmg,
           sSpec.armorPen,
           true,
           null,
         );
-        audio?.playAssetAt(
-          c.suspectWeaponKind === 'rifle' ? 'gunshot_rifle' : 'gunshot_suspect',
-          c.suspectPos,
+        playBoundAudioEvent(
+          audio,
+          this.config,
+          assailant.weaponKind === 'rifle' ? 'weapon_fire_rifle' : 'weapon_fire_suspect',
+          assailant.pos,
         );
 
-        for (const u of units) {
-          if (u.mounted) continue;
-          const fearResist = u.isHeavyUnit ? 0.24 : 1.0;
-          for (const o of u.officers) {
-            if (o.hp <= 0) continue;
-            const odSq = o.pos.distanceToSquared(targetOfficer.pos);
-            if (odSq < 6.5 * 6.5) {
-              const fearHit =
-                (12 + this.rng() * 14) * (0.35 + cowardiceLevel * 1.35) * fearResist;
-              o.morale = Math.max(0, o.morale - fearHit);
-            }
+        for (const o of officers) {
+          if (o.boardingState !== 'dismounted' || o.hp <= 0) continue;
+          const fearResist = o.isHeavy ? 0.24 : 1.0;
+          const odSq = o.pos.distanceToSquared(targetOfficer.pos);
+          if (odSq < 6.5 * 6.5) {
+            const fearHit =
+              (12 + this.rng() * 14) * (0.35 + cowardiceLevel * 1.35) * fearResist;
+            o.morale = Math.max(0, o.morale - fearHit);
           }
         }
       }
+    } else if (!assailant.crimeId) {
+      // Standalone spawned assailants prowl nearby until engaged
+      assailant.roamTimer -= dt;
+      if (!assailant.roamTarget || assailant.roamTimer <= 0) {
+        const ang = this.rng() * Math.PI * 2;
+        const rad = 6 + this.rng() * 14;
+        const cx = THREE.MathUtils.clamp(assailant.pos.x + Math.cos(ang) * rad, -roamBound, roamBound);
+        const cz = THREE.MathUtils.clamp(assailant.pos.z + Math.sin(ang) * rad, -roamBound, roamBound);
+        assailant.roamTarget = new THREE.Vector3(cx, getSurfaceHeight(cx, cz, world), cz);
+        assailant.roamTimer = 5 + this.rng() * 4;
+      }
+      const dx = assailant.roamTarget.x - assailant.pos.x;
+      const dz = assailant.roamTarget.z - assailant.pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 1.0) {
+        assailant.yaw = Math.atan2(dx, dz);
+        assailant.pos.x += (dx / dist) * 2.1 * dt;
+        assailant.pos.z += (dz / dist) * 2.1 * dt;
+        staticBvh.resolveCircle(assailant.pos, 0.5);
+        assailant.walkPhase += dt * 7;
+        const sw = Math.sin(assailant.walkPhase) * 0.4;
+        assailant.rig.leftLeg.rotation.x = sw;
+        assailant.rig.rightLeg.rotation.x = -sw;
+      } else {
+        assailant.roamTarget = null;
+      }
+      assailant.pos.y = getSurfaceHeight(assailant.pos.x, assailant.pos.z, world);
+      assailant.rig.root.position.copy(assailant.pos);
+      assailant.rig.root.rotation.y = assailant.yaw;
     } else {
-      c.suspectRig.root.position.copy(c.suspectPos);
+      assailant.rig.root.position.copy(assailant.pos);
     }
   }
 
@@ -1138,12 +1195,14 @@ export class CombatSystem {
   public updateTracers(
     crimes: ActiveCrime[],
     units: PoliceUnit[],
+    officers: OfficerActor[],
+    assailants: AssailantActor[],
     civilianCars: CivilianVehicle[],
     pedestrians: PedestrianActor[],
     cowardiceLevel: number,
     staticBvh: StaticObstacleBVH,
     dt: number,
-    onSuspectNeutralized: () => void,
+    onSuspectNeutralized: (assailant: AssailantActor) => void,
     onPedCasualty?: () => void,
   ): void {
     if ((!this.world && !this.map) || !this.chassis) return;
@@ -1230,54 +1289,54 @@ export class CombatSystem {
       }
 
       if (!destroyed && !tr.isSuspect) {
-        for (const c of crimes) {
-          if (!c.suspectAlive || c.inVehiclePursuit) continue;
-          const hit = segmentHitsHumanoid(p0, p1, c.suspectPos, 0.56, 1.88);
+        for (const as of assailants) {
+          if (!as.alive || as.inVehicle) continue;
+          const hit = segmentHitsHumanoid(p0, p1, as.pos, 0.56, 1.88);
           if (hit.hit) {
             const vLen = Math.hypot(tr.vel.x, tr.vel.z) || 1;
             const dirX = tr.vel.x / vLen;
             const dirZ = tr.vel.z / vLen;
 
             let dmg = tr.damage;
-            if (c.suspectArmor > 0) {
+            if (as.armor > 0) {
               const absorbShare = 0.52 * (1 - tr.armorPen * 0.65);
-              const absorbed = Math.min(c.suspectArmor, dmg * absorbShare);
-              c.suspectArmor = Math.max(0, c.suspectArmor - absorbed);
+              const absorbed = Math.min(as.armor, dmg * absorbShare);
+              as.armor = Math.max(0, as.armor - absorbed);
               dmg -= absorbed;
               this.vfx.spawnImpactSparks(
-                c.suspectPos.x,
+                as.pos.x,
                 hit.hitY,
-                c.suspectPos.z,
+                as.pos.z,
                 4,
                 0.7,
                 -dirX * 3,
                 -dirZ * 3,
               );
             } else {
-              this.vfx.spawnImpactSparks(c.suspectPos.x, hit.hitY, c.suspectPos.z, 2, 0.45);
+              this.vfx.spawnImpactSparks(as.pos.x, hit.hitY, as.pos.z, 2, 0.45);
             }
 
             const finalDmg = Math.max(4, dmg);
-            c.suspectHp = Math.max(0, c.suspectHp - finalDmg);
-            c.lastHitDir.set(dirX, 0, dirZ);
+            as.hp = Math.max(0, as.hp - finalDmg);
+            as.lastHitDir.set(dirX, 0, dirZ);
 
             this.vfx.spawnBloodImpact(
-              c.suspectPos.x,
+              as.pos.x,
               hit.hitY,
-              c.suspectPos.z,
+              as.pos.z,
               dirX,
               dirZ,
               Math.min(1.5, finalDmg / 18),
-              c.suspectHp <= 0 || finalDmg > 15,
+              as.hp <= 0 || finalDmg > 15,
             );
 
-            if (c.suspectHp <= 0 && c.suspectAlive) {
-              c.suspectAlive = false;
-              onSuspectNeutralized();
-              if (c.suspectRig.threatRing) c.suspectRig.threatRing.visible = false;
-              if (c.suspectRig.muzzleFlash) c.suspectRig.muzzleFlash.visible = false;
+            if (as.hp <= 0 && as.alive) {
+              as.alive = false;
+              onSuspectNeutralized(as);
+              if (as.rig.threatRing) as.rig.threatRing.visible = false;
+              if (as.rig.muzzleFlash) as.rig.muzzleFlash.visible = false;
               triggerRagdoll(
-                c.suspectRagdoll,
+                as.ragdoll,
                 this.rng,
                 dirX * 6.5,
                 3.4,
@@ -1292,64 +1351,63 @@ export class CombatSystem {
       }
 
       if (!destroyed && tr.isSuspect) {
-        for (const u of units) {
-          if (u.mounted) continue;
-          for (const off of u.officers) {
-            if (off.ragdoll.active || off.hp <= 0) continue;
-            const hit = segmentHitsHumanoid(p0, p1, off.pos, 0.54, 1.84);
-            if (hit.hit) {
-              const vLen = Math.hypot(tr.vel.x, tr.vel.z) || 1;
-              const dirX = tr.vel.x / vLen;
-              const dirZ = tr.vel.z / vLen;
+        for (const off of officers) {
+          if (off.boardingState !== 'dismounted' || off.ragdoll.active || off.hp <= 0) continue;
+          const hit = segmentHitsHumanoid(p0, p1, off.pos, 0.54, 1.84);
+          if (hit.hit) {
+            const vLen = Math.hypot(tr.vel.x, tr.vel.z) || 1;
+            const dirX = tr.vel.x / vLen;
+            const dirZ = tr.vel.z / vLen;
 
-              let dmg = tr.damage;
-              if (off.armor > 0) {
-                const baseAbsorb = off.isHeavy ? 0.74 : 0.46;
-                const effectiveAbsorb = Math.max(0.18, baseAbsorb * (1 - tr.armorPen * 0.45));
-                const absorbed = Math.min(off.armor, dmg * effectiveAbsorb);
-                off.armor = Math.max(0, off.armor - absorbed);
-                dmg -= absorbed;
-                this.vfx.spawnImpactSparks(
-                  off.pos.x,
-                  hit.hitY,
-                  off.pos.z,
-                  off.isHeavy ? 6 : 4,
-                  0.75,
-                  -dirX * 3.5,
-                  -dirZ * 3.5,
-                );
-              } else {
-                this.vfx.spawnImpactSparks(off.pos.x, hit.hitY, off.pos.z, 2, 0.45);
-              }
+            let dmg = tr.damage;
+            if (off.armor > 0) {
+              const baseAbsorb = off.isHeavy ? 0.74 : 0.46;
+              const effectiveAbsorb = Math.max(0.18, baseAbsorb * (1 - tr.armorPen * 0.45));
+              const absorbed = Math.min(off.armor, dmg * effectiveAbsorb);
+              off.armor = Math.max(0, off.armor - absorbed);
+              dmg -= absorbed;
+              this.vfx.spawnImpactSparks(
+                off.pos.x,
+                hit.hitY,
+                off.pos.z,
+                off.isHeavy ? 6 : 4,
+                0.75,
+                -dirX * 3.5,
+                -dirZ * 3.5,
+              );
+            } else {
+              this.vfx.spawnImpactSparks(off.pos.x, hit.hitY, off.pos.z, 2, 0.45);
+            }
 
-              const finalDmg = Math.max(3, dmg);
-              off.hp = Math.max(0, off.hp - finalDmg);
-              if (finalDmg > 4) {
-                this.vfx.spawnBloodImpact(
-                  off.pos.x,
-                  hit.hitY,
-                  off.pos.z,
-                  dirX,
-                  dirZ,
-                  Math.min(1.3, finalDmg / 18),
-                  off.hp <= 0 || finalDmg > 14,
-                );
-              }
-              const moraleShock = (off.isHeavy ? 8 : 30) * (0.45 + cowardiceLevel);
-              off.morale = Math.max(0, off.morale - moraleShock);
+            const finalDmg = Math.max(3, dmg);
+            off.hp = Math.max(0, off.hp - finalDmg);
+            if (finalDmg > 4) {
+              this.vfx.spawnBloodImpact(
+                off.pos.x,
+                hit.hitY,
+                off.pos.z,
+                dirX,
+                dirZ,
+                Math.min(1.3, finalDmg / 18),
+                off.hp <= 0 || finalDmg > 14,
+              );
+            }
+            const moraleShock = (off.isHeavy ? 8 : 30) * (0.45 + cowardiceLevel);
+            off.morale = Math.max(0, off.morale - moraleShock);
 
-              if (off.hp <= 0) {
-                if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
-                triggerRagdoll(
-                  off.ragdoll,
-                  this.rng,
-                  dirX * 4.8,
-                  2.6,
-                  dirZ * 4.8,
-                  999,
-                );
-                for (const partner of u.officers) {
-                  if (partner !== off && partner.hp > 0) {
+            if (off.hp <= 0) {
+              if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
+              triggerRagdoll(
+                off.ragdoll,
+                this.rng,
+                dirX * 4.8,
+                2.6,
+                dirZ * 4.8,
+                999,
+              );
+              if (off.unitId) {
+                for (const partner of officers) {
+                  if (partner.unitId === off.unitId && partner !== off && partner.hp > 0) {
                     const partnerShock = partner.isHeavy ? 14 : 46;
                     partner.morale = Math.max(
                       0,
@@ -1358,11 +1416,10 @@ export class CombatSystem {
                   }
                 }
               }
-              destroyed = true;
-              break;
             }
+            destroyed = true;
+            break;
           }
-          if (destroyed) break;
         }
       }
 

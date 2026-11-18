@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import {
   collideOBB2D,
@@ -7,8 +8,10 @@ import {
   OBB2D,
   StaticObstacleBVH,
 } from './bvh';
+import { playBoundAudioEvent } from './eventBindings';
+import { getSurfaceHeight, WorldConfig } from './roadGraph';
 import { DetachablePartRef, PoliceCruiserRig } from './vehicleModels';
-import { SimVfxManager } from './vfx';
+import { RagdollState, SimVfxManager, triggerRagdoll } from './vfx';
 
 export function normalizeAngle(a: number): number {
   let r = a;
@@ -177,7 +180,26 @@ export interface DetachedPartDebris {
   vel: THREE.Vector3;
   angVel: THREE.Vector3;
   radius: number;
-  life: number;
+  spawnGrace: number;
+  ownerVehicleId: string;
+}
+
+export interface DebrisHumanoidTarget {
+  pos: THREE.Vector3;
+  ragdoll: RagdollState;
+  onHitByDebris: (impactSpeed: number, dirX: number, dirZ: number) => void;
+}
+
+export interface StepDebrisOptions {
+  vehicles?: VehicleCollisionEntry[];
+  humanoids?: DebrisHumanoidTarget[];
+  vfx?: SimVfxManager;
+  audio?: JsonAudioSynth | null;
+  config?: EngineConfigAsset | null;
+  surfaceSource?: CustomMapAsset | WorldConfig | null;
+  debrisObstacles?: boolean;
+  restitution?: number;
+  humanImpactSpeed?: number;
 }
 
 export interface VehicleCollisionEntry {
@@ -214,10 +236,19 @@ export class VehicleCrashPhysicsSystem {
   private cooldowns = new Map<string, number>();
   private debris: DetachedPartDebris[] = [];
   private obbs: OBB2D[] = [];
+  public maxPhysicsParts = 120;
 
   constructor(debrisGroup: THREE.Group, rng: () => number) {
     this.debrisGroup = debrisGroup;
     this.rng = rng;
+  }
+
+  public setMaxPhysicsParts(limit: number): void {
+    this.maxPhysicsParts = Math.max(0, Math.round(limit));
+    while (this.debris.length > this.maxPhysicsParts) {
+      const oldest = this.debris.shift()!;
+      this.debrisGroup.remove(oldest.object);
+    }
   }
 
   public getDebrisCount(): number {
@@ -417,20 +448,20 @@ export class VehicleCrashPhysicsSystem {
       }
     });
 
-    // Grounded debris as road obstacles
+    // Dynamic interaction against all low-lying debris parts (active & resting)
     if (debrisObstacles && this.debris.length > 0 && vehicles.length > 0) {
       for (const d of this.debris) {
-        // Grace period right after detaching so parent vehicle doesn't re-hit its own part mid-air
-        if (d.life > 27.35 || d.object.position.y > 0.95) continue;
+        if (d.object.position.y > 1.25) continue;
 
         for (let i = 0; i < vehicles.length; i++) {
           const v = vehicles[i];
+          if (d.spawnGrace > 0 && d.ownerVehicleId === v.id) continue;
           const spd = Math.hypot(v.dyn.vx, v.dyn.vz);
-          if (spd < 1.2) continue;
+          if (spd < 0.9) continue;
 
           const dx = d.object.position.x - v.pos.x;
           const dz = d.object.position.z - v.pos.z;
-          if (dx * dx + dz * dz > (v.halfL + d.radius + 0.6) ** 2) continue;
+          if (dx * dx + dz * dz > (v.halfL + d.radius + 0.7) ** 2) continue;
 
           const cosY = Math.cos(v.yaw);
           const sinY = Math.sin(v.yaw);
@@ -438,24 +469,29 @@ export class VehicleCrashPhysicsSystem {
           const lz = dx * sinY + dz * cosY;
 
           if (Math.abs(lx) < v.halfW + d.radius && Math.abs(lz) < v.halfL + d.radius) {
-            const kickSpeed = Math.max(4.5, spd * 0.85);
+            const kickSpeed = Math.max(4.8, spd * 0.92);
             const fwdX = Math.sin(v.yaw);
             const fwdZ = Math.cos(v.yaw);
-            d.vel.x = fwdX * kickSpeed + (this.rng() - 0.5) * 4.5 + (lx >= 0 ? cosY : -cosY) * 2.5;
-            d.vel.y = 2.1 + Math.min(3.5, spd * 0.22);
-            d.vel.z = fwdZ * kickSpeed + (this.rng() - 0.5) * 4.5 + (lx >= 0 ? -sinY : sinY) * 2.5;
+            d.vel.x = fwdX * kickSpeed + (this.rng() - 0.5) * 4.2 + (lx >= 0 ? cosY : -cosY) * 2.8;
+            d.vel.y = 2.2 + Math.min(4.2, spd * 0.24);
+            d.vel.z = fwdZ * kickSpeed + (this.rng() - 0.5) * 4.2 + (lx >= 0 ? -sinY : sinY) * 2.8;
             d.angVel.set(
-              (this.rng() - 0.5) * 14,
-              (this.rng() - 0.5) * 14,
-              (this.rng() - 0.5) * 14,
+              (this.rng() - 0.5) * 16,
+              (this.rng() - 0.5) * 16,
+              (this.rng() - 0.5) * 16,
             );
-            d.object.position.y = Math.max(d.object.position.y, 0.25);
+            d.object.position.y = Math.max(d.object.position.y, 0.28);
 
-            // Impart noticeable bump and slow-down to vehicle running over debris
-            v.dyn.vx *= 0.92;
-            v.dyn.vz *= 0.92;
-            v.dyn.pitchVel += (this.rng() > 0.5 ? 1 : -1) * Math.min(1.6, spd * 0.11);
-            v.dyn.rollVel += (lx >= 0 ? -1 : 1) * Math.min(1.8, spd * 0.12);
+            // Push debris cleanly outside bumper envelope so it doesn't buzz-collide continuously
+            const pushSign = lx >= 0 ? 1 : -1;
+            d.object.position.x += cosY * pushSign * 0.22 + fwdX * 0.18;
+            d.object.position.z += -sinY * pushSign * 0.22 + fwdZ * 0.18;
+
+            // Impart noticeable physical bump and momentum drag to vehicle running over debris
+            v.dyn.vx *= 0.93;
+            v.dyn.vz *= 0.93;
+            v.dyn.pitchVel += (this.rng() > 0.5 ? 1 : -1) * Math.min(1.8, spd * 0.12);
+            v.dyn.rollVel += (lx >= 0 ? -1 : 1) * Math.min(2.0, spd * 0.13);
             v.applyState(v.yaw, Math.hypot(v.dyn.vx, v.dyn.vz));
 
             if (spd > 5.0) {
@@ -647,23 +683,43 @@ export class VehicleCrashPhysicsSystem {
           (this.rng() - 0.5) * 14,
         ),
         radius: part.radius,
-        life: 28.0,
+        spawnGrace: 0.65,
+        ownerVehicleId: veh.id,
       });
 
-      if (this.debris.length > 64) {
+      while (this.debris.length > this.maxPhysicsParts) {
         const oldest = this.debris.shift()!;
         this.debrisGroup.remove(oldest.object);
       }
     }
   }
 
-  public stepDebris(staticBvh: StaticObstacleBVH, dt: number): void {
-    for (let i = this.debris.length - 1; i >= 0; i--) {
+  public stepDebris(
+    staticBvh: StaticObstacleBVH,
+    dt: number,
+    options?: StepDebrisOptions,
+  ): void {
+    const restitution = options?.restitution ?? options?.config?.physics?.debrisRestitution ?? 0.36;
+    const humanImpactSpeed =
+      options?.humanImpactSpeed ?? options?.config?.physics?.debrisHumanImpactSpeed ?? 6.2;
+    const surfaceSource = options?.surfaceSource;
+    const humanoids = options?.humanoids;
+
+    for (let i = 0; i < this.debris.length; i++) {
       const d = this.debris[i];
-      d.life -= dt;
-      if (d.life <= 0) {
-        this.debrisGroup.remove(d.object);
-        this.debris.splice(i, 1);
+      if (d.spawnGrace > 0) d.spawnGrace = Math.max(0, d.spawnGrace - dt);
+
+      const groundY =
+        (surfaceSource ? getSurfaceHeight(d.object.position.x, d.object.position.z, surfaceSource) : 0.04) +
+        0.12;
+      const speedSq = d.vel.lengthSq() + d.angVel.lengthSq();
+      const onGround = d.object.position.y <= groundY + 0.015 && Math.abs(d.vel.y) < 0.05;
+
+      // Skip unnecessary integration when settled at rest until struck by a vehicle or part
+      if (onGround && speedSq < 0.002) {
+        d.vel.set(0, 0, 0);
+        d.angVel.set(0, 0, 0);
+        d.object.position.y = groundY;
         continue;
       }
 
@@ -674,27 +730,113 @@ export class VehicleCrashPhysicsSystem {
       if (res.collided) {
         const vn = d.vel.x * res.normalX + d.vel.z * res.normalZ;
         if (vn < 0) {
-          d.vel.x -= 1.45 * vn * res.normalX;
-          d.vel.z -= 1.45 * vn * res.normalZ;
+          d.vel.x -= (1.1 + restitution) * vn * res.normalX;
+          d.vel.z -= (1.1 + restitution) * vn * res.normalZ;
+          d.angVel.multiplyScalar(0.75);
         }
       }
 
-      if (d.object.position.y <= 0.14) {
-        d.object.position.y = 0.14;
+      if (d.object.position.y <= groundY) {
+        d.object.position.y = groundY;
         if (d.vel.y < -1.4) {
-          d.vel.y = -d.vel.y * 0.36;
+          d.vel.y = -d.vel.y * restitution;
         } else {
           d.vel.y = 0;
         }
-        const groundDamp = Math.exp(-5.4 * dt);
+        const groundDamp = Math.exp(-4.6 * dt);
         d.vel.x *= groundDamp;
         d.vel.z *= groundDamp;
-        d.angVel.multiplyScalar(Math.exp(-6.2 * dt));
+        d.angVel.multiplyScalar(Math.exp(-5.4 * dt));
       }
 
       d.object.rotation.x += d.angVel.x * dt;
       d.object.rotation.y += d.angVel.y * dt;
       d.object.rotation.z += d.angVel.z * dt;
+
+      // Fast flying or tumbling debris strikes humanoids physically
+      if (humanoids && humanoids.length > 0 && d.object.position.y < 2.2) {
+        const dSpeed = Math.hypot(d.vel.x, d.vel.z);
+        if (dSpeed >= humanImpactSpeed) {
+          for (let h = 0; h < humanoids.length; h++) {
+            const hum = humanoids[h];
+            if (hum.ragdoll.active) continue;
+            const dx = hum.pos.x - d.object.position.x;
+            const dz = hum.pos.z - d.object.position.z;
+            const hitR = d.radius + 0.48;
+            if (dx * dx + dz * dz < hitR * hitR) {
+              const dist = Math.hypot(dx, dz) || 1;
+              const nx = dx / dist;
+              const nz = dz / dist;
+              hum.onHitByDebris(dSpeed, nx, nz);
+              triggerRagdoll(
+                hum.ragdoll,
+                this.rng,
+                d.vel.x * 0.55 + nx * 2.4,
+                2.5 + Math.min(3.5, dSpeed * 0.2),
+                d.vel.z * 0.55 + nz * 2.4,
+                3.6,
+              );
+              d.vel.multiplyScalar(0.65);
+              if (options?.audio) {
+                playBoundAudioEvent(options.audio, options.config ?? null, 'ped_impact', hum.pos);
+              }
+              options?.vfx?.spawnBloodImpact(
+                hum.pos.x,
+                1.0,
+                hum.pos.z,
+                nx,
+                nz,
+                Math.min(1.0, dSpeed * 0.08),
+                false,
+              );
+            }
+          }
+        }
+      }
+    }
+
+    // Debris-to-debris dynamic collisions for parts in motion
+    const len = this.debris.length;
+    if (len > 1) {
+      for (let i = 0; i < len; i++) {
+        const a = this.debris[i];
+        const aMoving = a.vel.lengthSq() > 0.2;
+        for (let j = i + 1; j < len; j++) {
+          const b = this.debris[j];
+          if (!aMoving && b.vel.lengthSq() <= 0.2) continue;
+          const dx = b.object.position.x - a.object.position.x;
+          const dy = b.object.position.y - a.object.position.y;
+          const dz = b.object.position.z - a.object.position.z;
+          const minD = (a.radius + b.radius) * 0.72;
+          const dSq = dx * dx + dy * dy + dz * dz;
+          if (dSq >= minD * minD || dSq < 0.0001) continue;
+          const d = Math.sqrt(dSq);
+          const nx = dx / d;
+          const ny = dy / d;
+          const nz = dz / d;
+          const overlap = (minD - d) * 0.5;
+          a.object.position.x -= nx * overlap;
+          a.object.position.y -= ny * overlap;
+          a.object.position.z -= nz * overlap;
+          b.object.position.x += nx * overlap;
+          b.object.position.y += ny * overlap;
+          b.object.position.z += nz * overlap;
+
+          const rvx = b.vel.x - a.vel.x;
+          const rvy = b.vel.y - a.vel.y;
+          const rvz = b.vel.z - a.vel.z;
+          const vn = rvx * nx + rvy * ny + rvz * nz;
+          if (vn < 0) {
+            const jImp = -(1 + restitution) * vn * 0.5;
+            a.vel.x -= nx * jImp;
+            a.vel.y -= ny * jImp;
+            a.vel.z -= nz * jImp;
+            b.vel.x += nx * jImp;
+            b.vel.y += ny * jImp;
+            b.vel.z += nz * jImp;
+          }
+        }
+      }
     }
   }
 

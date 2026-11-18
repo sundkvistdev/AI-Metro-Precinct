@@ -1,11 +1,19 @@
-import * as THREE from 'three';
 import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
 import { assignUnitToNailMat } from './nailMatSystem';
 import { dispatchNearestUnit } from './policeUnitSystem';
 import { TownRoadGraph } from './roadGraph';
-import { ActiveCrime, NailMatActor, PoliceUnit } from './simActors';
+import { SceneWorldHierarchy } from './sceneHierarchy';
+import {
+  ActiveCrime,
+  AssailantActor,
+  NailMatActor,
+  OfficerActor,
+  PoliceUnit,
+  resolveCrimePrimaryAssailant,
+  resolveUnitOfficers,
+} from './simActors';
 import { BackupMode, DrivingMode, UnitStatus } from './types';
 
 export interface CrimeUnitCounts {
@@ -89,17 +97,21 @@ function findStandbyUnit(
 export function evaluateCrimeBackupPolicy(
   crime: ActiveCrime,
   units: PoliceUnit[],
+  officers: OfficerActor[],
+  officersById: Map<string, OfficerActor>,
+  assailantsById: Map<string, AssailantActor>,
   nailMats: NailMatActor[],
   roadGraph: TownRoadGraph,
   config: EngineConfigAsset,
-  nailMatsGroup: THREE.Group,
+  hierarchy: SceneWorldHierarchy,
   backupMode: BackupMode,
   drivingMode: DrivingMode,
   audio: JsonAudioSynth | null,
   staticBvh?: StaticObstacleBVH,
   map?: CustomMapAsset,
 ): void {
-  if (!crime.suspectAlive) return;
+  const primarySuspect = resolveCrimePrimaryAssailant(crime, assailantsById);
+  if (!primarySuspect?.alive) return;
 
   const policy = config.backupPolicies[backupMode];
   const effectiveDriving =
@@ -115,6 +127,7 @@ export function evaluateCrimeBackupPolicy(
       dispatchNearestUnit(
         crime,
         units,
+        officersById,
         roadGraph,
         config,
         effectiveDriving,
@@ -137,16 +150,17 @@ export function evaluateCrimeBackupPolicy(
 
   for (const u of units) {
     if (u.status === UnitStatus.Retreating) retreatingUnits++;
-    for (const o of u.officers) {
-      if (o.hp <= 0) downedTotal++;
-      if (o.cowardiceState === 'fleeing' || o.hp < 45) fleeingOrCriticalTotal++;
-    }
+  }
+  for (const o of officers) {
+    if (o.hp <= 0) downedTotal++;
+    if (o.cowardiceState === 'fleeing' || o.hp < 45) fleeingOrCriticalTotal++;
   }
 
   if (primary) {
+    const primaryCrew = resolveUnitOfficers(primary, officersById);
     if (
       primary.damageSmokeTimer > 0 ||
-      primary.officers.some(
+      primaryCrew.some(
         (o) => o.hp <= 58 || o.ragdoll.active || o.cowardiceState === 'fleeing',
       )
     ) {
@@ -158,7 +172,7 @@ export function evaluateCrimeBackupPolicy(
     ? crime.engagedSec > policy.prolongedPursuitSec &&
       crime.vehicleHp > 50 &&
       crime.vehiclePinnedTimer <= 0.1
-    : crime.engagedSec > policy.prolongedFootSec && crime.suspectHp > 45;
+    : crime.engagedSec > policy.prolongedFootSec && primarySuspect.hp > 45;
 
   let shouldCallRegularBackup = false;
   if (counts.regularCount === 0) {
@@ -189,10 +203,11 @@ export function evaluateCrimeBackupPolicy(
           crime,
           spikeUnit,
           units,
+          assailantsById,
           nailMats,
           roadGraph,
           config,
-          nailMatsGroup,
+          hierarchy,
           audio,
           staticBvh,
           map,
@@ -207,6 +222,7 @@ export function evaluateCrimeBackupPolicy(
       dispatchNearestUnit(
         crime,
         units,
+        officersById,
         roadGraph,
         config,
         effectiveDriving,
@@ -247,10 +263,11 @@ export function evaluateCrimeBackupPolicy(
         crime,
         candidate,
         units,
+        assailantsById,
         nailMats,
         roadGraph,
         config,
-        nailMatsGroup,
+        hierarchy,
         audio,
         staticBvh,
         map,
@@ -269,17 +286,19 @@ export function evaluateCrimeBackupPolicy(
       crime.urgency >= 90 ||
       (!crime.inVehiclePursuit &&
         crime.engagedSec > policy.heavyDelaySec &&
-        crime.suspectHp > 35);
+        primarySuspect.hp > 35);
   } else if (backupMode === BackupMode.Perimeter) {
     const anyInjured = units.some(
-      (u) => u.targetCrimeId === crime.id && u.officers.some((o) => o.hp < 75),
+      (u) =>
+        u.targetCrimeId === crime.id &&
+        resolveUnitOfficers(u, officersById).some((o) => o.hp < 75),
     );
     triggerHeavy =
       downedTotal > 0 ||
       retreatingUnits > 0 ||
       anyInjured ||
       crime.urgency >= 86 ||
-      (crime.suspectWeaponKind === 'rifle' && crime.elapsedSec > 7.5) ||
+      (primarySuspect.weaponKind === 'rifle' && crime.elapsedSec > 7.5) ||
       crime.engagedSec > policy.heavyDelaySec;
   } else {
     triggerHeavy =
@@ -295,6 +314,7 @@ export function evaluateCrimeBackupPolicy(
       dispatchNearestUnit(
         crime,
         units,
+        officersById,
         roadGraph,
         config,
         effectiveDriving,
@@ -314,6 +334,8 @@ export function evaluateCrimeBackupPolicy(
 export function requestManualBackup(
   crime: ActiveCrime,
   units: PoliceUnit[],
+  officersById: Map<string, OfficerActor>,
+  assailantsById: Map<string, AssailantActor>,
   roadGraph: TownRoadGraph,
   config: EngineConfigAsset,
   drivingMode: DrivingMode,
@@ -321,13 +343,15 @@ export function requestManualBackup(
   staticBvh?: StaticObstacleBVH,
   map?: CustomMapAsset,
 ): boolean {
-  if (!crime.suspectAlive) return false;
+  const primarySuspect = resolveCrimePrimaryAssailant(crime, assailantsById);
+  if (!primarySuspect?.alive) return false;
   const standbyReg = findStandbyUnit(units, crime, false);
   if (
     standbyReg &&
     dispatchNearestUnit(
       crime,
       units,
+      officersById,
       roadGraph,
       config,
       drivingMode,
@@ -349,6 +373,7 @@ export function requestManualBackup(
     dispatchNearestUnit(
       crime,
       units,
+      officersById,
       roadGraph,
       config,
       drivingMode,
@@ -370,15 +395,18 @@ export function requestManualBackup(
 export function requestManualNailMat(
   crime: ActiveCrime,
   units: PoliceUnit[],
+  officersById: Map<string, OfficerActor>,
+  assailantsById: Map<string, AssailantActor>,
   nailMats: NailMatActor[],
   roadGraph: TownRoadGraph,
   config: EngineConfigAsset,
-  nailMatsGroup: THREE.Group,
+  hierarchy: SceneWorldHierarchy,
   audio: JsonAudioSynth | null,
   staticBvh?: StaticObstacleBVH,
   map?: CustomMapAsset,
 ): boolean {
-  if (!crime.suspectAlive || !crime.inVehiclePursuit) return false;
+  const primarySuspect = resolveCrimePrimaryAssailant(crime, assailantsById);
+  if (!primarySuspect?.alive || !crime.inVehiclePursuit) return false;
 
   const candidate =
     findStandbyUnit(units, crime, false) ??
@@ -406,10 +434,11 @@ export function requestManualNailMat(
     crime,
     candidate,
     units,
+    assailantsById,
     nailMats,
     roadGraph,
     config,
-    nailMatsGroup,
+    hierarchy,
     audio,
     staticBvh,
     map,
@@ -419,3 +448,4 @@ export function requestManualNailMat(
   }
   return ok;
 }
+

@@ -18,7 +18,11 @@ export interface AssetManifest {
   packName: string;
   config: string;
   map: string;
+  defaultMap?: string;
+  maps?: Record<string, string>;
   materials?: string;
+  lightbars?: Record<string, string>;
+  vehicles?: Record<string, string>;
   textures: Record<string, string>;
   models: Record<string, string>;
   audio: Record<string, string>;
@@ -33,10 +37,191 @@ export interface AssetManifest {
   >;
 }
 
+export type LightbarHardwareStyle =
+  | 'standard_shell'
+  | 'vector_pods'
+  | 'mini_beacon'
+  | 'visor_stealth'
+  | 'custom';
+
+export type LightbarPatternType =
+  | 'led'
+  | 'flashing_halogen'
+  | 'rotating_halogen'
+  | 'vector_pods'
+  | 'visor_stealth'
+  | 'mini_beacon'
+  | 'custom';
+
+export type LightbarEmitterMode = 'strobe' | 'halogen' | 'rotator' | 'sweep' | 'steady';
+export type LightbarEmitterGroup = 'roof' | 'visor' | 'grille' | 'rear' | 'advisor';
+
+export interface LightbarEmitterDef {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+  h: number;
+  d: number;
+  shape: 'box' | 'cylinder' | 'sphere';
+  color: string;
+  emissive: string;
+  phase: number;
+  duty: number;
+  freqHz: number;
+  mode: LightbarEmitterMode;
+  group: LightbarEmitterGroup;
+  intensity?: number;
+}
+
+export interface LightbarAssetDef {
+  format: 'jdata-lightbar-v3';
+  id: string;
+  name: string;
+  hardwareStyle: LightbarHardwareStyle;
+  patternType: LightbarPatternType;
+  rateMult: number;
+  hasTrafficAdvisor: boolean;
+  hasCookies: boolean;
+  hasGrilleStrobes: boolean;
+  hasRearDeck: boolean;
+  leftColor: string;
+  rightColor: string;
+  centerColor: string;
+  haloOpacity: number;
+  pointLightRange: number;
+  pointLightIntensity: number;
+  emitters: LightbarEmitterDef[];
+}
+
+export interface VehicleChassisDef {
+  modelRef: string;
+  wheelRadius: number;
+  halfW: number;
+  halfL: number;
+  mass: number;
+  chassisScale: number;
+  maxSteerScale: number;
+  lightbarPos: [number, number, number];
+  roofLightPos: [number, number, number];
+  sideDecalX: number;
+  sideDecalY: number;
+  sideDecalZ: number;
+  stripeW: number;
+  stripeH: number;
+  roofPlateY: number;
+  roofPlateZ: number;
+  rearChevronY: number;
+  rearChevronZ: number;
+  hitboxSize: [number, number, number];
+  hitboxY: number;
+  obbHeight: number;
+  shadowSize: [number, number];
+  shadowY: number;
+}
+
+export interface VehicleAssetDef {
+  format: 'jdata-vehicle-v3';
+  id: string;
+  role: 'police' | 'civilian' | 'suspect';
+  label: string;
+  vehicleKind: string;
+  modelRef: string;
+  defaultLiveryId?: string;
+  defaultLightbarId?: string;
+  weaponKind?: 'pistol' | 'rifle';
+  isHeavyUnit?: boolean;
+  maxHp?: number;
+  maxArmor?: number;
+  chassis: VehicleChassisDef;
+}
+
+export interface StationBayDef {
+  id: string;
+  callsign: string;
+  vehicleKind: string;
+  liveryId: string;
+  lightbarId?: string;
+  weaponKind: 'pistol' | 'rifle';
+  isHeavyUnit: boolean;
+  parkPos: [number, number, number];
+  parkYaw: number;
+  exitRoadNodeId: number;
+}
+
+export type KeybindActionId =
+  | 'toggleHud'
+  | 'spawnCrime'
+  | 'spawnPursuit'
+  | 'cameraReset'
+  | 'cameraOverview'
+  | 'cameraFreeFly'
+  | 'cameraFollow'
+  | 'cameraLightbar'
+  | 'camForward'
+  | 'camBackward'
+  | 'camLeft'
+  | 'camRight'
+  | 'camOrbitLeft'
+  | 'camOrbitRight'
+  | 'camUp'
+  | 'camDown'
+  | 'camZoomIn'
+  | 'camZoomOut';
+
+export type SimEventId =
+  | 'weapon_fire_pistol'
+  | 'weapon_fire_rifle'
+  | 'weapon_fire_suspect'
+  | 'ped_impact'
+  | 'vehicle_crash'
+  | 'dispatch_chirp'
+  | 'siren_wail'
+  | 'siren_yelp'
+  | 'siren_phaser'
+  | 'siren_hilo';
+
+export interface EventBindingDef {
+  audioId: string;
+  gainScale?: number;
+  enabled?: boolean;
+}
+
+export interface AIGoalRuleDef {
+  id: string;
+  label?: string;
+  enabled: boolean;
+  priority: number;
+  params?: Record<string, number>;
+}
+
+export interface PhysicsConfigDef {
+  defaultMaxPhysicsParts: number;
+  debrisRestitution?: number;
+  debrisHumanImpactSpeed?: number;
+}
+
 export interface EngineConfigAsset {
-  format: 'jdata-config-v1' | 'jdata-config-v2';
+  format: 'jdata-config-v1' | 'jdata-config-v2' | 'jdata-config-v3';
   version: string;
+  keybinds?: Partial<Record<KeybindActionId, string>>;
+  eventBindings?: Partial<Record<SimEventId, EventBindingDef>>;
+  aiGoals?: {
+    police: AIGoalRuleDef[];
+    pedestrian: AIGoalRuleDef[];
+  };
+  physics?: PhysicsConfigDef;
   world: {
+    buildingModels?: Record<string, string>;
+    propModels?: {
+      tree?: string;
+      streetlight?: string;
+      fountain?: string;
+      sign?: string;
+      beacon?: string;
+      roadSign?: string;
+    };
     roadCoords: number[];
     roadWidth: number;
     laneOffset: number;
@@ -133,45 +318,8 @@ export interface EngineConfigAsset {
         doorTextureRef: string;
       }
     >;
-    chassis: Record<
-      string,
-      {
-        modelRef: string;
-        wheelRadius: number;
-        halfW: number;
-        halfL: number;
-        mass: number;
-        chassisScale: number;
-        maxSteerScale: number;
-        lightbarPos: [number, number, number];
-        roofLightPos: [number, number, number];
-        sideDecalX: number;
-        sideDecalY: number;
-        sideDecalZ: number;
-        stripeW: number;
-        stripeH: number;
-        roofPlateY: number;
-        roofPlateZ: number;
-        rearChevronY: number;
-        rearChevronZ: number;
-        hitboxSize: [number, number, number];
-        hitboxY: number;
-        obbHeight: number;
-        shadowSize: [number, number];
-        shadowY: number;
-      }
-    >;
-    stationBays: Array<{
-      id: string;
-      callsign: string;
-      vehicleKind: string;
-      liveryId: string;
-      weaponKind: 'pistol' | 'rifle';
-      isHeavyUnit: boolean;
-      parkPos: [number, number, number];
-      parkYaw: number;
-      exitRoadNodeId: number;
-    }>;
+    chassis: Record<string, VehicleChassisDef>;
+    stationBays: StationBayDef[];
   };
   weapons: Record<
     'pistol' | 'rifle',
@@ -459,10 +607,61 @@ export interface CrashPartSpec {
   isLightbar?: boolean;
 }
 
+export interface HingePartSpec {
+  axis: 'x' | 'y' | 'z';
+  closedAngle: number;
+  openAngle: number;
+  speed?: number;
+  role?:
+    | 'driver_door'
+    | 'passenger_door'
+    | 'rear_left_door'
+    | 'rear_right_door'
+    | 'rear_door'
+    | 'hood'
+    | 'trunk'
+    | 'custom';
+}
+
+export interface SeatPartSpec {
+  slotIndex: number;
+  role: 'driver' | 'passenger' | 'rear_left' | 'rear_right' | 'crew';
+  hingePartId?: string;
+  enterOffset?: [number, number, number];
+  exitOffset?: [number, number, number];
+  seatedPitch?: number;
+}
+
+export interface UVTransformSpec {
+  repeat?: [number, number];
+  offset?: [number, number];
+  rotation?: number;
+  center?: [number, number];
+}
+
+export interface ExtrudeMeshSpec {
+  points: Array<[number, number]>;
+  depth: number;
+  bevelEnabled?: boolean;
+  bevelSize?: number;
+}
+
+export interface LatheMeshSpec {
+  points: Array<[number, number]>;
+  segments?: number;
+}
+
+export interface CustomBufferMeshSpec {
+  positions: number[];
+  indices?: number[];
+  uvs?: number[];
+  normals?: number[];
+}
+
 export interface ModelPartDef {
   id: string;
   tag?: string;
-  kind: 'group' | 'box' | 'cylinder' | 'sphere' | 'plane';
+  kind: 'group' | 'box' | 'cylinder' | 'sphere' | 'plane' | 'extrude' | 'lathe' | 'mesh';
   dimensions?: [number, number, number];
   radiusSegments?: number;
   position?: [number, number, number];
@@ -472,6 +671,12 @@ export interface ModelPartDef {
   receiveShadow?: boolean;
   visible?: boolean;
   crashPart?: CrashPartSpec;
+  hinge?: HingePartSpec;
+  seat?: SeatPartSpec;
+  uv?: UVTransformSpec;
+  extrude?: ExtrudeMeshSpec;
+  lathe?: LatheMeshSpec;
+  customMesh?: CustomBufferMeshSpec;
   children?: ModelPartDef[];
 }
 
@@ -546,6 +751,7 @@ export interface MapBuildingDef {
   height: number;
   baseY?: number;
   rotationY?: number;
+  modelRef?: string;
   facadeStyle?:
     | 'storefront'
     | 'brick'
@@ -598,6 +804,7 @@ export type RoadSignStyle =
 export interface MapRoadSignDef {
   id: string;
   style: RoadSignStyle;
+  modelRef?: string;
   text: string;
   subtext?: string;
   x: number;
@@ -628,10 +835,11 @@ export interface MapDynamicObjectDef {
 }
 
 export interface CustomMapAsset {
-  format: 'jdata-map-v1' | 'jdata-map-v2';
+  format: 'jdata-map-v1' | 'jdata-map-v2' | 'jdata-map-v3';
   id: string;
   version: string;
   name: string;
+  description?: string;
   bounds: {
     halfSize: number;
   };
@@ -651,6 +859,15 @@ export interface CustomMapAsset {
   };
   stationExit?: {
     apronPoint: [number, number];
+  };
+  stationBays?: StationBayDef[];
+  treePalette?: string[];
+  trafficCount?: number;
+  pedestrianCount?: number;
+  defaultWeather?: 'CLEAR' | 'OVERCAST' | 'RAIN' | 'HEAVY_FOG';
+  cameraOverview?: {
+    pos: [number, number, number];
+    target: [number, number, number];
   };
   zones: MapZoneDef[];
   buildings: MapBuildingDef[];
@@ -719,6 +936,8 @@ export type AssetIssueCategory =
   | 'material'
   | 'texture'
   | 'model'
+  | 'lightbar'
+  | 'vehicle'
   | 'audio'
   | 'media';
 
@@ -733,8 +952,12 @@ export interface AssetIssue {
 export interface LoadedJsonAssets {
   manifest: AssetManifest;
   config: EngineConfigAsset;
+  activeMapId: string;
   map: CustomMapAsset;
+  maps: Record<string, CustomMapAsset>;
   materials: Record<string, ModelMaterialDef>;
+  lightbars: Record<string, LightbarAssetDef>;
+  vehicleDefs: Record<string, VehicleAssetDef>;
   textures: Record<string, ProceduralTextureAsset>;
   models: Record<string, ProceduralModelAsset>;
   audio: Record<string, ProceduralAudioAsset>;

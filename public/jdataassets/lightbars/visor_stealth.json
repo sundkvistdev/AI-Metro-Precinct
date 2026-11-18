@@ -1,0 +1,24 @@
+{
+  "format": "jdata-lightbar-v3",
+  "id": "visor_stealth",
+  "name": "Stealth Visor & Grille",
+  "hardwareStyle": "visor_stealth",
+  "patternType": "visor_stealth",
+  "rateMult": 1.05,
+  "hasTrafficAdvisor": false,
+  "hasCookies": false,
+  "hasGrilleStrobes": true,
+  "hasRearDeck": true,
+  "leftColor": "#ff2222",
+  "rightColor": "#2266ff",
+  "centerColor": "#f8fafc",
+  "haloOpacity": 0.68,
+  "pointLightRange": 20,
+  "pointLightIntensity": 13,
+  "emitters": [
+    { "id": "vis_l1", "x": 0.18, "y": 0, "z": 0.03, "w": 0.14, "h": 0.05, "d": 0.04, "shape": "box", "color": "#ff2222", "emissive": "#ff1a1a", "phase": 0.0, "duty": 0.35, "freqHz": 3.1, "mode": "strobe", "group": "visor" },
+    { "id": "vis_r1", "x": -0.18, "y": 0, "z": 0.03, "w": 0.14, "h": 0.05, "d": 0.04, "shape": "box", "color": "#2266ff", "emissive": "#1d70ff", "phase": 0.5, "duty": 0.35, "freqHz": 3.1, "mode": "strobe", "group": "visor" },
+    { "id": "gr_l", "x": 0.24, "y": 0, "z": 0, "w": 0.16, "h": 0.055, "d": 0.04, "shape": "box", "color": "#ff2222", "emissive": "#ff2020", "phase": 0.0, "duty": 0.4, "freqHz": 3.1, "mode": "strobe", "group": "grille" },
+    { "id": "gr_r", "x": -0.24, "y": 0, "z": 0, "w": 0.16, "h": 0.055, "d": 0.04, "shape": "box", "color": "#2266ff", "emissive": "#2070ff", "phase": 0.5, "duty": 0.4, "freqHz": 3.1, "mode": "strobe", "group": "grille" }
+  ]
+}

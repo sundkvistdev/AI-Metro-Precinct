@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
   CrashPartSpec,
+  CustomMapAsset,
   ImportedMediaAsset,
+  LightbarAssetDef,
   LoadedJsonAssets,
   MapBuildingDef,
   MapDynamicObjectDef,
@@ -18,6 +20,8 @@ import {
   ProceduralTextureAsset,
   RoadSignStyle,
 } from '../assets/assetTypes';
+import { PackValidationIssue, validateAssetPackLive } from '../assets/packValidator';
+import { simEventLog } from '../assets/simEventLog';
 import {
   importMediaAudioFile,
   importMediaImageFile,
@@ -60,6 +64,11 @@ export interface DevEditorState {
   selectedWorldEntity: WorldEntitySummary | null;
   aiDebugFlags: AIDebugFlags;
   aiDebugStats: AIDebugStats;
+
+  // Multi-Map Pack V3
+  activeMapId: string;
+  mapIds: string[];
+  mapName: string;
 
   // Map: Buildings, Nodes, Curved Edges, Dynamic Objects, Road Signs
   selectedBuildingId: string | null;
@@ -135,6 +144,11 @@ export interface DevEditorState {
   audioPreviewAssetId: string | null;
   audioPreviewLoop: boolean;
 
+  // Lightbars (Pack V3)
+  lightbarIds: string[];
+  selectedLightbarId: string;
+  selectedLightbar: LightbarAssetDef | null;
+
   // Config template pools
   civilianVariants: string[];
   pedestrianModels: string[];
@@ -147,7 +161,9 @@ export interface DevEditorState {
   dirtyMaterials: boolean;
   dirtyTextures: boolean;
   dirtyAudio: boolean;
+  dirtyLightbars: boolean;
   lastSavedStatus: string | null;
+  validationIssues: PackValidationIssue[];
 }
 
 export interface DevEditorCallbacks {
@@ -191,6 +207,7 @@ export interface DevEditorCallbacks {
   getAIDebugFlags?: () => AIDebugFlags;
   setAIDebugFlags?: (patch: Partial<AIDebugFlags>) => void;
   getAIDebugStats?: () => AIDebugStats;
+  onSwitchMap?: (mapId: string) => boolean;
 }
 
 const STUDIO_ORIGIN = new THREE.Vector3(260, 0.05, -260);
@@ -413,6 +430,7 @@ export class DevEditorController {
   private selectedMaterialId = '';
   private selectedTextureId = 'asphalt_road_v';
   private selectedAudioId = 'siren_wail';
+  private selectedLightbarId = 'led_array';
   private audioLoopEnabled = true;
 
   private dirtyMap = false;
@@ -420,6 +438,7 @@ export class DevEditorController {
   private dirtyMaterials = false;
   private dirtyTextures = false;
   private dirtyAudio = false;
+  private dirtyLightbars = false;
   private lastSavedStatus: string | null = null;
 
   private isDraggingGizmo = false;
@@ -523,6 +542,7 @@ export class DevEditorController {
     this.dirtyMaterials = false;
     this.dirtyTextures = false;
     this.dirtyAudio = false;
+    this.dirtyLightbars = false;
     this.lastSavedStatus = null;
 
     this.selectedBuildingId = null;
@@ -537,6 +557,7 @@ export class DevEditorController {
     if (assets) {
       if (!assets.materials) assets.materials = {};
       if (!assets.media) assets.media = {};
+      if (!assets.lightbars) assets.lightbars = {};
 
       const modelKeys = Object.keys(assets.models);
       if (modelKeys.length > 0 && !assets.models[this.selectedModelId]) {
@@ -552,6 +573,10 @@ export class DevEditorController {
       const audioKeys = Object.keys(assets.audio);
       if (audioKeys.length > 0 && !assets.audio[this.selectedAudioId]) {
         this.selectedAudioId = audioKeys[0];
+      }
+      const lbKeys = Object.keys(assets.lightbars);
+      if (lbKeys.length > 0 && !assets.lightbars[this.selectedLightbarId]) {
+        this.selectedLightbarId = lbKeys[0];
       }
       if (assets.map.buildings.length > 0) {
         this.selectedBuildingId = assets.map.buildings[0].id;
@@ -646,6 +671,16 @@ export class DevEditorController {
         : null;
 
     const config = this.assets?.config;
+    const lightbarIds = this.assets?.lightbars ? Object.keys(this.assets.lightbars) : [];
+    const activeLbId =
+      this.selectedLightbarId && this.assets?.lightbars?.[this.selectedLightbarId]
+        ? this.selectedLightbarId
+        : lightbarIds[0] ?? '';
+    const selectedLightbar = activeLbId
+      ? this.assets?.lightbars?.[activeLbId] ?? null
+      : null;
+
+    const validationIssues = this.assets ? validateAssetPackLive(this.assets) : [];
 
     return {
       active: this.active,
@@ -661,6 +696,10 @@ export class DevEditorController {
       selectedWorldEntity,
       aiDebugFlags: this.callbacks.getAIDebugFlags?.() ?? DEFAULT_AI_DEBUG_FLAGS,
       aiDebugStats: this.callbacks.getAIDebugStats?.() ?? DEFAULT_AI_DEBUG_STATS,
+
+      activeMapId: this.assets?.activeMapId ?? map?.id ?? 'metro_default',
+      mapIds: this.assets?.maps ? Object.keys(this.assets.maps) : map ? [map.id] : [],
+      mapName: map?.name ?? 'Unloaded',
 
       selectedBuildingId: selectedBuilding?.id ?? null,
       selectedBuilding: selectedBuilding ? { ...selectedBuilding } : null,
@@ -727,6 +766,10 @@ export class DevEditorController {
       audioPreviewAssetId: previewState.assetId,
       audioPreviewLoop: this.audioLoopEnabled,
 
+      lightbarIds,
+      selectedLightbarId: activeLbId,
+      selectedLightbar: selectedLightbar ? deepClone(selectedLightbar) : null,
+
       civilianVariants: config ? [...config.world.civilianVariants] : [],
       pedestrianModels: config?.world.pedestrianModels
         ? [...config.world.pedestrianModels]
@@ -740,7 +783,9 @@ export class DevEditorController {
       dirtyMaterials: this.dirtyMaterials,
       dirtyTextures: this.dirtyTextures,
       dirtyAudio: this.dirtyAudio,
+      dirtyLightbars: this.dirtyLightbars,
       lastSavedStatus: this.lastSavedStatus,
+      validationIssues,
     };
   }
 
@@ -1319,10 +1364,48 @@ export class DevEditorController {
     this.emitState();
   }
 
+  public switchMap(mapId: string): void {
+    if (!this.assets?.maps[mapId]) return;
+    if (this.callbacks.onSwitchMap) {
+      this.callbacks.onSwitchMap(mapId);
+    } else {
+      this.assets.activeMapId = mapId;
+      this.assets.map = this.assets.maps[mapId];
+      this.callbacks.onRebuildMap();
+    }
+    this.clearMapSelections();
+    this.selectedBuildingId = this.assets.map.buildings[0]?.id ?? null;
+    this.refreshVisuals();
+    this.emitState();
+  }
+
+  public createNewMap(id: string, name: string): void {
+    if (!this.assets) return;
+    const cleanId = id.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!cleanId) return;
+    const finalId = uniqueKeyOrNext(this.assets.maps, cleanId);
+    const cloned: CustomMapAsset = deepClone(this.assets.map);
+    cloned.format = 'jdata-map-v3';
+    cloned.id = finalId;
+    cloned.name = name.trim() || finalId;
+    this.assets.maps[finalId] = cloned;
+    if (!this.assets.manifest.maps) this.assets.manifest.maps = {};
+    this.assets.manifest.maps[finalId] = `maps/${finalId}.json`;
+    this.dirtyMap = true;
+    this.switchMap(finalId);
+    simEventLog.info('map', `Created new map "${cloned.name}" (${finalId})`);
+  }
+
   public importMapJson(jsonText: string): void {
     if (!this.assets) return;
     const parsed = parseSingleMapJson(jsonText);
+    const mapId = parsed.id || `custom_map_${Date.now().toString(36).slice(-4)}`;
+    parsed.id = mapId;
+    this.assets.maps[mapId] = parsed;
+    this.assets.activeMapId = mapId;
     this.assets.map = parsed;
+    if (!this.assets.manifest.maps) this.assets.manifest.maps = {};
+    this.assets.manifest.maps[mapId] = `maps/${mapId}.json`;
     this.clearMapSelections();
     this.selectedBuildingId = parsed.buildings[0]?.id ?? null;
     this.dirtyMap = true;
@@ -2116,20 +2199,118 @@ export class DevEditorController {
     };
   }
 
-  // --- Save Current Assets to Active Asset Pack (Format 2.0) ---
+  // --- Lightbar Studio Operations (Pack V3) ---
+
+  public selectLightbar(id: string): void {
+    if (!this.assets?.lightbars?.[id]) return;
+    this.selectedLightbarId = id;
+    this.emitState();
+  }
+
+  public createNewLightbar(id: string, name?: string): void {
+    if (!this.assets) return;
+    const cleanId = id.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!cleanId) return;
+    const finalId = uniqueKeyOrNext(this.assets.lightbars, cleanId);
+    const lb: LightbarAssetDef = {
+      format: 'jdata-lightbar-v3',
+      id: finalId,
+      name: name?.trim() || finalId,
+      hardwareStyle: 'custom',
+      patternType: 'custom',
+      rateMult: 1.0,
+      leftColor: '#ef4444',
+      rightColor: '#3b82f6',
+      centerColor: '#f8fafc',
+      haloOpacity: 0.78,
+      pointLightRange: 22,
+      pointLightIntensity: 16,
+      hasTrafficAdvisor: true,
+      hasCookies: false,
+      hasGrilleStrobes: true,
+      hasRearDeck: true,
+      emitters: [
+        {
+          id: 'pod_l',
+          x: 0.45,
+          y: 0.11,
+          z: 0,
+          w: 0.36,
+          h: 0.08,
+          d: 0.24,
+          shape: 'box',
+          color: '#ef4444',
+          emissive: '#ff1f1f',
+          mode: 'strobe',
+          group: 'roof',
+          freqHz: 2.8,
+          phase: 0,
+          duty: 0.38,
+          intensity: 5.5,
+        },
+        {
+          id: 'pod_r',
+          x: -0.45,
+          y: 0.11,
+          z: 0,
+          w: 0.36,
+          h: 0.08,
+          d: 0.24,
+          shape: 'box',
+          color: '#3b82f6',
+          emissive: '#1e70ff',
+          mode: 'strobe',
+          group: 'roof',
+          freqHz: 2.8,
+          phase: 0.5,
+          duty: 0.38,
+          intensity: 5.5,
+        },
+      ],
+    };
+    this.assets.lightbars[finalId] = lb;
+    if (!this.assets.manifest.lightbars) this.assets.manifest.lightbars = {};
+    this.assets.manifest.lightbars[finalId] = `lightbars/${finalId}.json`;
+    this.selectedLightbarId = finalId;
+    this.dirtyLightbars = true;
+    this.emitState();
+  }
+
+  public updateSelectedLightbar(next: LightbarAssetDef): void {
+    if (!this.assets) return;
+    this.assets.lightbars[next.id] = deepClone(next);
+    this.dirtyLightbars = true;
+    this.emitState();
+  }
+
+  public deleteLightbar(id: string): void {
+    if (!this.assets?.lightbars?.[id]) return;
+    if (Object.keys(this.assets.lightbars).length <= 1) return;
+    delete this.assets.lightbars[id];
+    if (this.assets.manifest.lightbars) delete this.assets.manifest.lightbars[id];
+    this.selectedLightbarId = Object.keys(this.assets.lightbars)[0] ?? '';
+    this.dirtyLightbars = true;
+    this.emitState();
+  }
+
+  // --- Save Current Assets to Active Asset Pack (Format 1.5.0 / V3) ---
 
   public saveCurrentAssetToPack(
-    scope: 'map' | 'model' | 'material' | 'texture' | 'audio' | 'all' = 'all',
+    scope: 'map' | 'model' | 'material' | 'texture' | 'audio' | 'lightbars' | 'all' = 'all',
   ): void {
     if (!this.assets) return;
     const manifest = this.assets.manifest;
-    manifest.formatVersion = '2.0';
+    manifest.formatVersion = '1.5.0';
 
     if (Object.keys(this.assets.materials).length > 0 || manifest.materials) {
       manifest.materials = manifest.materials || 'materials.json';
     }
 
     if (scope === 'map' || scope === 'all') {
+      const m = this.assets.map;
+      this.assets.maps[m.id] = m;
+      if (!manifest.maps) manifest.maps = {};
+      manifest.maps[m.id] = manifest.maps[m.id] || `maps/${m.id}.json`;
       this.callbacks.onRebuildMap();
       this.dirtyMap = false;
     }
@@ -2169,9 +2350,20 @@ export class DevEditorController {
       this.dirtyAudio = false;
     }
 
+    if (scope === 'lightbars' || scope === 'all') {
+      const lb = this.assets.lightbars[this.selectedLightbarId];
+      if (lb) {
+        if (!manifest.lightbars) manifest.lightbars = {};
+        manifest.lightbars[lb.id] = manifest.lightbars[lb.id] || `lightbars/${lb.id}.json`;
+      }
+      this.dirtyLightbars = false;
+    }
+
     this.refreshVisuals();
     const label = scope === 'all' ? 'all changes' : scope;
-    this.lastSavedStatus = `Saved ${label} to pack "${manifest.packName}" (v2.0)`;
+    const msg = `Saved ${label} to pack "${manifest.packName}" (v1.5.0)`;
+    this.lastSavedStatus = msg;
+    simEventLog.info('asset', msg);
     this.emitState();
   }
 

@@ -27,7 +27,7 @@ export function disposeGroupContents(group: THREE.Group): void {
 
 /**
  * Structured Three.js scene graph separating static environment geometry,
- * live simulation entities, and transient ballistic/VFX layers.
+ * flat live simulation entities directly under EntitiesRoot, and transient VFX layers.
  */
 export class SceneWorldHierarchy {
   public readonly root: THREE.Scene;
@@ -41,13 +41,6 @@ export class SceneWorldHierarchy {
   };
 
   public readonly entitiesRoot: THREE.Group;
-  public readonly entities = {
-    police: createNamedGroup('entities_police'),
-    traffic: createNamedGroup('entities_traffic'),
-    pedestrians: createNamedGroup('entities_pedestrians'),
-    crimes: createNamedGroup('entities_crimes'),
-    nailMats: createNamedGroup('entities_nail_mats'),
-  };
 
   public readonly effectsRoot: THREE.Group;
   public readonly effects = {
@@ -68,13 +61,6 @@ export class SceneWorldHierarchy {
     );
 
     this.entitiesRoot = createNamedGroup('EntitiesRoot');
-    this.entitiesRoot.add(
-      this.entities.police,
-      this.entities.traffic,
-      this.entities.pedestrians,
-      this.entities.crimes,
-      this.entities.nailMats,
-    );
 
     this.effectsRoot = createNamedGroup('EffectsRoot');
     this.effectsRoot.add(
@@ -86,17 +72,21 @@ export class SceneWorldHierarchy {
     this.root.add(this.worldRoot, this.entitiesRoot, this.effectsRoot);
   }
 
+  public addEntity(object: THREE.Object3D): void {
+    this.entitiesRoot.add(object);
+  }
+
+  public removeEntity(object: THREE.Object3D): void {
+    this.entitiesRoot.remove(object);
+  }
+
   public clearAllLayers(): void {
     disposeGroupContents(this.world.terrain);
     disposeGroupContents(this.world.roads);
     disposeGroupContents(this.world.buildings);
     disposeGroupContents(this.world.atmosphere);
 
-    disposeGroupContents(this.entities.police);
-    disposeGroupContents(this.entities.traffic);
-    disposeGroupContents(this.entities.pedestrians);
-    disposeGroupContents(this.entities.crimes);
-    disposeGroupContents(this.entities.nailMats);
+    disposeGroupContents(this.entitiesRoot);
 
     disposeGroupContents(this.effects.tracers);
     disposeGroupContents(this.effects.vfx);

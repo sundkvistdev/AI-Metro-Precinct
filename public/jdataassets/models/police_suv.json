@@ -28,8 +28,28 @@
         { "id": "underbody", "kind": "box", "dimensions": [1.82, 0.3, 4.74], "position": [0, 0.48, 0], "materialRef": "trim", "castShadow": true, "receiveShadow": true },
         { "id": "front_clip", "kind": "box", "dimensions": [1.94, 0.46, 1.44], "position": [0, 0.94, 1.6], "materialRef": "black_paint", "castShadow": true },
         { "id": "mid_body", "kind": "box", "dimensions": [1.96, 0.56, 1.88], "position": [0, 0.89, -0.06], "materialRef": "white_paint", "castShadow": true },
-        { "id": "door_left", "kind": "plane", "dimensions": [1.54, 0.4, 1], "position": [0.99, 0.96, -0.06], "rotation": [0, 1.5707963, 0], "materialRef": "door_decal" },
-        { "id": "door_right", "kind": "plane", "dimensions": [1.54, 0.4, 1], "position": [-0.99, 0.96, -0.06], "rotation": [0, -1.5707963, 0], "materialRef": "door_decal" },
+        {
+          "id": "door_hinge_fl",
+          "kind": "group",
+          "position": [0.98, 0.96, 0.71],
+          "hinge": { "axis": "y", "closedAngle": 0, "openAngle": -1.05, "speed": 6.8, "role": "driver_door" },
+          "children": [
+            { "id": "door_panel_l", "kind": "box", "dimensions": [0.06, 0.44, 1.54], "position": [-0.01, -0.02, -0.77], "materialRef": "white_paint", "castShadow": true },
+            { "id": "door_left", "kind": "plane", "dimensions": [1.54, 0.4, 1], "position": [0.025, 0.0, -0.77], "rotation": [0, 1.5707963, 0], "materialRef": "door_decal" }
+          ]
+        },
+        {
+          "id": "door_hinge_fr",
+          "kind": "group",
+          "position": [-0.98, 0.96, 0.71],
+          "hinge": { "axis": "y", "closedAngle": 0, "openAngle": 1.05, "speed": 6.8, "role": "passenger_door" },
+          "children": [
+            { "id": "door_panel_r", "kind": "box", "dimensions": [0.06, 0.44, 1.54], "position": [0.01, -0.02, -0.77], "materialRef": "white_paint", "castShadow": true },
+            { "id": "door_right", "kind": "plane", "dimensions": [1.54, 0.4, 1], "position": [-0.025, 0.0, -0.77], "rotation": [0, -1.5707963, 0], "materialRef": "door_decal" }
+          ]
+        },
+        { "id": "seat_driver", "kind": "box", "dimensions": [0.36, 0.14, 0.36], "position": [0.4, 0.78, 0.04], "materialRef": "trim", "seat": { "slotIndex": 0, "role": "driver", "hingePartId": "door_hinge_fl", "enterOffset": [1.58, 0, 0.0], "exitOffset": [1.5, 0, -0.15], "seatedPitch": 0.1 } },
+        { "id": "seat_passenger", "kind": "box", "dimensions": [0.36, 0.14, 0.36], "position": [-0.4, 0.78, 0.04], "materialRef": "trim", "seat": { "slotIndex": 1, "role": "passenger", "hingePartId": "door_hinge_fr", "enterOffset": [-1.58, 0, 0.0], "exitOffset": [-1.5, 0, -0.15], "seatedPitch": 0.1 } },
         { "id": "rear_clip", "kind": "box", "dimensions": [1.94, 0.5, 1.38], "position": [0, 0.92, -1.68], "materialRef": "black_paint", "castShadow": true },
         { "id": "cabin_glass", "kind": "box", "dimensions": [1.82, 0.58, 2.98], "position": [0, 1.44, -0.72], "materialRef": "glass" },
         { "id": "roof", "kind": "box", "dimensions": [1.8, 0.1, 3.06], "position": [0, 1.76, -0.75], "materialRef": "white_paint", "castShadow": true },
@@ -60,6 +80,7 @@
           "id": "cabin_crew",
           "tag": "cabinCrewGroup",
           "kind": "group",
+          "visible": false,
           "children": [
             { "id": "driver_chest", "kind": "box", "dimensions": [0.34, 0.34, 0.22], "position": [0.4, 1.24, 0.04], "materialRef": "crew_shirt" },
             { "id": "driver_head", "kind": "sphere", "dimensions": [0.11, 10, 10], "position": [0.4, 1.49, 0.04], "materialRef": "crew_skin" },

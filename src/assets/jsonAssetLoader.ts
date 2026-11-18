@@ -6,21 +6,178 @@ import {
   CustomMapAsset,
   EngineConfigAsset,
   ImportedMediaAsset,
+  LightbarAssetDef,
   LoadedJsonAssets,
   MediaKind,
   ModelMaterialDef,
   ProceduralAudioAsset,
   ProceduralModelAsset,
   ProceduralTextureAsset,
+  VehicleAssetDef,
 } from './assetTypes';
+import { simEventLog } from './simEventLog';
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+export function createBuiltinDefaultLightbars(): Record<string, LightbarAssetDef> {
+  return {
+    led_array: {
+      format: 'jdata-lightbar-v3',
+      id: 'led_array',
+      name: 'LED Bar Array',
+      hardwareStyle: 'standard_shell',
+      patternType: 'led',
+      rateMult: 1.0,
+      hasTrafficAdvisor: false,
+      hasCookies: false,
+      hasGrilleStrobes: false,
+      hasRearDeck: true,
+      leftColor: '#ff2222',
+      rightColor: '#2266ff',
+      centerColor: '#f8fafc',
+      haloOpacity: 0.72,
+      pointLightRange: 22,
+      pointLightIntensity: 16,
+      emitters: [
+        { id: 'led_l1', x: 0.28, y: 0.105, z: 0, w: 0.14, h: 0.065, d: 0.24, shape: 'box', color: '#ff2222', emissive: '#ff1a1a', phase: 0.0, duty: 0.36, freqHz: 2.2, mode: 'strobe', group: 'roof' },
+        { id: 'led_l2', x: 0.46, y: 0.105, z: 0, w: 0.14, h: 0.065, d: 0.24, shape: 'box', color: '#ff2222', emissive: '#ff1a1a', phase: 0.14, duty: 0.22, freqHz: 2.2, mode: 'strobe', group: 'roof' },
+        { id: 'led_l3', x: 0.64, y: 0.105, z: 0, w: 0.14, h: 0.065, d: 0.24, shape: 'box', color: '#ff2222', emissive: '#ff1a1a', phase: 0.0, duty: 0.36, freqHz: 2.2, mode: 'strobe', group: 'roof' },
+        { id: 'led_r1', x: -0.28, y: 0.105, z: 0, w: 0.14, h: 0.065, d: 0.24, shape: 'box', color: '#2266ff', emissive: '#1d70ff', phase: 0.48, duty: 0.36, freqHz: 2.27, mode: 'strobe', group: 'roof' },
+        { id: 'led_r2', x: -0.46, y: 0.105, z: 0, w: 0.14, h: 0.065, d: 0.24, shape: 'box', color: '#2266ff', emissive: '#1d70ff', phase: 0.62, duty: 0.22, freqHz: 2.27, mode: 'strobe', group: 'roof' },
+        { id: 'led_r3', x: -0.64, y: 0.105, z: 0, w: 0.14, h: 0.065, d: 0.24, shape: 'box', color: '#2266ff', emissive: '#1d70ff', phase: 0.48, duty: 0.36, freqHz: 2.27, mode: 'strobe', group: 'roof' },
+      ],
+    },
+    halogen_flash: {
+      format: 'jdata-lightbar-v3',
+      id: 'halogen_flash',
+      name: 'Flashing Halogen',
+      hardwareStyle: 'standard_shell',
+      patternType: 'flashing_halogen',
+      rateMult: 1.0,
+      hasTrafficAdvisor: false,
+      hasCookies: false,
+      hasGrilleStrobes: false,
+      hasRearDeck: true,
+      leftColor: '#ff2b1a',
+      rightColor: '#2563eb',
+      centerColor: '#fbbf24',
+      haloOpacity: 0.75,
+      pointLightRange: 22,
+      pointLightIntensity: 16,
+      emitters: [
+        { id: 'hal_l', x: 0.45, y: 0.105, z: 0, w: 0.12, h: 0.12, d: 0.12, shape: 'sphere', color: '#ff6b4a', emissive: '#ff2b1a', phase: 0.0, duty: 0.5, freqHz: 1.7, mode: 'halogen', group: 'roof' },
+        { id: 'hal_r', x: -0.45, y: 0.105, z: 0, w: 0.12, h: 0.12, d: 0.12, shape: 'sphere', color: '#60a5fa', emissive: '#2563eb', phase: 0.5, duty: 0.5, freqHz: 1.75, mode: 'halogen', group: 'roof' },
+        { id: 'hal_c', x: 0, y: 0.105, z: 0, w: 0.12, h: 0.12, d: 0.12, shape: 'sphere', color: '#fef3c7', emissive: '#fbbf24', phase: 0.25, duty: 0.4, freqHz: 2.5, mode: 'halogen', group: 'roof' },
+      ],
+    },
+    rotator_classic: {
+      format: 'jdata-lightbar-v3',
+      id: 'rotator_classic',
+      name: 'Classic Rotators',
+      hardwareStyle: 'standard_shell',
+      patternType: 'rotating_halogen',
+      rateMult: 1.0,
+      hasTrafficAdvisor: false,
+      hasCookies: true,
+      hasGrilleStrobes: false,
+      hasRearDeck: true,
+      leftColor: '#ff2828',
+      rightColor: '#2674ff',
+      centerColor: '#fff7ed',
+      haloOpacity: 0.72,
+      pointLightRange: 24,
+      pointLightIntensity: 16,
+      emitters: [
+        { id: 'rot_l', x: 0.45, y: 0.105, z: 0, w: 0.12, h: 0.1, d: 0.12, shape: 'cylinder', color: '#fff7ed', emissive: '#ff2828', phase: 0.0, duty: 1.0, freqHz: 1.8, mode: 'rotator', group: 'roof' },
+        { id: 'rot_r', x: -0.45, y: 0.105, z: 0, w: 0.12, h: 0.1, d: 0.12, shape: 'cylinder', color: '#fff7ed', emissive: '#2674ff', phase: 0.35, duty: 1.0, freqHz: 1.95, mode: 'rotator', group: 'roof' },
+        { id: 'rot_c', x: 0, y: 0.105, z: 0, w: 0.12, h: 0.1, d: 0.12, shape: 'cylinder', color: '#fff7ed', emissive: '#fbbf24', phase: 0.7, duty: 1.0, freqHz: 1.4, mode: 'rotator', group: 'roof' },
+      ],
+    },
+    vector_v_pods: {
+      format: 'jdata-lightbar-v3',
+      id: 'vector_v_pods',
+      name: 'Vector V-Pods + Advisor',
+      hardwareStyle: 'vector_pods',
+      patternType: 'vector_pods',
+      rateMult: 1.0,
+      hasTrafficAdvisor: true,
+      hasCookies: false,
+      hasGrilleStrobes: false,
+      hasRearDeck: true,
+      leftColor: '#ff2020',
+      rightColor: '#2070ff',
+      centerColor: '#ffffff',
+      haloOpacity: 0.74,
+      pointLightRange: 22,
+      pointLightIntensity: 16,
+      emitters: [
+        { id: 'vec_1', x: 0.66, y: 0.13, z: -0.06, w: 0.12, h: 0.12, d: 0.12, shape: 'cylinder', color: '#c8232c', emissive: '#ff2020', phase: 0.0, duty: 0.45, freqHz: 2.5, mode: 'sweep', group: 'roof' },
+        { id: 'vec_2', x: 0.34, y: 0.13, z: 0.06, w: 0.12, h: 0.12, d: 0.12, shape: 'cylinder', color: '#c8232c', emissive: '#ff2828', phase: 0.2, duty: 0.45, freqHz: 2.5, mode: 'sweep', group: 'roof' },
+        { id: 'vec_3', x: 0.0, y: 0.13, z: 0.18, w: 0.12, h: 0.12, d: 0.12, shape: 'cylinder', color: '#f8fafc', emissive: '#ffffff', phase: 0.4, duty: 0.45, freqHz: 2.5, mode: 'sweep', group: 'roof' },
+        { id: 'vec_4', x: -0.34, y: 0.13, z: 0.06, w: 0.12, h: 0.12, d: 0.12, shape: 'cylinder', color: '#2558c9', emissive: '#2070ff', phase: 0.6, duty: 0.45, freqHz: 2.5, mode: 'sweep', group: 'roof' },
+        { id: 'vec_5', x: -0.66, y: 0.13, z: -0.06, w: 0.12, h: 0.12, d: 0.12, shape: 'cylinder', color: '#2558c9', emissive: '#2070ff', phase: 0.8, duty: 0.45, freqHz: 2.5, mode: 'sweep', group: 'roof' },
+      ],
+    },
+    visor_stealth: {
+      format: 'jdata-lightbar-v3',
+      id: 'visor_stealth',
+      name: 'Stealth Visor & Grille',
+      hardwareStyle: 'visor_stealth',
+      patternType: 'visor_stealth',
+      rateMult: 1.05,
+      hasTrafficAdvisor: false,
+      hasCookies: false,
+      hasGrilleStrobes: true,
+      hasRearDeck: true,
+      leftColor: '#ff2222',
+      rightColor: '#2266ff',
+      centerColor: '#f8fafc',
+      haloOpacity: 0.68,
+      pointLightRange: 20,
+      pointLightIntensity: 13,
+      emitters: [
+        { id: 'vis_l1', x: 0.18, y: 0, z: 0.03, w: 0.14, h: 0.05, d: 0.04, shape: 'box', color: '#ff2222', emissive: '#ff1a1a', phase: 0.0, duty: 0.35, freqHz: 3.1, mode: 'strobe', group: 'visor' },
+        { id: 'vis_r1', x: -0.18, y: 0, z: 0.03, w: 0.14, h: 0.05, d: 0.04, shape: 'box', color: '#2266ff', emissive: '#1d70ff', phase: 0.5, duty: 0.35, freqHz: 3.1, mode: 'strobe', group: 'visor' },
+        { id: 'gr_l', x: 0.24, y: 0, z: 0, w: 0.16, h: 0.055, d: 0.04, shape: 'box', color: '#ff2222', emissive: '#ff2020', phase: 0.0, duty: 0.4, freqHz: 3.1, mode: 'strobe', group: 'grille' },
+        { id: 'gr_r', x: -0.24, y: 0, z: 0, w: 0.16, h: 0.055, d: 0.04, shape: 'box', color: '#2266ff', emissive: '#2070ff', phase: 0.5, duty: 0.4, freqHz: 3.1, mode: 'strobe', group: 'grille' },
+      ],
+    },
+    mini_beacon: {
+      format: 'jdata-lightbar-v3',
+      id: 'mini_beacon',
+      name: 'Mini Dual Beacon',
+      hardwareStyle: 'mini_beacon',
+      patternType: 'mini_beacon',
+      rateMult: 1.0,
+      hasTrafficAdvisor: false,
+      hasCookies: false,
+      hasGrilleStrobes: true,
+      hasRearDeck: true,
+      leftColor: '#ff2828',
+      rightColor: '#2674ff',
+      centerColor: '#f8fafc',
+      haloOpacity: 0.72,
+      pointLightRange: 20,
+      pointLightIntensity: 15,
+      emitters: [
+        { id: 'mini_l', x: 0.16, y: 0.11, z: 0, w: 0.19, h: 0.14, d: 0.19, shape: 'cylinder', color: '#c8232c', emissive: '#ff2828', phase: 0.0, duty: 1.0, freqHz: 2.15, mode: 'rotator', group: 'roof' },
+        { id: 'mini_r', x: -0.16, y: 0.11, z: 0, w: 0.19, h: 0.14, d: 0.19, shape: 'cylinder', color: '#2558c9', emissive: '#2674ff', phase: 0.4, duty: 1.0, freqHz: 2.26, mode: 'rotator', group: 'roof' },
+      ],
+    },
+  };
+}
+
 export function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
   if (!isObjectRecord(raw)) return false;
-  if (raw.format !== 'jdata-config-v1' && raw.format !== 'jdata-config-v2') return false;
+  if (
+    raw.format !== 'jdata-config-v1' &&
+    raw.format !== 'jdata-config-v2' &&
+    raw.format !== 'jdata-config-v3'
+  ) {
+    return false;
+  }
   if (!isObjectRecord(raw.world) || !isObjectRecord(raw.simulation) || !isObjectRecord(raw.camera)) {
     return false;
   }
@@ -31,18 +188,10 @@ export function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
     return false;
   }
   if (
-    !Array.isArray(raw.world.roadCoords) ||
-    !Array.isArray(raw.world.blockCenters) ||
-    !Array.isArray(raw.world.districts) ||
-    !Array.isArray(raw.vehicles.stationBays) ||
-    raw.vehicles.stationBays.length === 0 ||
     !isObjectRecord(raw.vehicles.chassis) ||
     !isObjectRecord(raw.vehicles.liveries)
   ) {
     return false;
-  }
-  for (const kind of ['sedan', 'suv', 'van', 'apc'] as const) {
-    if (!isObjectRecord(raw.vehicles.chassis[kind])) return false;
   }
   for (const weapon of ['pistol', 'rifle'] as const) {
     if (!isObjectRecord(raw.weapons[weapon])) return false;
@@ -59,7 +208,9 @@ export function validateEngineConfig(raw: unknown): raw is EngineConfigAsset {
 export function validateMapAsset(raw: unknown): raw is CustomMapAsset {
   if (!isObjectRecord(raw)) return false;
   if (
-    (raw.format !== 'jdata-map-v1' && raw.format !== 'jdata-map-v2') ||
+    (raw.format !== 'jdata-map-v1' &&
+      raw.format !== 'jdata-map-v2' &&
+      raw.format !== 'jdata-map-v3') ||
     typeof raw.id !== 'string' ||
     typeof raw.name !== 'string'
   ) {
@@ -120,6 +271,29 @@ export function validateAudioAsset(raw: unknown): raw is ProceduralAudioAsset {
   );
 }
 
+export function validateLightbarAsset(raw: unknown): raw is LightbarAssetDef {
+  if (!isObjectRecord(raw)) return false;
+  return (
+    raw.format === 'jdata-lightbar-v3' &&
+    typeof raw.id === 'string' &&
+    typeof raw.name === 'string' &&
+    typeof raw.hardwareStyle === 'string' &&
+    typeof raw.patternType === 'string' &&
+    Array.isArray(raw.emitters)
+  );
+}
+
+export function validateVehicleAsset(raw: unknown): raw is VehicleAssetDef {
+  if (!isObjectRecord(raw)) return false;
+  return (
+    raw.format === 'jdata-vehicle-v3' &&
+    typeof raw.id === 'string' &&
+    typeof raw.vehicleKind === 'string' &&
+    typeof raw.modelRef === 'string' &&
+    isObjectRecord(raw.chassis)
+  );
+}
+
 export function validateMaterialsRecord(raw: unknown): raw is Record<string, ModelMaterialDef> {
   if (!isObjectRecord(raw)) return false;
   for (const val of Object.values(raw)) {
@@ -139,7 +313,7 @@ export function parseSingleModelJson(text: string): ProceduralModelAsset {
 export function parseSingleTextureJson(text: string): ProceduralTextureAsset {
   const parsed = JSON.parse(text) as unknown;
   if (!validateTextureAsset(parsed)) {
-    throw new Error('JSON file is not a valid jdata-texture-v1 texture asset.');
+    throw new Error('JSON file is not a valid jdata-texture-v1/v2 texture asset.');
   }
   return parsed;
 }
@@ -147,7 +321,7 @@ export function parseSingleTextureJson(text: string): ProceduralTextureAsset {
 export function parseSingleAudioJson(text: string): ProceduralAudioAsset {
   const parsed = JSON.parse(text) as unknown;
   if (!validateAudioAsset(parsed)) {
-    throw new Error('JSON file is not a valid jdata-audio-v1 audio asset.');
+    throw new Error('JSON file is not a valid jdata-audio-v1/v2 audio asset.');
   }
   return parsed;
 }
@@ -155,14 +329,180 @@ export function parseSingleAudioJson(text: string): ProceduralAudioAsset {
 export function parseSingleMapJson(text: string): CustomMapAsset {
   const parsed = JSON.parse(text) as unknown;
   if (!validateMapAsset(parsed)) {
-    throw new Error('JSON file is not a valid jdata-map-v1 map asset.');
+    throw new Error('JSON file is not a valid jdata-map-v1/v2/v3 map asset.');
   }
   return parsed;
+}
+
+export function parseSingleLightbarJson(text: string): LightbarAssetDef {
+  const parsed = JSON.parse(text) as unknown;
+  if (!validateLightbarAsset(parsed)) {
+    throw new Error('JSON file is not a valid jdata-lightbar-v3 lightbar asset.');
+  }
+  return parsed;
+}
+
+export function syncMapOwnedConfig(map: CustomMapAsset, config: EngineConfigAsset): void {
+  if (map.stationBays && map.stationBays.length > 0) {
+    config.vehicles.stationBays = map.stationBays.map((b) => ({
+      ...b,
+      parkPos: [...b.parkPos] as [number, number, number],
+    }));
+  } else if (!map.stationBays && config.vehicles.stationBays?.length) {
+    map.stationBays = config.vehicles.stationBays.map((b) => ({
+      ...b,
+      parkPos: [...b.parkPos] as [number, number, number],
+    }));
+  }
+  if (map.treePalette && map.treePalette.length > 0) {
+    config.world.treePalette = [...map.treePalette];
+  } else if (!map.treePalette && config.world.treePalette?.length) {
+    map.treePalette = [...config.world.treePalette];
+  }
+  if (typeof map.trafficCount === 'number') {
+    config.world.trafficCount = map.trafficCount;
+  } else {
+    map.trafficCount = config.world.trafficCount;
+  }
+  if (typeof map.pedestrianCount === 'number') {
+    config.world.pedestrianCount = map.pedestrianCount;
+  } else {
+    map.pedestrianCount = config.world.pedestrianCount;
+  }
+  if (map.districts && map.districts.length > 0) {
+    config.world.districts = [...map.districts];
+  }
+  config.world.surfaceHeights = { ...map.surfaceHeights };
+  config.world.roadWidth = map.roadNetwork.roadWidth;
+  config.world.laneOffset = map.roadNetwork.laneOffset;
+  config.world.townHalfSize = map.bounds.halfSize;
+  if (map.cameraOverview) {
+    config.camera.overviewPos = [...map.cameraOverview.pos] as [number, number, number];
+    config.camera.overviewTarget = [...map.cameraOverview.target] as [number, number, number];
+  } else {
+    map.cameraOverview = {
+      pos: [...config.camera.overviewPos] as [number, number, number],
+      target: [...config.camera.overviewTarget] as [number, number, number],
+    };
+  }
+}
+
+function finalizeConfigNormalization(
+  config: EngineConfigAsset,
+  vehicleDefs: Record<string, VehicleAssetDef>,
+  lightbars: Record<string, LightbarAssetDef>,
+  activeMap: CustomMapAsset,
+): void {
+  // Ensure default lightbars exist
+  const defaults = createBuiltinDefaultLightbars();
+  for (const [k, def] of Object.entries(defaults)) {
+    if (!lightbars[k]) {
+      lightbars[k] = def;
+    }
+  }
+
+  // Merge vehicleDefs chassis into runtime config.vehicles.chassis and synthesize missing vehicleDefs
+  for (const veh of Object.values(vehicleDefs)) {
+    if (!config.vehicles.chassis[veh.vehicleKind]) {
+      config.vehicles.chassis[veh.vehicleKind] = veh.chassis;
+    }
+  }
+  for (const [kind, chassis] of Object.entries(config.vehicles.chassis)) {
+    const policeId = `police_${kind}`;
+    if (!vehicleDefs[policeId]) {
+      vehicleDefs[policeId] = {
+        format: 'jdata-vehicle-v3',
+        id: policeId,
+        role: 'police',
+        label: `Police ${kind.toUpperCase()}`,
+        vehicleKind: kind,
+        modelRef: chassis.modelRef,
+        defaultLiveryId: kind === 'van' || kind === 'apc' ? 'tactical_swat' : 'classic_bw',
+        defaultLightbarId: 'led_array',
+        weaponKind: kind === 'suv' || kind === 'apc' ? 'rifle' : 'pistol',
+        isHeavyUnit: kind === 'apc',
+        chassis,
+      };
+    }
+  }
+
+  if (!Array.isArray(config.world.roadCoords)) config.world.roadCoords = [-150, -75, 0, 75, 150];
+  if (!Array.isArray(config.world.blockCenters)) config.world.blockCenters = [-112.5, -37.5, 37.5, 112.5];
+  if (!Array.isArray(config.world.civilianVariants)) config.world.civilianVariants = ['sedan', 'hatch', 'taxi', 'van'];
+  if (!Array.isArray(config.world.civilianColors)) config.world.civilianColors = ['#94a3b8', '#3b82f6', '#10b981'];
+  if (!Array.isArray(config.world.getawayColors)) config.world.getawayColors = ['#991b1b', '#1e293b', '#7c2d12'];
+  if (!Array.isArray(config.world.pedestrianShirtColors)) config.world.pedestrianShirtColors = ['#475569', '#0f766e'];
+  if (!Array.isArray(config.vehicles.stationBays)) config.vehicles.stationBays = [];
+
+  if (!config.physics) {
+    config.physics = {
+      defaultMaxPhysicsParts: 120,
+      debrisRestitution: 0.36,
+      debrisHumanImpactSpeed: 6.2,
+    };
+  }
+  if (!config.aiGoals) {
+    config.aiGoals = {
+      police: [
+        { id: 'AWAIT_TOW', label: 'Await Roadside Recovery', enabled: true, priority: 100 },
+        { id: 'RETREAT_TO_PRECINCT', label: 'Retreat / Casualties', enabled: true, priority: 90 },
+        { id: 'MANUAL_FOOT_PATROL', label: 'Free-Roam Patrol / Combat', enabled: true, priority: 80 },
+        { id: 'DISMOUNT_COMBAT', label: 'Dismount & Engage Foot Target', enabled: true, priority: 75, params: { dismountDist: 22 } },
+        { id: 'PURSUE_INTERCEPT', label: 'Vehicle Pursuit & PIT', enabled: true, priority: 70, params: { ramRange: 20 } },
+        { id: 'DEPLOY_NAIL_MAT', label: 'Deploy Road Spike Strip', enabled: true, priority: 65 },
+        { id: 'RESPOND_TO_CALL', label: 'Code-3 Respond to Scene', enabled: true, priority: 60, params: { approachDist: 16 } },
+        { id: 'BOARD_CRUISER', label: 'Board Vehicle After Scene', enabled: true, priority: 50 },
+        { id: 'RETURN_TO_PRECINCT', label: 'RTB & Park in Station Bay', enabled: true, priority: 35 },
+        { id: 'PARKED_STANDBY', label: 'Standby at Precinct', enabled: true, priority: 10 },
+      ],
+      pedestrian: [
+        { id: 'RAGDOLL_INCAPACITATED', label: 'Ragdoll / Downed', enabled: true, priority: 100 },
+        { id: 'EVADE_VEHICLE', label: 'Dodge & Dive Approaching Vehicle', enabled: true, priority: 90, params: { ttcHorizon: 1.85, detectRadius: 22, sprintSpeed: 6.4, jumpThresholdTtc: 0.95 } },
+        { id: 'FLEE_THREAT', label: 'Flee Active Shootout', enabled: true, priority: 75, params: { fleeRadius: 34, fleeSpeed: 5.2 } },
+        { id: 'AVOID_OBSTACLE', label: 'Avoid Pedestrians & Obstacles', enabled: true, priority: 55, params: { crowdRadius: 1.65, lookahead: 2.4 } },
+        { id: 'SIDEWALK_STROLL', label: 'Normal Sidewalk Patrol', enabled: true, priority: 20, params: { walkSpeed: 1.8 } },
+      ],
+    };
+  }
+  if (!config.world.buildingModels) {
+    config.world.buildingModels = {
+      storefront: 'building_storefront',
+      brick: 'building_brick',
+      concrete: 'building_concrete',
+      limestone: 'building_limestone',
+      office: 'building_office',
+      station_hall: 'building_station_hall',
+      station_glass: 'building_station_glass',
+      trim: 'building_trim',
+      fountain: 'prop_fountain',
+      sign: 'prop_sign',
+      beacon: 'prop_beacon',
+    };
+  }
+  if (!config.world.propModels) {
+    config.world.propModels = {
+      tree: 'prop_tree',
+      streetlight: 'prop_streetlight',
+      fountain: 'prop_fountain',
+      sign: 'prop_sign',
+      beacon: 'prop_beacon',
+      roadSign: 'prop_road_sign',
+    };
+  }
+
+  syncMapOwnedConfig(activeMap, config);
 }
 
 function logAssetIssue(issue: AssetIssue): void {
   const prefix = issue.severity === 'fatal' ? '[FATAL ASSET ERROR]' : '[ASSET ERROR]';
   console.error(`${prefix} (${issue.category}:${issue.id}) ${issue.path} -> ${issue.message}`);
+  simEventLog.log(
+    issue.severity === 'fatal' ? 'fatal' : 'error',
+    'asset',
+    `${issue.category}:${issue.id}`,
+    issue.message,
+    issue.path,
+  );
 }
 
 async function fetchJsonStrict<T>(url: string): Promise<T> {
@@ -277,8 +617,8 @@ export async function loadJsonAssetBundle(
     if (!isObjectRecord(manifest) || typeof manifest.config !== 'string') {
       throw new Error('Manifest missing required "config" JSON reference.');
     }
-    if (typeof manifest.map !== 'string') {
-      throw new Error('Manifest missing required "map" JSON reference.');
+    if (typeof manifest.map !== 'string' && (!isObjectRecord(manifest.maps) || Object.keys(manifest.maps).length === 0)) {
+      throw new Error('Manifest missing required "map" or "maps" JSON reference.');
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -327,21 +667,51 @@ export async function loadJsonAssetBundle(
     };
   }
 
-  let map: CustomMapAsset;
-  try {
-    const rawMap = await fetchJsonStrict<unknown>(manifest.map);
-    if (!validateMapAsset(rawMap)) {
-      throw new Error('Map JSON failed jdata-map-v1 schema validation.');
+  const maps: Record<string, CustomMapAsset> = {};
+  const mapPathsToLoad: Record<string, string> = {};
+  if (isObjectRecord(manifest.maps)) {
+    for (const [k, v] of Object.entries(manifest.maps)) {
+      if (typeof v === 'string') mapPathsToLoad[k] = v;
     }
-    map = rawMap;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  }
+  if (typeof manifest.map === 'string' && manifest.map.trim()) {
+    const primaryKey = manifest.defaultMap || 'metro_default';
+    if (!Object.values(mapPathsToLoad).includes(manifest.map)) {
+      mapPathsToLoad[primaryKey] = manifest.map;
+    }
+  }
+
+  await Promise.all(
+    Object.entries(mapPathsToLoad).map(async ([mapKey, mapPath]) => {
+      try {
+        const rawMap = await fetchJsonStrict<unknown>(mapPath);
+        if (!validateMapAsset(rawMap)) {
+          throw new Error('Map JSON failed schema validation.');
+        }
+        const resolvedId = rawMap.id || mapKey;
+        maps[resolvedId] = rawMap;
+      } catch (err) {
+        const issue: AssetIssue = {
+          severity: 'error',
+          category: 'map',
+          id: mapKey,
+          path: mapPath,
+          message: err instanceof Error ? err.message : String(err),
+        };
+        logAssetIssue(issue);
+        issues.push(issue);
+      }
+    }),
+  );
+
+  const mapIds = Object.keys(maps);
+  if (mapIds.length === 0) {
     const issue: AssetIssue = {
       severity: 'fatal',
       category: 'map',
       id: 'world_map',
-      path: manifest.map,
-      message: msg,
+      path: manifest.map || manifestUrl,
+      message: 'Failed to load any valid map JSON.',
     };
     logAssetIssue(issue);
     issues.push(issue);
@@ -349,10 +719,14 @@ export async function loadJsonAssetBundle(
       assets: null,
       config,
       issues,
-      fatalError: `Fatal Map Failure (${manifest.map}): ${msg}`,
+      fatalError: `Fatal Map Failure: no playable maps loaded from ${manifest.packName || manifestUrl}.`,
       sourceLabel: manifest.packName || manifestUrl,
     };
   }
+
+  const activeMapId =
+    manifest.defaultMap && maps[manifest.defaultMap] ? manifest.defaultMap : mapIds[0];
+  const map = maps[activeMapId];
 
   const materials: Record<string, ModelMaterialDef> = {};
   if (typeof manifest.materials === 'string' && manifest.materials.trim()) {
@@ -375,24 +749,57 @@ export async function loadJsonAssetBundle(
     }
   }
 
+  const lightbars: Record<string, LightbarAssetDef> = {};
+  const vehicleDefs: Record<string, VehicleAssetDef> = {};
   const textures: Record<string, ProceduralTextureAsset> = {};
   const models: Record<string, ProceduralModelAsset> = {};
   const audio: Record<string, ProceduralAudioAsset> = {};
   const media: Record<string, ImportedMediaAsset> = {};
 
-  const textureEntries = Object.entries(manifest.textures ?? {});
-  const modelEntries = Object.entries(manifest.models ?? {});
-  const audioEntries = Object.entries(manifest.audio ?? {});
-  const mediaEntries = Object.entries(manifest.media ?? {});
-
   await Promise.all([
     Promise.all(
-      textureEntries.map(async ([key, path]) => {
+      Object.entries(manifest.lightbars ?? {}).map(async ([key, path]) => {
         try {
           const data = await fetchJsonStrict<unknown>(path);
-          if (!validateTextureAsset(data)) {
-            throw new Error('Invalid jdata-texture format.');
-          }
+          if (!validateLightbarAsset(data)) throw new Error('Invalid jdata-lightbar-v3 format.');
+          lightbars[data.id || key] = data;
+        } catch (err) {
+          const issue: AssetIssue = {
+            severity: 'error',
+            category: 'lightbar',
+            id: key,
+            path,
+            message: err instanceof Error ? err.message : String(err),
+          };
+          logAssetIssue(issue);
+          issues.push(issue);
+        }
+      }),
+    ),
+    Promise.all(
+      Object.entries(manifest.vehicles ?? {}).map(async ([key, path]) => {
+        try {
+          const data = await fetchJsonStrict<unknown>(path);
+          if (!validateVehicleAsset(data)) throw new Error('Invalid jdata-vehicle-v3 format.');
+          vehicleDefs[data.id || key] = data;
+        } catch (err) {
+          const issue: AssetIssue = {
+            severity: 'error',
+            category: 'vehicle',
+            id: key,
+            path,
+            message: err instanceof Error ? err.message : String(err),
+          };
+          logAssetIssue(issue);
+          issues.push(issue);
+        }
+      }),
+    ),
+    Promise.all(
+      Object.entries(manifest.textures ?? {}).map(async ([key, path]) => {
+        try {
+          const data = await fetchJsonStrict<unknown>(path);
+          if (!validateTextureAsset(data)) throw new Error('Invalid jdata-texture format.');
           textures[key] = data;
         } catch (err) {
           const issue: AssetIssue = {
@@ -408,12 +815,10 @@ export async function loadJsonAssetBundle(
       }),
     ),
     Promise.all(
-      modelEntries.map(async ([key, path]) => {
+      Object.entries(manifest.models ?? {}).map(async ([key, path]) => {
         try {
           const data = await fetchJsonStrict<unknown>(path);
-          if (!validateModelAsset(data)) {
-            throw new Error('Invalid jdata-model format.');
-          }
+          if (!validateModelAsset(data)) throw new Error('Invalid jdata-model format.');
           models[key] = data;
         } catch (err) {
           const issue: AssetIssue = {
@@ -429,12 +834,10 @@ export async function loadJsonAssetBundle(
       }),
     ),
     Promise.all(
-      audioEntries.map(async ([key, path]) => {
+      Object.entries(manifest.audio ?? {}).map(async ([key, path]) => {
         try {
           const data = await fetchJsonStrict<unknown>(path);
-          if (!validateAudioAsset(data)) {
-            throw new Error('Invalid jdata-audio format.');
-          }
+          if (!validateAudioAsset(data)) throw new Error('Invalid jdata-audio format.');
           audio[key] = data;
         } catch (err) {
           const issue: AssetIssue = {
@@ -450,7 +853,7 @@ export async function loadJsonAssetBundle(
       }),
     ),
     Promise.all(
-      mediaEntries.map(async ([key, meta]) => {
+      Object.entries(manifest.media ?? {}).map(async ([key, meta]) => {
         try {
           const res = await fetch(meta.path, { cache: 'no-store' });
           if (!res.ok) throw new Error(`HTTP ${res.status} loading media ${meta.path}`);
@@ -478,12 +881,24 @@ export async function loadJsonAssetBundle(
     ),
   ]);
 
+  finalizeConfigNormalization(config, vehicleDefs, lightbars, map);
+  simEventLog.info(
+    'asset',
+    'Pack Loaded',
+    `Loaded "${manifest.packName}" (${manifest.formatVersion}) with ${mapIds.length} map(s), ${Object.keys(lightbars).length} lightbar(s).`,
+    manifestUrl,
+  );
+
   return {
     assets: {
       manifest,
       config,
+      activeMapId,
       map,
+      maps,
       materials,
+      lightbars,
+      vehicleDefs,
       textures,
       models,
       audio,
@@ -492,7 +907,7 @@ export async function loadJsonAssetBundle(
     config,
     issues,
     fatalError: null,
-    sourceLabel: `Built-in (${manifest.packName})`,
+    sourceLabel: `Built-in (${manifest.packName} v${manifest.formatVersion})`,
   };
 }
 
@@ -609,8 +1024,8 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
     if (!isObjectRecord(manifest) || typeof manifest.config !== 'string') {
       throw new Error('Manifest inside ZIP is missing required "config" path.');
     }
-    if (typeof manifest.map !== 'string') {
-      throw new Error('Manifest inside ZIP is missing required "map" path.');
+    if (typeof manifest.map !== 'string' && (!isObjectRecord(manifest.maps) || Object.keys(manifest.maps).length === 0)) {
+      throw new Error('Manifest inside ZIP is missing required "map" or "maps" path.');
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -679,15 +1094,51 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
     };
   }
 
-  let map: CustomMapAsset;
-  const mapEntry = findZipEntry(zip, manifestDir, manifest.map);
-  if (!mapEntry) {
+  const maps: Record<string, CustomMapAsset> = {};
+  const mapPathsToLoad: Record<string, string> = {};
+  if (isObjectRecord(manifest.maps)) {
+    for (const [k, v] of Object.entries(manifest.maps)) {
+      if (typeof v === 'string') mapPathsToLoad[k] = v;
+    }
+  }
+  if (typeof manifest.map === 'string' && manifest.map.trim()) {
+    const primaryKey = manifest.defaultMap || 'metro_default';
+    if (!Object.values(mapPathsToLoad).includes(manifest.map)) {
+      mapPathsToLoad[primaryKey] = manifest.map;
+    }
+  }
+
+  await Promise.all(
+    Object.entries(mapPathsToLoad).map(async ([mapKey, mapPath]) => {
+      try {
+        const entry = findZipEntry(zip, manifestDir, mapPath);
+        if (!entry) throw new Error(`Map "${mapPath}" not found in ZIP.`);
+        const rawMap = JSON.parse(await entry.async('string')) as unknown;
+        if (!validateMapAsset(rawMap)) throw new Error('Invalid map JSON schema.');
+        const resolvedId = rawMap.id || mapKey;
+        maps[resolvedId] = rawMap;
+      } catch (err) {
+        const issue: AssetIssue = {
+          severity: 'error',
+          category: 'map',
+          id: mapKey,
+          path: mapPath,
+          message: err instanceof Error ? err.message : String(err),
+        };
+        logAssetIssue(issue);
+        issues.push(issue);
+      }
+    }),
+  );
+
+  const mapIds = Object.keys(maps);
+  if (mapIds.length === 0) {
     const issue: AssetIssue = {
       severity: 'fatal',
       category: 'map',
       id: 'world_map',
-      path: manifest.map,
-      message: `Missing required map file "${manifest.map}" inside ZIP.`,
+      path: manifest.map || file.name,
+      message: 'No valid map files could be loaded from ZIP.',
     };
     logAssetIssue(issue);
     issues.push(issue);
@@ -695,36 +1146,14 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
       assets: null,
       config,
       issues,
-      fatalError: `Fatal Map Missing in "${file.name}": ${manifest.map}`,
+      fatalError: `Fatal Map Error in "${file.name}": no valid maps loaded.`,
       sourceLabel: `ZIP: ${file.name}`,
     };
   }
 
-  try {
-    const rawMap = JSON.parse(await mapEntry.async('string')) as unknown;
-    if (!validateMapAsset(rawMap)) {
-      throw new Error('Map inside ZIP failed jdata-map-v1 schema validation.');
-    }
-    map = rawMap;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const issue: AssetIssue = {
-      severity: 'fatal',
-      category: 'map',
-      id: 'world_map',
-      path: manifest.map,
-      message: msg,
-    };
-    logAssetIssue(issue);
-    issues.push(issue);
-    return {
-      assets: null,
-      config,
-      issues,
-      fatalError: `Fatal Map Error in "${file.name}": ${msg}`,
-      sourceLabel: `ZIP: ${file.name}`,
-    };
-  }
+  const activeMapId =
+    manifest.defaultMap && maps[manifest.defaultMap] ? manifest.defaultMap : mapIds[0];
+  const map = maps[activeMapId];
 
   const materials: Record<string, ModelMaterialDef> = {};
   if (typeof manifest.materials === 'string' && manifest.materials.trim()) {
@@ -748,12 +1177,56 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
     }
   }
 
+  const lightbars: Record<string, LightbarAssetDef> = {};
+  const vehicleDefs: Record<string, VehicleAssetDef> = {};
   const textures: Record<string, ProceduralTextureAsset> = {};
   const models: Record<string, ProceduralModelAsset> = {};
   const audio: Record<string, ProceduralAudioAsset> = {};
   const media: Record<string, ImportedMediaAsset> = {};
 
   await Promise.all([
+    Promise.all(
+      Object.entries(manifest.lightbars ?? {}).map(async ([key, path]) => {
+        try {
+          const entry = findZipEntry(zip, manifestDir, path);
+          if (!entry) throw new Error('File not found in ZIP');
+          const parsed = JSON.parse(await entry.async('string')) as unknown;
+          if (!validateLightbarAsset(parsed)) throw new Error('Invalid lightbar JSON schema');
+          lightbars[parsed.id || key] = parsed;
+        } catch (err) {
+          const issue: AssetIssue = {
+            severity: 'error',
+            category: 'lightbar',
+            id: key,
+            path,
+            message: err instanceof Error ? err.message : String(err),
+          };
+          logAssetIssue(issue);
+          issues.push(issue);
+        }
+      }),
+    ),
+    Promise.all(
+      Object.entries(manifest.vehicles ?? {}).map(async ([key, path]) => {
+        try {
+          const entry = findZipEntry(zip, manifestDir, path);
+          if (!entry) throw new Error('File not found in ZIP');
+          const parsed = JSON.parse(await entry.async('string')) as unknown;
+          if (!validateVehicleAsset(parsed)) throw new Error('Invalid vehicle JSON schema');
+          vehicleDefs[parsed.id || key] = parsed;
+        } catch (err) {
+          const issue: AssetIssue = {
+            severity: 'error',
+            category: 'vehicle',
+            id: key,
+            path,
+            message: err instanceof Error ? err.message : String(err),
+          };
+          logAssetIssue(issue);
+          issues.push(issue);
+        }
+      }),
+    ),
     Promise.all(
       Object.entries(manifest.textures ?? {}).map(async ([key, path]) => {
         try {
@@ -846,12 +1319,24 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
     ),
   ]);
 
+  finalizeConfigNormalization(config, vehicleDefs, lightbars, map);
+  simEventLog.info(
+    'asset',
+    'ZIP Pack Imported',
+    `Imported "${manifest.packName}" from ${file.name} (${mapIds.length} map(s)).`,
+    file.name,
+  );
+
   return {
     assets: {
       manifest,
       config,
+      activeMapId,
       map,
+      maps,
       materials,
+      lightbars,
+      vehicleDefs,
       textures,
       models,
       audio,
@@ -867,27 +1352,66 @@ export async function loadJsonAssetBundleFromZip(file: File): Promise<AssetLoadR
 export async function exportAssetBundleToZip(assets: LoadedJsonAssets): Promise<Blob> {
   const zip = new JSZip();
 
-  const mapRel = `maps/${assets.map.id || 'metro_default'}.json`;
+  syncMapOwnedConfig(assets.map, assets.config);
+  const allMaps: Record<string, CustomMapAsset> = {
+    ...assets.maps,
+    [assets.activeMapId || assets.map.id]: assets.map,
+  };
+  const primaryId = assets.activeMapId || assets.map.id || Object.keys(allMaps)[0] || 'metro_default';
+  const primaryMapRel = `maps/${primaryId}.json`;
+
   const hasMaterials = Object.keys(assets.materials ?? {}).length > 0;
   const hasMedia = Object.keys(assets.media ?? {}).length > 0;
+  const hasLightbars = Object.keys(assets.lightbars ?? {}).length > 0;
+  const hasVehicles = Object.keys(assets.vehicleDefs ?? {}).length > 0;
 
   const exportedManifest: AssetManifest = {
-    formatVersion: '2.0',
+    formatVersion: '1.5.0',
     packName: assets.manifest.packName,
     config: 'engine_config.json',
-    map: mapRel,
+    map: primaryMapRel,
+    defaultMap: primaryId,
+    maps: {},
     ...(hasMaterials ? { materials: 'materials.json' } : {}),
+    ...(hasLightbars ? { lightbars: {} } : {}),
+    ...(hasVehicles ? { vehicles: {} } : {}),
     textures: {},
     models: {},
     audio: {},
     ...(hasMedia ? { media: {} } : {}),
   };
 
-  zip.file('engine_config.json', JSON.stringify(assets.config, null, 2));
-  zip.file(mapRel, JSON.stringify(assets.map, null, 2));
+  const exportedConfig: EngineConfigAsset = {
+    ...assets.config,
+    format: 'jdata-config-v3',
+    version: '1.5.0',
+  };
+  zip.file('engine_config.json', JSON.stringify(exportedConfig, null, 2));
+
+  for (const [id, mapAsset] of Object.entries(allMaps)) {
+    const rel = `maps/${id}.json`;
+    exportedManifest.maps![id] = rel;
+    zip.file(rel, JSON.stringify({ ...mapAsset, format: 'jdata-map-v3' }, null, 2));
+  }
 
   if (hasMaterials) {
     zip.file('materials.json', JSON.stringify(assets.materials, null, 2));
+  }
+
+  if (hasLightbars && exportedManifest.lightbars) {
+    for (const [id, lb] of Object.entries(assets.lightbars)) {
+      const rel = `lightbars/${id}.json`;
+      exportedManifest.lightbars[id] = rel;
+      zip.file(rel, JSON.stringify({ ...lb, format: 'jdata-lightbar-v3' }, null, 2));
+    }
+  }
+
+  if (hasVehicles && exportedManifest.vehicles) {
+    for (const [id, veh] of Object.entries(assets.vehicleDefs)) {
+      const rel = `vehicles/${id}.json`;
+      exportedManifest.vehicles[id] = rel;
+      zip.file(rel, JSON.stringify({ ...veh, format: 'jdata-vehicle-v3' }, null, 2));
+    }
   }
 
   for (const [id, tex] of Object.entries(assets.textures)) {

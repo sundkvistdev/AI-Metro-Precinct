@@ -23,6 +23,9 @@ export interface AvoidanceResult {
   preferredTurnDir: 1 | -1;
 }
 
+const STEER_CANDIDATE_OFFSETS = [0, 0.24, -0.24, 0.48, -0.48, 0.74, -0.74];
+const PREDICT_TIMES = [0.35, 0.75, 1.15];
+
 /**
  * Computes pure-pursuit path lookahead without cutting across sharp building corners.
  */
@@ -82,6 +85,9 @@ export function computePurePursuitLookahead(
   return { targetX: last.x, targetZ: last.z };
 }
 
+/**
+ * Goal-based predictive vehicle + obstacle collision avoidance with multi-arc scoring.
+ */
 export function computeAvoidanceSteerAndSpeed(params: {
   selfId: string;
   pos: THREE.Vector3;
@@ -99,6 +105,7 @@ export function computeAvoidanceSteerAndSpeed(params: {
   dt: number;
   recklessness?: number;
   impatience?: number;
+  targetVehicleId?: string;
 }): AvoidanceResult {
   const {
     selfId,
@@ -117,6 +124,7 @@ export function computeAvoidanceSteerAndSpeed(params: {
     dt,
     recklessness = 0,
     impatience = 0,
+    targetVehicleId,
   } = params;
 
   const fwdX = Math.sin(yaw);
@@ -125,15 +133,14 @@ export function computeAvoidanceSteerAndSpeed(params: {
   const rightZ = -Math.sin(yaw);
 
   let speedCap = baseSpeed;
-  let targetSteerBias = 0;
   let wallBlocked = false;
   let vehicleBlocked = false;
 
-  // 1. Bumper-width static building / obstacle feelers + wide corner whiskers
-  const rayLen = 5.4 + selfHalfL + Math.min(7.5, speed * 0.44);
+  // 1. Bumper-width static building / obstacle feelers + rear left/right clearance
+  const rayLen = 6.2 + selfHalfL + Math.min(9.5, speed * 0.52);
   const castFromOffset = (latFrac: number, angleOffset: number, len: number) => {
-    const ox = pos.x + rightX * (latFrac * selfHalfW * 0.92) + fwdX * (selfHalfL * 0.55);
-    const oz = pos.z + rightZ * (latFrac * selfHalfW * 0.92) + fwdZ * (selfHalfL * 0.55);
+    const ox = pos.x + rightX * (latFrac * selfHalfW * 0.94) + fwdX * (selfHalfL * 0.55);
+    const oz = pos.z + rightZ * (latFrac * selfHalfW * 0.94) + fwdZ * (selfHalfL * 0.55);
     const a = yaw + angleOffset;
     const tx = ox + Math.sin(a) * len;
     const tz = oz + Math.cos(a) * len;
@@ -143,15 +150,29 @@ export function computeAvoidanceSteerAndSpeed(params: {
   const cRay = castFromOffset(0, 0, rayLen);
   const lbRay = castFromOffset(1, 0.08, rayLen * 0.9);
   const rbRay = castFromOffset(-1, -0.08, rayLen * 0.9);
-  const lWideRay = castFromOffset(0.7, 0.54, rayLen * 0.72);
-  const rWideRay = castFromOffset(-0.7, -0.54, rayLen * 0.72);
-  const rearRay = staticBvh.raycastSegment(
+  const lWideRay = castFromOffset(0.75, 0.58, rayLen * 0.74);
+  const rWideRay = castFromOffset(-0.75, -0.58, rayLen * 0.74);
+
+  const rearLen = selfHalfL + 3.8;
+  const rearCenterRay = staticBvh.raycastSegment(
     pos.x,
     pos.z,
-    pos.x - fwdX * (selfHalfL + 3.4),
-    pos.z - fwdZ * (selfHalfL + 3.4),
+    pos.x - fwdX * rearLen,
+    pos.z - fwdZ * rearLen,
   );
-  const rearClear = rearRay.clear;
+  const rearLeftRay = staticBvh.raycastSegment(
+    pos.x,
+    pos.z,
+    pos.x - Math.sin(yaw + 0.45) * rearLen,
+    pos.z - Math.cos(yaw + 0.45) * rearLen,
+  );
+  const rearRightRay = staticBvh.raycastSegment(
+    pos.x,
+    pos.z,
+    pos.x - Math.sin(yaw - 0.45) * rearLen,
+    pos.z - Math.cos(yaw - 0.45) * rearLen,
+  );
+  const rearClear = rearCenterRay.clear || rearLeftRay.clear || rearRightRay.clear;
 
   const minFrontT = Math.min(
     cRay.clear ? 1 : cRay.t,
@@ -160,45 +181,134 @@ export function computeAvoidanceSteerAndSpeed(params: {
   );
   const leftClear = Math.min(lbRay.clear ? 1 : lbRay.t, lWideRay.clear ? 1 : lWideRay.t);
   const rightClear = Math.min(rbRay.clear ? 1 : rbRay.t, rWideRay.clear ? 1 : rWideRay.t);
-  const preferredTurnDir: 1 | -1 = leftClear >= rightClear ? 1 : -1;
+  const preferredTurnDir: 1 | -1 =
+    rearLeftRay.clear && !rearRightRay.clear
+      ? -1
+      : rearRightRay.clear && !rearLeftRay.clear
+      ? 1
+      : leftClear >= rightClear
+      ? 1
+      : -1;
 
   if (minFrontT < 1) {
     const wallDist = minFrontT * rayLen;
-    if (wallDist < 2.2) {
+    if (wallDist < 2.25) {
       speedCap = 0;
       wallBlocked = true;
-      targetSteerBias += preferredTurnDir * 0.95;
-    } else if (wallDist < 4.8) {
-      speedCap = Math.min(speedCap, Math.max(0.8, (wallDist - 1.8) * 1.6));
-      wallBlocked = wallDist < 3.0;
-      targetSteerBias += preferredTurnDir * 0.78;
+    } else if (wallDist < 5.0) {
+      speedCap = Math.min(speedCap, Math.max(1.1, (wallDist - 1.8) * 1.75));
+      wallBlocked = wallDist < 3.1;
     } else {
-      speedCap = Math.min(speedCap, Math.max(4.0, wallDist * 0.92));
-      targetSteerBias += preferredTurnDir * (1 - minFrontT) * 0.56;
-    }
-  } else {
-    if (!lWideRay.clear && lWideRay.t < 0.72) {
-      targetSteerBias -= (1 - lWideRay.t) * 0.52;
-    }
-    if (!rWideRay.clear && rWideRay.t < 0.72) {
-      targetSteerBias += (1 - rWideRay.t) * 0.52;
+      speedCap = Math.min(speedCap, Math.max(4.4, wallDist * 0.96));
     }
   }
 
-  // 2. Forward vehicle corridor check + overtaking / impatience squeeze
-  const scanRange = 8.5 + Math.min(13, speed * 0.65);
+  // 2. Gather nearby vehicles for both immediate corridor & predictive TTC scan
+  const relevantVehicles: AvoidanceVehicleProxy[] = [];
+  const nearSearchSq = (26 + speed * 0.9) ** 2;
+  for (const other of allVehicles) {
+    if (other.id === selfId) continue;
+    if (targetVehicleId && other.id === targetVehicleId && recklessness >= 0.7) {
+      // Aggressive interceptor intentionally closes gap on pursued target
+      continue;
+    }
+    const dx = other.x - pos.x;
+    const dz = other.z - pos.z;
+    if (dx * dx + dz * dz <= nearSearchSq) {
+      relevantVehicles.push(other);
+    }
+  }
+
+  // 3. Evaluate multi-candidate steering arcs relative to baseDesiredYaw
+  const goalErr = normalizeAngle(baseDesiredYaw - yaw);
+  const testSpeed = Math.max(5.5, Math.min(baseSpeed, speed + 4.5));
+  const hardStopGap = THREE.MathUtils.lerp(2.1, 1.15, Math.max(recklessness * 0.85, impatience * 0.55));
+  const probeArcLen = 5.5 + selfHalfL + Math.min(8.0, testSpeed * 0.45);
+
+  let bestOffset = 0;
+  let bestScore = -Infinity;
+
+  for (const candOffset of STEER_CANDIDATE_OFFSETS) {
+    // Disallow wide swerves if vehicle cannot overtake unless wall is right ahead
+    if (Math.abs(candOffset) > 0.3 && !canOvertake && minFrontT > 0.55) {
+      continue;
+    }
+    const candYaw = normalizeAngle(baseDesiredYaw + candOffset);
+    const cFwdX = Math.sin(candYaw);
+    const cFwdZ = Math.cos(candYaw);
+    const cRightX = Math.cos(candYaw);
+    const cRightZ = -Math.sin(candYaw);
+
+    // Check wall clearance along candidate heading
+    const rayMid = staticBvh.raycastSegment(
+      pos.x,
+      pos.z,
+      pos.x + cFwdX * probeArcLen,
+      pos.z + cFwdZ * probeArcLen,
+    );
+    const rayLeft = staticBvh.raycastSegment(
+      pos.x + cRightX * (selfHalfW * 0.88),
+      pos.z + cRightZ * (selfHalfW * 0.88),
+      pos.x + cRightX * (selfHalfW * 0.88) + cFwdX * (probeArcLen * 0.85),
+      pos.z + cRightZ * (selfHalfW * 0.88) + cFwdZ * (probeArcLen * 0.85),
+    );
+    const rayRight = staticBvh.raycastSegment(
+      pos.x - cRightX * (selfHalfW * 0.88),
+      pos.z - cRightZ * (selfHalfW * 0.88),
+      pos.x - cRightX * (selfHalfW * 0.88) + cFwdX * (probeArcLen * 0.85),
+      pos.z - cRightZ * (selfHalfW * 0.88) + cFwdZ * (probeArcLen * 0.85),
+    );
+    const minWallT = Math.min(
+      rayMid.clear ? 1 : rayMid.t,
+      rayLeft.clear ? 1 : rayLeft.t,
+      rayRight.clear ? 1 : rayRight.t,
+    );
+
+    // Score predictive Time-To-Collision clearance along candidate arc
+    let minVehMargin = 6.0;
+    for (const v of relevantVehicles) {
+      const vFwdX = Math.sin(v.yaw);
+      const vFwdZ = Math.cos(v.yaw);
+      for (const t of PREDICT_TIMES) {
+        const myX = pos.x + cFwdX * (testSpeed * t);
+        const myZ = pos.z + cFwdZ * (testSpeed * t);
+        const otX = v.x + vFwdX * (v.speed * t);
+        const otZ = v.z + vFwdZ * (v.speed * t);
+        const d = Math.hypot(otX - myX, otZ - myZ);
+        const minSafe = selfHalfW + v.halfW + 0.85;
+        const margin = d - minSafe;
+        if (margin < minVehMargin) {
+          minVehMargin = margin;
+        }
+      }
+    }
+
+    // Score prefers straight path toward goal, penalizes wall proximity & predicted vehicle overlap
+    const goalPenalty = Math.abs(candOffset) * 1.45;
+    const yawContinuity = Math.abs(candOffset - prevSteerBias) * 0.35;
+    const wallScore = minWallT < 1 ? -(1 - minWallT) * 14.0 : 2.5;
+    const vehScore = minVehMargin < 0 ? minVehMargin * 9.0 : Math.min(2.5, minVehMargin * 0.6);
+    const score = vehScore + wallScore - goalPenalty - yawContinuity;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestOffset = candOffset;
+    }
+  }
+
+  // 4. Direct immediate forward vehicle corridor speed cap + emergency brake
+  const scanRange = 9.0 + Math.min(13.5, speed * 0.7);
   let closestVehicle: AvoidanceVehicleProxy | null = null;
   let closestGap = Infinity;
 
-  for (const other of allVehicles) {
-    if (other.id === selfId) continue;
+  for (const other of relevantVehicles) {
     const dx = other.x - pos.x;
     const dz = other.z - pos.z;
     const fwdDist = dx * fwdX + dz * fwdZ;
-    if (fwdDist < 0.4 || fwdDist > scanRange) continue;
+    if (fwdDist < 0.35 || fwdDist > scanRange) continue;
 
     const latDist = Math.abs(dx * rightX + dz * rightZ);
-    const corridorTightness = THREE.MathUtils.lerp(0.52, 0.24, Math.max(recklessness, impatience * 0.6));
+    const corridorTightness = THREE.MathUtils.lerp(0.5, 0.22, Math.max(recklessness, impatience * 0.6));
     const corridorHalf = selfHalfW + other.halfW + corridorTightness;
     if (latDist < corridorHalf) {
       const gap = fwdDist - (selfHalfL + other.halfL);
@@ -209,97 +319,70 @@ export function computeAvoidanceSteerAndSpeed(params: {
     }
   }
 
-  const effectiveOvertake = canOvertake || impatience >= 0.48;
-  const hardStopGap = THREE.MathUtils.lerp(2.15, 1.15, Math.max(recklessness * 0.85, impatience * 0.55));
-
   if (closestVehicle) {
     const otherSameDir =
       Math.sin(closestVehicle.yaw) * fwdX + Math.cos(closestVehicle.yaw) * fwdZ > 0.35;
+    const safeLead = otherSameDir ? Math.max(0, closestVehicle.speed * 0.92) : 0;
+    const hasCleanEscape = Math.abs(bestOffset) >= 0.24 && bestScore > -1.5;
 
-    if (effectiveOvertake && closestGap > 0.9 && closestGap < 15.5) {
-      const isSideClear = (sideSign: number): boolean => {
-        const shift = 2.85 + selfHalfW * 0.4;
-        const probeX = pos.x + fwdX * 6.5 + rightX * (sideSign * shift);
-        const probeZ = pos.z + fwdZ * 6.5 + rightZ * (sideSign * shift);
-        if (!staticBvh.raycastSegment(pos.x, pos.z, probeX, probeZ).clear) {
-          return false;
-        }
-        for (const v of allVehicles) {
-          if (v.id === selfId || v.id === closestVehicle!.id) continue;
-          const vdx = v.x - pos.x;
-          const vdz = v.z - pos.z;
-          const vf = vdx * fwdX + vdz * fwdZ;
-          const vl = vdx * rightX + vdz * rightZ;
-          if (vf > -2 && vf < 15 && Math.abs(vl - sideSign * shift) < 2.05) {
-            return false;
-          }
-        }
-        return true;
-      };
-
-      const canLeft = isSideClear(1);
-      const canRight = isSideClear(-1);
-      if (canLeft || canRight) {
-        const dir = canLeft ? 1 : -1;
-        targetSteerBias += dir * (0.44 + recklessness * 0.14);
-        if (closestGap < hardStopGap + 1.4) {
-          speedCap = Math.min(speedCap, Math.max(4.5, closestVehicle.speed + 2.8));
-        }
-      } else {
-        const safeLead = otherSameDir ? Math.max(0, closestVehicle.speed * 0.9) : 0;
-        if (closestGap < hardStopGap) {
-          speedCap = 0;
-          vehicleBlocked = true;
-        } else {
-          speedCap = Math.min(speedCap, Math.max(safeLead, closestGap * 1.2));
-        }
-      }
+    if (closestGap < hardStopGap && !hasCleanEscape) {
+      speedCap = 0;
+      vehicleBlocked = true;
+    } else if (closestGap < hardStopGap && hasCleanEscape) {
+      speedCap = Math.min(speedCap, Math.max(4.8, closestVehicle.speed + 2.5));
+    } else if (closestGap < 8.0) {
+      speedCap = Math.min(
+        speedCap,
+        Math.max(safeLead, (closestGap - hardStopGap * 0.7) * 1.45),
+      );
+      if (speedCap < 1.2 && !hasCleanEscape) vehicleBlocked = true;
     } else {
-      const safeLead = otherSameDir ? Math.max(0, closestVehicle.speed * 0.88) : 0;
-      if (closestGap < hardStopGap) {
-        speedCap = 0;
-        vehicleBlocked = true;
-      } else if (closestGap < 7.5) {
-        speedCap = Math.min(
-          speedCap,
-          Math.max(safeLead, (closestGap - hardStopGap * 0.75) * 1.3),
-        );
-      } else {
-        speedCap = Math.min(speedCap, Math.max(safeLead + 2.5, closestGap * 0.9));
-      }
+      speedCap = Math.min(speedCap, Math.max(safeLead + 3.0, closestGap * 0.95));
     }
   }
 
-  // 3. Pedestrian corridor yield (high urgency / reckless responders barely slow down)
-  if (recklessness < 0.82) {
+  // 5. Pedestrian corridor yield (high urgency / reckless responders yield less)
+  if (recklessness < 0.85) {
     for (const ped of pedestrians) {
       if (ped.ragdoll.active) continue;
       const dx = ped.pos.x - pos.x;
       const dz = ped.pos.z - pos.z;
       const fwdDist = dx * fwdX + dz * fwdZ;
-      if (fwdDist < 1.0 || fwdDist > 10.0) continue;
+      if (fwdDist < 0.9 || fwdDist > 10.5) continue;
       const lat = dx * rightX + dz * rightZ;
-      if (Math.abs(lat) < selfHalfW + 0.65) {
-        if (fwdDist < 4.5) {
+      if (Math.abs(lat) < selfHalfW + 0.68) {
+        if (fwdDist < 4.8) {
           const pedCap =
             recklessness > 0.45
-              ? THREE.MathUtils.lerp(2.5, 8.5, (recklessness - 0.45) / 0.37)
+              ? THREE.MathUtils.lerp(2.5, 8.8, (recklessness - 0.45) / 0.4)
               : canOvertake
-              ? 3.8
+              ? 4.0
               : 0;
           speedCap = Math.min(speedCap, pedCap);
           if (pedCap <= 0.1) vehicleBlocked = true;
-        } else {
-          targetSteerBias += (lat >= 0 ? -1 : 1) * 0.28;
+        } else if (bestOffset === 0) {
+          bestOffset += (lat >= 0 ? -1 : 1) * 0.28;
         }
         break;
       }
     }
   }
 
-  const nextSteerBias = THREE.MathUtils.damp(prevSteerBias, targetSteerBias, 7.2, dt);
+  let targetBias = bestOffset;
+  if (wallBlocked && Math.abs(goalErr) < 0.65) {
+    targetBias = preferredTurnDir * 0.92;
+  } else {
+    if (!lWideRay.clear && lWideRay.t < 0.68) {
+      targetBias -= (1 - lWideRay.t) * 0.42;
+    }
+    if (!rWideRay.clear && rWideRay.t < 0.68) {
+      targetBias += (1 - rWideRay.t) * 0.42;
+    }
+  }
+
+  const nextSteerBias = THREE.MathUtils.damp(prevSteerBias, targetBias, 8.0, dt);
   const desiredYaw = normalizeAngle(
-    wallBlocked ? yaw + targetSteerBias : baseDesiredYaw + nextSteerBias,
+    wallBlocked ? yaw + targetBias : baseDesiredYaw + nextSteerBias,
   );
 
   return {
@@ -318,11 +401,11 @@ export interface ImpatienceReverseState {
   stuckTimer: number;
   reverseTimer: number;
   reverseSteerDir: 1 | -1;
+  stallCount?: number;
 }
 
 /**
- * Tracks driver impatience and triggers a clean reverse-and-turn recovery
- * whenever a vehicle is boxed in by a wall or deadlocked in a jam.
+ * Multi-stage unstick & 3-point turn recovery whenever a vehicle is boxed in or deadlocked.
  */
 export function updateImpatienceAndReverse(
   state: ImpatienceReverseState,
@@ -351,36 +434,42 @@ export function updateImpatienceAndReverse(
     if (state.reverseTimer <= 0) {
       state.reverseTimer = 0;
       state.stuckTimer = 0;
-      state.impatience = Math.max(0.25, state.impatience - 0.45);
+      state.impatience = Math.max(0.2, state.impatience - 0.35);
       return { isReversing: false, justFinishedReverse: true };
     }
     return { isReversing: true, justFinishedReverse: false };
   }
 
-  const wantsToMove = baseGoalSpeed > 1.2;
-  const stalled = actualSpeed < 1.15;
+  const wantsToMove = baseGoalSpeed > 1.0;
+  const stalled = Math.abs(actualSpeed) < 1.25;
 
   if (wantsToMove && stalled) {
-    const rateBoost = avoid.wallBlocked ? 1.85 : avoid.vehicleBlocked ? 1.15 : 1.0;
-    state.stuckTimer += dt * (avoid.wallBlocked ? 1.6 : 1.0);
+    const rateBoost = avoid.wallBlocked ? 2.1 : avoid.vehicleBlocked ? 1.3 : 1.0;
+    state.stuckTimer += dt * (avoid.wallBlocked ? 1.8 : 1.15);
     state.impatience = Math.min(1, state.impatience + patienceRate * rateBoost * dt);
 
-    const shouldReverse =
-      avoid.rearClear &&
-      (state.stuckTimer >= reverseThresholdSec ||
-        (avoid.wallBlocked && state.stuckTimer >= reverseThresholdSec * 0.48));
+    const effThreshold = avoid.wallBlocked
+      ? reverseThresholdSec * 0.42
+      : reverseThresholdSec;
 
-    if (shouldReverse) {
-      state.reverseTimer = reverseDurationSec;
-      state.reverseSteerDir = avoid.preferredTurnDir;
+    if (avoid.rearClear && state.stuckTimer >= effThreshold) {
+      const stalls = (state.stallCount ?? 0) + 1;
+      state.stallCount = stalls;
+      state.reverseTimer = reverseDurationSec * (stalls >= 2 ? 1.25 : 1.0);
+      // Alternate turn direction on repeated consecutive stalls to break symmetry deadlocks
+      state.reverseSteerDir =
+        stalls % 2 === 0
+          ? (avoid.preferredTurnDir === 1 ? -1 : 1)
+          : avoid.preferredTurnDir;
       state.stuckTimer = 0;
       return { isReversing: true, justFinishedReverse: false };
     }
-  } else if (actualSpeed > 3.2) {
-    state.stuckTimer = Math.max(0, state.stuckTimer - dt * 1.8);
-    state.impatience = Math.max(0, state.impatience - dt * 0.24);
+  } else if (actualSpeed > 3.6) {
+    state.stuckTimer = Math.max(0, state.stuckTimer - dt * 2.0);
+    state.impatience = Math.max(0, state.impatience - dt * 0.28);
+    state.stallCount = 0;
   } else {
-    state.stuckTimer = Math.max(0, state.stuckTimer - dt * 0.5);
+    state.stuckTimer = Math.max(0, state.stuckTimer - dt * 0.55);
   }
 
   return { isReversing: false, justFinishedReverse: false };

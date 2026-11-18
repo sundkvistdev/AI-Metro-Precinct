@@ -1,0 +1,14 @@
+{
+  "format": "jdata-model-v1",
+  "id": "building_brick",
+  "seed": 910102,
+  "flags": { "collidable": true, "castShadow": true, "receiveShadow": true },
+  "materials": {
+    "brick": { "type": "standard", "color": "#ffffff", "roughness": 0.78, "metalness": 0.06, "textureRef": "facade_brick", "roughnessTextureRef": "roughness_concrete" },
+    "roof": { "type": "standard", "color": "#3b424d", "roughness": 0.92, "roughnessTextureRef": "roughness_concrete" }
+  },
+  "parts": [
+    { "id": "main_block", "kind": "box", "dimensions": [1.0, 0.97, 1.0], "position": [0, 0.485, 0], "materialRef": "brick", "castShadow": true, "receiveShadow": true },
+    { "id": "parapet", "kind": "box", "dimensions": [1.03, 0.03, 1.03], "position": [0, 0.985, 0], "materialRef": "roof" }
+  ]
+}

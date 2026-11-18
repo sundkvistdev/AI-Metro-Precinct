@@ -1,0 +1,16 @@
+{
+  "format": "jdata-model-v1",
+  "id": "building_office",
+  "seed": 910105,
+  "flags": { "collidable": true, "castShadow": true, "receiveShadow": true },
+  "materials": {
+    "office": { "type": "standard", "color": "#ffffff", "roughness": 0.56, "metalness": 0.18, "textureRef": "facade_office", "roughnessTextureRef": "roughness_concrete" },
+    "roof": { "type": "standard", "color": "#1e293b", "roughness": 0.85 },
+    "hvac": { "type": "standard", "color": "#94a3b8", "roughness": 0.45, "metalness": 0.6 }
+  },
+  "parts": [
+    { "id": "tower", "kind": "box", "dimensions": [1.0, 0.97, 1.0], "position": [0, 0.485, 0], "materialRef": "office", "castShadow": true, "receiveShadow": true },
+    { "id": "parapet", "kind": "box", "dimensions": [1.02, 0.03, 1.02], "position": [0, 0.985, 0], "materialRef": "roof" },
+    { "id": "hvac_unit", "kind": "box", "dimensions": [0.22, 0.06, 0.2], "position": [-0.15, 1.03, 0.1], "materialRef": "hvac", "castShadow": true }
+  ]
+}

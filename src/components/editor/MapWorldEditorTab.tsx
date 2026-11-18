@@ -65,6 +65,8 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
   const [newSignStyle, setNewSignStyle] = useState<RoadSignStyle>('stop');
   const [linkTargetId, setLinkTargetId] = useState<number>(state.nodeList[0]?.id ?? 0);
   const [importError, setImportError] = useState<string | null>(null);
+  const [newMapId, setNewMapId] = useState('custom_district');
+  const [newMapName, setNewMapName] = useState('Custom District');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selB = state.selectedBuilding;
@@ -88,6 +90,51 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
 
   return (
     <div className="space-y-2 text-xs">
+      {/* Multi-Map Pack V3 Selector */}
+      <div className="ui-subpanel p-2 space-y-1.5">
+        <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+          <span>Active Pack Map ({state.mapIds.length})</span>
+          <span className="font-mono-tabular text-[10px] text-sky-300 truncate">
+            {state.activeMapId}
+          </span>
+        </div>
+        <select
+          value={state.activeMapId}
+          onChange={(e) => controller?.switchMap(e.target.value)}
+          className="w-full border border-zinc-600 bg-zinc-900 px-1.5 py-1 text-[11px] font-mono-tabular text-zinc-100 rounded-none"
+        >
+          {state.mapIds.map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+        <div className="grid grid-cols-[1fr_1fr_auto] gap-1">
+          <input
+            type="text"
+            value={newMapId}
+            onChange={(e) => setNewMapId(e.target.value)}
+            placeholder="map_id"
+            className="border border-zinc-600 bg-zinc-900 px-1.5 py-0.5 text-[10px] font-mono-tabular text-zinc-100 rounded-none"
+          />
+          <input
+            type="text"
+            value={newMapName}
+            onChange={(e) => setNewMapName(e.target.value)}
+            placeholder="Map Title"
+            className="border border-zinc-600 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-100 rounded-none"
+          />
+          <button
+            type="button"
+            onClick={() => controller?.createNewMap(newMapId, newMapName)}
+            className="flex items-center gap-0.5 border border-emerald-500/70 bg-emerald-700/45 px-2 py-0.5 text-[10px] font-medium text-emerald-100 hover:bg-emerald-600/65 cursor-pointer whitespace-nowrap rounded-none"
+          >
+            <Plus className="h-3 w-3" />
+            New Map
+          </button>
+        </div>
+      </div>
+
       {/* Sub-mode selector */}
       <div className="grid grid-cols-4 gap-0.5 border border-zinc-600 bg-zinc-900/60 p-0.5">
         {(

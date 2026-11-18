@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AssetIssue, AssetLoadResult } from './assets/assetTypes';
 import {
   exportAssetBundleToZip,
   loadJsonAssetBundle,
   loadJsonAssetBundleFromZip,
 } from './assets/jsonAssetLoader';
+import { validateAssetPackLive, ValidationIssue } from './assets/packValidator';
+import { simEventLog } from './assets/simEventLog';
 import { BottomControlBar } from './components/BottomControlBar';
 import { ErrorDialog } from './components/ErrorDialog';
+import { EventLogDialog } from './components/EventLogDialog';
 import { MainMenu, MainMenuSettings } from './components/MainMenu';
 import { SidebarPaneId, SidebarPanel } from './components/SidebarPanel';
 import { TopStatusHud } from './components/TopStatusHud';
+import { ValidatorDialog } from './components/ValidatorDialog';
 import { DevEditorState } from './sim/devEditorController';
 import { PoliceSimEngine } from './sim/PoliceSimEngine';
 import {
@@ -35,6 +39,8 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   activeNailMats: 0,
   selectedUnitId: 'unit-1',
   lightbarMode: LightbarMode.LED,
+  activeLightbarId: 'led_array',
+  availableLightbars: [],
   sirenPattern: SirenPattern.AutoCycle,
   drivingMode: DrivingMode.Standard,
   backupMode: BackupMode.Standard,
@@ -54,9 +60,19 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   paintPalette: [],
   assetPackName: 'unloaded',
   assetSourceLabel: '/jdataassets/manifest.json',
-  configVersion: '1.0.0',
+  configVersion: '3.0.0',
+  activeMapId: 'metro_default',
   mapName: 'Metro Grid',
-  assetCounts: { textures: 0, models: 0, audio: 0, materials: 0, media: 0 },
+  availableMaps: [],
+  assetCounts: {
+    textures: 0,
+    models: 0,
+    audio: 0,
+    materials: 0,
+    media: 0,
+    lightbars: 0,
+    maps: 0,
+  },
   assetsLoaded: false,
   assetIssues: [],
   fatalError: null,
@@ -68,6 +84,8 @@ export default function App() {
 
   const [screen, setScreen] = useState<ScreenState>('menu');
   const [menuSettings, setMenuSettings] = useState<MainMenuSettings>({
+    initialMapId: 'metro_default',
+    activeLightbarId: 'led_array',
     audioEnabled: true,
     audioVolume: 0.85,
     audioQuality: 'normal',
@@ -93,20 +111,42 @@ export default function App() {
   const [devState, setDevState] = useState<DevEditorState | null>(null);
   const [activePane, setActivePane] = useState<SidebarPaneId | null>('units');
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [eventLogOpen, setEventLogOpen] = useState(false);
+  const [validatorOpen, setValidatorOpen] = useState(false);
   const [contextLost, setContextLost] = useState(false);
 
-  const applyNewAssetResult = useCallback(
-    (result: AssetLoadResult) => {
-      setPreflightResult(result);
-      if (result.fatalError || result.issues.length > 0) {
-        setErrorDialogOpen(true);
+  const applyNewAssetResult = useCallback((result: AssetLoadResult) => {
+    setPreflightResult(result);
+    if (result.assets) {
+      const firstMapId =
+        result.assets.activeMapId || Object.keys(result.assets.maps ?? {})[0];
+      if (firstMapId) {
+        setMenuSettings((prev) =>
+          result.assets?.maps?.[prev.initialMapId]
+            ? prev
+            : { ...prev, initialMapId: firstMapId },
+        );
       }
-      if (engineRef.current) {
-        engineRef.current.applyAssetLoadResult(result);
-      }
-    },
-    [],
-  );
+      simEventLog.info(
+        'asset',
+        `Loaded pack "${result.assets.manifest.packName}" (v${result.assets.manifest.formatVersion})`,
+        `${Object.keys(result.assets.maps ?? {}).length} map(s), ${Object.keys(result.assets.lightbars ?? {}).length} lightbar(s)`,
+        result.sourceLabel,
+      );
+    }
+    if (result.fatalError || result.issues.length > 0) {
+      setErrorDialogOpen(true);
+      simEventLog.error(
+        'asset',
+        result.fatalError ? 'Fatal Pack Error' : 'Asset Pack Load Warnings',
+        result.fatalError || `${result.issues.length} issue(s) detected`,
+        result.sourceLabel,
+      );
+    }
+    if (engineRef.current) {
+      engineRef.current.applyAssetLoadResult(result);
+    }
+  }, []);
 
   const loadDefaultPack = useCallback(async () => {
     setLoadingAssets(true);
@@ -202,11 +242,12 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${assets.manifest.packName || 'metro_precinct_pack'}.zip`;
+    a.download = `${assets.manifest.packName || 'metro_precinct_pack'}_v3.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    simEventLog.info('asset', `Exported Pack V3 ZIP`, `${a.download}`);
   }, [preflightResult]);
 
   const handleTogglePane = useCallback((pane: SidebarPaneId) => {
@@ -225,8 +266,8 @@ export default function App() {
     engineRef.current?.setUnitBaseColor(unitId, colorHex);
   }, []);
 
-  const handleSetLightbarMode = useCallback((mode: LightbarMode) => {
-    engineRef.current?.setLightbarMode(mode);
+  const handleSetLightbarById = useCallback((lightbarId: string) => {
+    engineRef.current?.setLightbarById(lightbarId);
   }, []);
 
   const handleSetSirenPattern = useCallback((pattern: SirenPattern) => {
@@ -251,6 +292,10 @@ export default function App() {
 
   const handleSetWeather = useCallback((weather: WeatherCondition) => {
     engineRef.current?.setWeather(weather);
+  }, []);
+
+  const handleSwitchMap = useCallback((mapId: string) => {
+    engineRef.current?.switchMap(mapId);
   }, []);
 
   const handleSetCameraMode = useCallback((mode: CameraMode) => {
@@ -305,6 +350,35 @@ export default function App() {
     engineRef.current?.setCrashIntensity(intensity);
   }, []);
 
+  const handleJumpToValidationIssue = useCallback((issue: ValidationIssue) => {
+    setActivePane('devtools');
+    const dev = engineRef.current?.getDevEditor();
+    if (!dev) return;
+    dev.setActive(true);
+    dev.setMode('asset');
+    if (issue.jumpTab) {
+      dev.setAssetTab(issue.jumpTab);
+    }
+    if (issue.jumpTarget) {
+      if (issue.jumpTab === 'map') {
+        if (issue.category === 'map' && issue.assetId) {
+          dev.switchMap(issue.assetId);
+        }
+        dev.selectObject(issue.jumpTarget);
+      } else if (issue.jumpTab === 'model') {
+        dev.selectModel(issue.jumpTarget);
+      } else if (issue.jumpTab === 'lightbars') {
+        dev.selectLightbar(issue.jumpTarget);
+      } else if (issue.jumpTab === 'materials') {
+        dev.selectPackMaterial(issue.jumpTarget);
+      } else if (issue.jumpTab === 'texture') {
+        dev.selectTexture(issue.jumpTarget);
+      } else if (issue.jumpTab === 'audio') {
+        dev.selectAudio(issue.jumpTarget);
+      }
+    }
+  }, []);
+
   const activeFatalError =
     screen === 'playing'
       ? snapshot.fatalError ?? preflightResult?.fatalError ?? null
@@ -317,6 +391,16 @@ export default function App() {
     screen === 'playing' && snapshot.assetsLoaded
       ? snapshot.assetSourceLabel
       : preflightResult?.sourceLabel ?? '/jdataassets/manifest.json';
+
+  const currentAssets =
+    screen === 'playing'
+      ? engineRef.current?.getLoadedAssets() ?? preflightResult?.assets ?? null
+      : preflightResult?.assets ?? null;
+
+  const liveValidationIssues = useMemo(() => {
+    if (devState?.validationIssues) return devState.validationIssues;
+    return validateAssetPackLive(currentAssets);
+  }, [devState?.validationIssues, currentAssets]);
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-zinc-800 text-zinc-100">
@@ -381,52 +465,56 @@ export default function App() {
             </div>
           )}
 
-          <div className="pointer-events-none fixed inset-0 z-10 flex flex-col gap-1.5 p-1.5">
-            <TopStatusHud
-              snapshot={snapshot}
-              onOpenErrorDialog={() => setErrorDialogOpen(true)}
-              onReturnToMenu={() => {
-                engineRef.current?.getDevEditor()?.setActive(false);
-                setScreen('menu');
-              }}
-            />
-            <SidebarPanel
-              snapshot={snapshot}
-              activePane={activePane}
-              loadedAssets={engineRef.current?.getLoadedAssets() ?? preflightResult?.assets ?? null}
-              assetBusy={loadingAssets}
-              onTogglePane={handleTogglePane}
-              onSelectUnit={handleSelectUnit}
-              onSetUnitBaseColor={handleSetUnitBaseColor}
-              onSetLightbarMode={handleSetLightbarMode}
-              onSetSirenPattern={handleSetSirenPattern}
-              onSetDrivingMode={handleSetDrivingMode}
-              onSetBackupMode={handleSetBackupMode}
-              onRequestBackup={handleRequestBackup}
-              onDeployNailMat={handleDeployNailMat}
-              onSetWeather={handleSetWeather}
-              onSetCameraMode={handleSetCameraMode}
-              onResetCamera={handleResetCamera}
-              onSetCrimeProbability={handleSetCrimeProbability}
-              onSetCowardiceLevel={handleSetCowardiceLevel}
-              onTriggerCrime={handleTriggerCrime}
-              onTriggerPursuit={handleTriggerPursuit}
-              onToggleMount={handleToggleMount}
-              onToggleAudio={handleToggleAudio}
-              onSetAudioVolume={handleSetAudioVolume}
-              onToggleSimSpeed={handleToggleSimSpeed}
-              onSetDebrisObstacles={handleSetDebrisObstacles}
-              onSetCrashIntensity={handleSetCrashIntensity}
-              onLoadZipPack={(file) => void handleLoadZipPack(file)}
-              onExportZipPack={() => void handleExportZipPack()}
-              onReloadDefaultPack={() => void loadDefaultPack()}
-              onOpenErrorDialog={() => setErrorDialogOpen(true)}
-              devTools={{
-                controller: engineRef.current?.getDevEditor() ?? null,
-                state: devState,
-              }}
-            />
-          </div>
+          <TopStatusHud
+            snapshot={snapshot}
+            validationIssueCount={liveValidationIssues.length}
+            onOpenErrorDialog={() => setErrorDialogOpen(true)}
+            onOpenEventLog={() => setEventLogOpen(true)}
+            onOpenValidator={() => setValidatorOpen(true)}
+            onReturnToMenu={() => {
+              engineRef.current?.getDevEditor()?.setActive(false);
+              setScreen('menu');
+            }}
+          />
+
+          <SidebarPanel
+            snapshot={snapshot}
+            activePane={activePane}
+            loadedAssets={currentAssets}
+            assetBusy={loadingAssets}
+            onTogglePane={handleTogglePane}
+            onSelectUnit={handleSelectUnit}
+            onSetUnitBaseColor={handleSetUnitBaseColor}
+            onSetLightbarById={handleSetLightbarById}
+            onSetSirenPattern={handleSetSirenPattern}
+            onSetDrivingMode={handleSetDrivingMode}
+            onSetBackupMode={handleSetBackupMode}
+            onRequestBackup={handleRequestBackup}
+            onDeployNailMat={handleDeployNailMat}
+            onSetWeather={handleSetWeather}
+            onSwitchMap={handleSwitchMap}
+            onSetCameraMode={handleSetCameraMode}
+            onResetCamera={handleResetCamera}
+            onSetCrimeProbability={handleSetCrimeProbability}
+            onSetCowardiceLevel={handleSetCowardiceLevel}
+            onTriggerCrime={handleTriggerCrime}
+            onTriggerPursuit={handleTriggerPursuit}
+            onToggleMount={handleToggleMount}
+            onToggleAudio={handleToggleAudio}
+            onSetAudioVolume={handleSetAudioVolume}
+            onToggleSimSpeed={handleToggleSimSpeed}
+            onSetDebrisObstacles={handleSetDebrisObstacles}
+            onSetCrashIntensity={handleSetCrashIntensity}
+            onLoadZipPack={(file) => void handleLoadZipPack(file)}
+            onExportZipPack={() => void handleExportZipPack()}
+            onReloadDefaultPack={() => void loadDefaultPack()}
+            onOpenErrorDialog={() => setErrorDialogOpen(true)}
+            onOpenValidator={() => setValidatorOpen(true)}
+            devTools={{
+              controller: engineRef.current?.getDevEditor() ?? null,
+              state: devState,
+            }}
+          />
 
           <BottomControlBar
             snapshot={snapshot}
@@ -447,6 +535,19 @@ export default function App() {
         sourceLabel={activeSourceLabel}
         onDismiss={() => setErrorDialogOpen(false)}
         onReloadDefault={() => void loadDefaultPack()}
+      />
+
+      <EventLogDialog
+        open={eventLogOpen}
+        onClose={() => setEventLogOpen(false)}
+      />
+
+      <ValidatorDialog
+        open={validatorOpen}
+        packName={currentAssets?.manifest.packName ?? snapshot.assetPackName}
+        issues={liveValidationIssues}
+        onClose={() => setValidatorOpen(false)}
+        onJumpToIssue={handleJumpToValidationIssue}
       />
     </div>
   );

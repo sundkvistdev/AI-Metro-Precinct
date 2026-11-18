@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { TownRoadGraph } from './roadGraph';
-import { ActiveCrime, CivilianVehicle, PoliceUnit } from './simActors';
+import {
+  ActiveCrime,
+  AssailantActor,
+  CivilianVehicle,
+  PedestrianActor,
+  PoliceUnit,
+  resolveCrimePrimaryAssailant,
+} from './simActors';
 import { AIDebugFlags, AIDebugStats, UnitStatus } from './types';
 
 const MAX_LINE_VERTICES = 4096;
@@ -180,6 +187,8 @@ export class AIDebugVisualizer {
       units: PoliceUnit[];
       civilianCars: CivilianVehicle[];
       crimes: ActiveCrime[];
+      assailantsById: Map<string, AssailantActor>;
+      pedestrians?: PedestrianActor[];
       roadGraph: TownRoadGraph | null;
     },
   ): void {
@@ -220,7 +229,8 @@ export class AIDebugVisualizer {
     this.pursuitLines.begin();
     if (flags.showPursuitPaths) {
       for (const cr of data.crimes) {
-        if (!cr.inVehiclePursuit || !cr.suspectAlive) continue;
+        const primarySuspect = resolveCrimePrimaryAssailant(cr, data.assailantsById);
+        if (!cr.inVehiclePursuit || !primarySuspect?.alive) continue;
         const curr = data.roadGraph?.getNodeById(cr.vehicleNodeId);
         const next = data.roadGraph?.getNodeById(cr.vehicleNextNodeId);
         if (next) {
@@ -376,6 +386,21 @@ export class AIDebugVisualizer {
           car.reverseTimer > 0,
           car.debugAvoidActive,
         );
+      }
+      if (data.pedestrians) {
+        for (const ped of data.pedestrians) {
+          if (ped.dead || ped.ragdoll.active) continue;
+          if (ped.activeGoal === 'EVADE_VEHICLE' || ped.activeGoal === 'FLEE_THREAT') {
+            this.avoidLines.addSegment(
+              ped.pos.x,
+              roadY + 0.15,
+              ped.pos.z,
+              ped.pos.x + ped.velX * 0.45,
+              roadY + 0.15 + ped.jumpY,
+              ped.pos.z + ped.velZ * 0.45,
+            );
+          }
+        }
       }
     }
     this.avoidLines.commit();

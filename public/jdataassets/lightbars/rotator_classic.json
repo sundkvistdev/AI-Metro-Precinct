@@ -1,0 +1,23 @@
+{
+  "format": "jdata-lightbar-v3",
+  "id": "rotator_classic",
+  "name": "Classic Rotators",
+  "hardwareStyle": "standard_shell",
+  "patternType": "rotating_halogen",
+  "rateMult": 1.0,
+  "hasTrafficAdvisor": false,
+  "hasCookies": true,
+  "hasGrilleStrobes": false,
+  "hasRearDeck": true,
+  "leftColor": "#ff2828",
+  "rightColor": "#2674ff",
+  "centerColor": "#fff7ed",
+  "haloOpacity": 0.72,
+  "pointLightRange": 24,
+  "pointLightIntensity": 16,
+  "emitters": [
+    { "id": "rot_l", "x": 0.45, "y": 0.105, "z": 0, "w": 0.12, "h": 0.1, "d": 0.12, "shape": "cylinder", "color": "#fff7ed", "emissive": "#ff2828", "phase": 0.0, "duty": 1.0, "freqHz": 1.8, "mode": "rotator", "group": "roof" },
+    { "id": "rot_r", "x": -0.45, "y": 0.105, "z": 0, "w": 0.12, "h": 0.1, "d": 0.12, "shape": "cylinder", "color": "#fff7ed", "emissive": "#2674ff", "phase": 0.35, "duty": 1.0, "freqHz": 1.95, "mode": "rotator", "group": "roof" },
+    { "id": "rot_c", "x": 0, "y": 0.105, "z": 0, "w": 0.12, "h": 0.1, "d": 0.12, "shape": "cylinder", "color": "#fff7ed", "emissive": "#fbbf24", "phase": 0.7, "duty": 1.0, "freqHz": 1.4, "mode": "rotator", "group": "roof" }
+  ]
+}

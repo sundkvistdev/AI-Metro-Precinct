@@ -1,11 +1,13 @@
 import * as THREE from 'three';
+import { SeatPartSpec } from '../assets/assetTypes';
+import { BuiltHingeRef } from '../assets/jsonModelBuilder';
 import {
   CaseAssignmentRole,
   CrimeType,
   IncidentStatus,
   PoliceLiveryId,
+  PoliceUnitGoalId,
   PoliceVehicleKind,
-  SirenPattern,
   UnitStatus,
   UrgencyLevel,
   WeaponKind,
@@ -16,7 +18,31 @@ import { RagdollState } from './vfx';
 
 export type CowardiceState = 'steady' | 'suppressed' | 'fleeing';
 
+export type BoardingState = 'dismounted' | 'entering' | 'seated' | 'exiting';
+
+export interface VehicleSeatState {
+  slotIndex: number;
+  role: SeatPartSpec['role'];
+  spec: SeatPartSpec;
+  localOffset: THREE.Vector3;
+  enterOffset: THREE.Vector3;
+  exitOffset: THREE.Vector3;
+  hingePartId?: string;
+  hingeRef?: BuiltHingeRef;
+  seatedPitch: number;
+  occupantOfficerId: string | null;
+  doorOpenTimer: number;
+}
+
 export interface OfficerActor {
+  id: string;
+  unitId: string | null;
+  occupiedUnitId: string | null;
+  occupiedSeatIndex: number | null;
+  boardingState: BoardingState;
+  targetUnitId: string | null;
+  targetSeatIndex: number | null;
+  assignedCrimeId: string | null;
   rig: HumanoidRig;
   pos: THREE.Vector3;
   yaw: number;
@@ -44,12 +70,40 @@ export interface OfficerActor {
   boardTimer: number;
 }
 
+export interface AssailantActor {
+  id: string;
+  crimeId: string | null;
+  rig: HumanoidRig;
+  pos: THREE.Vector3;
+  yaw: number;
+  hp: number;
+  maxHp: number;
+  armor: number;
+  maxArmor: number;
+  weaponKind: WeaponKind;
+  alive: boolean;
+  inVehicle: boolean;
+  ammo: number;
+  reloadTimer: number;
+  recoilKick: number;
+  strafeDir: 1 | -1;
+  moveTimer: number;
+  walkPhase: number;
+  ragdoll: RagdollState;
+  lastHitDir: THREE.Vector3;
+  fireCooldown: number;
+  muzzleTimer: number;
+  roamTarget: THREE.Vector3 | null;
+  roamTimer: number;
+}
+
 export interface PoliceUnit {
   id: string;
   callsign: string;
   bayIndex: number;
   vehicleKind: PoliceVehicleKind;
   liveryId: PoliceLiveryId;
+  lightbarId: string;
   baseColorHex: number;
   isHeavyUnit: boolean;
   weaponKind: WeaponKind;
@@ -64,6 +118,8 @@ export interface PoliceUnit {
   dyn: VehicleDynState;
   lateralOffset: number;
   status: UnitStatus;
+  activeGoal: PoliceUnitGoalId;
+  goalReason: string;
   mounted: boolean;
   freeRoam: boolean;
   dismountTimer: number;
@@ -84,12 +140,15 @@ export interface PoliceUnit {
   assignedCaseNumber: number | null;
   assignedRole: CaseAssignmentRole | null;
   pursuitRole: 'direct' | 'nail_mat';
-  officers: [OfficerActor, OfficerActor];
+  officerRefs: string[];
+  seats: VehicleSeatState[];
+  hinges: Record<string, BuiltHingeRef>;
   holdTimer: number;
   stuckTimer: number;
   impatience: number;
   reverseTimer: number;
   reverseSteerDir: 1 | -1;
+  stallCount: number;
   towRequested: boolean;
   beingTowed: boolean;
   debugAvoidActive?: boolean;
@@ -101,7 +160,7 @@ export interface NailMatActor {
   id: string;
   crimeId: string;
   unitId: string;
-  officerIndex: 0 | 1;
+  officerId: string;
   phase: NailMatPhase;
   roadCenter: THREE.Vector3;
   perpX: number;
@@ -136,21 +195,9 @@ export interface ActiveCrime {
   nearestNodeId: number;
   segmentNodeA: number;
   segmentNodeB: number;
-  suspectRig: HumanoidRig;
-  suspectPos: THREE.Vector3;
-  suspectYaw: number;
-  suspectHp: number;
-  suspectArmor: number;
-  suspectWeaponKind: WeaponKind;
-  suspectAlive: boolean;
-  suspectAmmo: number;
-  suspectReloadTimer: number;
-  suspectRecoil: number;
-  suspectStrafeDir: 1 | -1;
-  suspectMoveTimer: number;
-  suspectWalkPhase: number;
-  suspectRagdoll: RagdollState;
-  lastHitDir: THREE.Vector3;
+  assailantRefs: string[];
+  primaryAssailantId: string | null;
+  assignedOfficerRefs: string[];
   inVehiclePursuit: boolean;
   vehicleRig: CivilianCarRig | null;
   vehicleThreatRing: THREE.Mesh | null;
@@ -178,8 +225,6 @@ export interface ActiveCrime {
   backupDispatched: boolean;
   heavyDeployed: boolean;
   nailMatAttempts: number;
-  fireCooldown: number;
-  muzzleTimer: number;
   cleanupTimer: number;
   elapsedSec: number;
   engagedSec: number;
@@ -210,6 +255,7 @@ export interface CivilianVehicle {
   stuckTimer: number;
   reverseTimer: number;
   reverseSteerDir: 1 | -1;
+  stallCount: number;
   immobilized: boolean;
   immobilizeTilt: number;
   damageSmokeTimer: number;
@@ -217,9 +263,15 @@ export interface CivilianVehicle {
 }
 
 export interface PedestrianActor {
+  id: string;
   rig: HumanoidRig;
   pos: THREE.Vector3;
   yaw: number;
+  velX: number;
+  velZ: number;
+  jumpY: number;
+  jumpVelY: number;
+  activeGoal: string;
   blockCx: number;
   blockCz: number;
   loopRadius: number;
@@ -247,4 +299,35 @@ export interface BulletTracer {
   damage: number;
   armorPen: number;
   shooterUnitId: string | null;
+}
+
+export function resolveUnitOfficers(
+  unit: PoliceUnit,
+  officersById: Map<string, OfficerActor>,
+): OfficerActor[] {
+  const result: OfficerActor[] = [];
+  for (const oid of unit.officerRefs) {
+    const off = officersById.get(oid);
+    if (off) result.push(off);
+  }
+  return result;
+}
+
+export function resolveCrimePrimaryAssailant(
+  crime: ActiveCrime,
+  assailantsById: Map<string, AssailantActor>,
+): AssailantActor | undefined {
+  if (crime.primaryAssailantId) {
+    const a = assailantsById.get(crime.primaryAssailantId);
+    if (a) return a;
+  }
+  for (const aid of crime.assailantRefs) {
+    const a = assailantsById.get(aid);
+    if (a && a.alive) return a;
+  }
+  for (const aid of crime.assailantRefs) {
+    const a = assailantsById.get(aid);
+    if (a) return a;
+  }
+  return undefined;
 }

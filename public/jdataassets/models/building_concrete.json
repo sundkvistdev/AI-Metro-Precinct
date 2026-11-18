@@ -1,0 +1,14 @@
+{
+  "format": "jdata-model-v1",
+  "id": "building_concrete",
+  "seed": 910103,
+  "flags": { "collidable": true, "castShadow": true, "receiveShadow": true },
+  "materials": {
+    "concrete": { "type": "standard", "color": "#ffffff", "roughness": 0.76, "metalness": 0.08, "textureRef": "facade_concrete", "roughnessTextureRef": "roughness_concrete" },
+    "roof": { "type": "standard", "color": "#475569", "roughness": 0.9, "roughnessTextureRef": "roughness_concrete" }
+  },
+  "parts": [
+    { "id": "main_block", "kind": "box", "dimensions": [1.0, 0.97, 1.0], "position": [0, 0.485, 0], "materialRef": "concrete", "castShadow": true, "receiveShadow": true },
+    { "id": "roof_cap", "kind": "box", "dimensions": [1.02, 0.03, 1.02], "position": [0, 0.985, 0], "materialRef": "roof" }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "format": "jdata-vehicle-v3",
+  "id": "civilian_hatch",
+  "role": "civilian",
+  "label": "Civilian Hatchback",
+  "vehicleKind": "hatch",
+  "modelRef": "civilian_hatch",
+  "chassis": {
+    "modelRef": "civilian_hatch",
+    "wheelRadius": 0.32,
+    "halfW": 0.9,
+    "halfL": 2.05,
+    "mass": 0.92,
+    "chassisScale": 1.04,
+    "maxSteerScale": 1.05,
+    "lightbarPos": [0, 1.48, 0],
+    "roofLightPos": [0, 1.65, 0],
+    "sideDecalX": 0.92,
+    "sideDecalY": 0.55,
+    "sideDecalZ": 0,
+    "stripeW": 3.2,
+    "stripeH": 0.1,
+    "roofPlateY": 1.46,
+    "roofPlateZ": -0.45,
+    "rearChevronY": 0.68,
+    "rearChevronZ": -2.0,
+    "hitboxSize": [1.85, 1.42, 4.1],
+    "hitboxY": 0.78,
+    "obbHeight": 1.44,
+    "shadowSize": [2.3, 4.5],
+    "shadowY": 0.025
+  }
+}

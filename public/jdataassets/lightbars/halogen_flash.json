@@ -1,0 +1,23 @@
+{
+  "format": "jdata-lightbar-v3",
+  "id": "halogen_flash",
+  "name": "Flashing Halogen",
+  "hardwareStyle": "standard_shell",
+  "patternType": "flashing_halogen",
+  "rateMult": 1.0,
+  "hasTrafficAdvisor": false,
+  "hasCookies": false,
+  "hasGrilleStrobes": false,
+  "hasRearDeck": true,
+  "leftColor": "#ff2b1a",
+  "rightColor": "#2563eb",
+  "centerColor": "#fbbf24",
+  "haloOpacity": 0.75,
+  "pointLightRange": 22,
+  "pointLightIntensity": 16,
+  "emitters": [
+    { "id": "hal_l", "x": 0.45, "y": 0.105, "z": 0, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "sphere", "color": "#ff6b4a", "emissive": "#ff2b1a", "phase": 0.0, "duty": 0.5, "freqHz": 1.7, "mode": "halogen", "group": "roof" },
+    { "id": "hal_r", "x": -0.45, "y": 0.105, "z": 0, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "sphere", "color": "#60a5fa", "emissive": "#2563eb", "phase": 0.5, "duty": 0.5, "freqHz": 1.75, "mode": "halogen", "group": "roof" },
+    { "id": "hal_c", "x": 0, "y": 0.105, "z": 0, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "sphere", "color": "#fef3c7", "emissive": "#fbbf24", "phase": 0.25, "duty": 0.4, "freqHz": 2.5, "mode": "halogen", "group": "roof" }
+  ]
+}

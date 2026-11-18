@@ -1,0 +1,12 @@
+{
+  "format": "jdata-model-v1",
+  "id": "building_trim",
+  "seed": 910108,
+  "flags": { "collidable": true, "castShadow": true, "receiveShadow": true },
+  "materials": {
+    "trim": { "type": "standard", "color": "#1e293b", "roughness": 0.55 }
+  },
+  "parts": [
+    { "id": "trim_block", "kind": "box", "dimensions": [1.0, 1.0, 1.0], "position": [0, 0.5, 0], "materialRef": "trim", "castShadow": true }
+  ]
+}

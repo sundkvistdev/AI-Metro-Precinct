@@ -1,0 +1,26 @@
+{
+  "format": "jdata-lightbar-v3",
+  "id": "led_array",
+  "name": "LED Bar Array",
+  "hardwareStyle": "standard_shell",
+  "patternType": "led",
+  "rateMult": 1.0,
+  "hasTrafficAdvisor": false,
+  "hasCookies": false,
+  "hasGrilleStrobes": false,
+  "hasRearDeck": true,
+  "leftColor": "#ff2222",
+  "rightColor": "#2266ff",
+  "centerColor": "#f8fafc",
+  "haloOpacity": 0.72,
+  "pointLightRange": 22,
+  "pointLightIntensity": 16,
+  "emitters": [
+    { "id": "led_l1", "x": 0.28, "y": 0.105, "z": 0, "w": 0.14, "h": 0.065, "d": 0.24, "shape": "box", "color": "#ff2222", "emissive": "#ff1a1a", "phase": 0.0, "duty": 0.36, "freqHz": 2.2, "mode": "strobe", "group": "roof" },
+    { "id": "led_l2", "x": 0.46, "y": 0.105, "z": 0, "w": 0.14, "h": 0.065, "d": 0.24, "shape": "box", "color": "#ff2222", "emissive": "#ff1a1a", "phase": 0.14, "duty": 0.22, "freqHz": 2.2, "mode": "strobe", "group": "roof" },
+    { "id": "led_l3", "x": 0.64, "y": 0.105, "z": 0, "w": 0.14, "h": 0.065, "d": 0.24, "shape": "box", "color": "#ff2222", "emissive": "#ff1a1a", "phase": 0.0, "duty": 0.36, "freqHz": 2.2, "mode": "strobe", "group": "roof" },
+    { "id": "led_r1", "x": -0.28, "y": 0.105, "z": 0, "w": 0.14, "h": 0.065, "d": 0.24, "shape": "box", "color": "#2266ff", "emissive": "#1d70ff", "phase": 0.48, "duty": 0.36, "freqHz": 2.27, "mode": "strobe", "group": "roof" },
+    { "id": "led_r2", "x": -0.46, "y": 0.105, "z": 0, "w": 0.14, "h": 0.065, "d": 0.24, "shape": "box", "color": "#2266ff", "emissive": "#1d70ff", "phase": 0.62, "duty": 0.22, "freqHz": 2.27, "mode": "strobe", "group": "roof" },
+    { "id": "led_r3", "x": -0.64, "y": 0.105, "z": 0, "w": 0.14, "h": 0.065, "d": 0.24, "shape": "box", "color": "#2266ff", "emissive": "#1d70ff", "phase": 0.48, "duty": 0.36, "freqHz": 2.27, "mode": "strobe", "group": "roof" }
+  ]
+}

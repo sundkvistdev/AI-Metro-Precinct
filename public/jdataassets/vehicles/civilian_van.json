@@ -1,0 +1,33 @@
+{
+  "format": "jdata-vehicle-v3",
+  "id": "civilian_van",
+  "role": "civilian",
+  "label": "Delivery Van",
+  "vehicleKind": "van",
+  "modelRef": "civilian_van",
+  "chassis": {
+    "modelRef": "civilian_van",
+    "wheelRadius": 0.35,
+    "halfW": 0.98,
+    "halfL": 2.4,
+    "mass": 1.4,
+    "chassisScale": 0.92,
+    "maxSteerScale": 0.95,
+    "lightbarPos": [0, 2.0, 0.2],
+    "roofLightPos": [0, 2.2, 0.2],
+    "sideDecalX": 1.0,
+    "sideDecalY": 0.65,
+    "sideDecalZ": 0,
+    "stripeW": 4.0,
+    "stripeH": 0.12,
+    "roofPlateY": 1.98,
+    "roofPlateZ": -0.5,
+    "rearChevronY": 0.75,
+    "rearChevronZ": -2.35,
+    "hitboxSize": [2.1, 2.0, 4.8],
+    "hitboxY": 1.0,
+    "obbHeight": 2.02,
+    "shadowSize": [2.7, 5.1],
+    "shadowY": 0.025
+  }
+}

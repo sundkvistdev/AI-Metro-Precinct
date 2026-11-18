@@ -2,18 +2,23 @@ import * as THREE from 'three';
 import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
+import { playBoundAudioEvent } from './eventBindings';
 import { resetOfficerPose } from './policeUnitSystem';
 import {
   getSurfaceHeight,
   pruneLeadingWaypoints,
   TownRoadGraph,
 } from './roadGraph';
-import { disposeGroupContents } from './sceneHierarchy';
+import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
+  AssailantActor,
   CivilianVehicle,
   NailMatActor,
+  OfficerActor,
   PoliceUnit,
+  resolveCrimePrimaryAssailant,
+  resolveUnitOfficers,
 } from './simActors';
 import { UnitStatus } from './types';
 import { SimVfxManager, triggerRagdoll } from './vfx';
@@ -129,12 +134,14 @@ export function pickInterceptRoadSpot(
   crime: ActiveCrime,
   unit: PoliceUnit,
   units: PoliceUnit[],
+  assailantsById: Map<string, AssailantActor>,
   roadGraph: TownRoadGraph,
   existingMats: NailMatActor[],
   config?: EngineConfigAsset,
   map?: CustomMapAsset,
 ): InterceptSpot | null {
-  if (!crime.inVehiclePursuit || !crime.suspectAlive) return null;
+  const primarySuspect = resolveCrimePrimaryAssailant(crime, assailantsById);
+  if (!crime.inVehiclePursuit || !primarySuspect?.alive) return null;
 
   const surface = map ?? config?.world;
   const currNode = roadGraph.getNodeById(crime.vehicleNodeId);
@@ -323,20 +330,31 @@ export function assignUnitToNailMat(
   crime: ActiveCrime,
   unit: PoliceUnit,
   units: PoliceUnit[],
+  assailantsById: Map<string, AssailantActor>,
   nailMats: NailMatActor[],
   roadGraph: TownRoadGraph,
   config: EngineConfigAsset,
-  nailMatsGroup: THREE.Group,
+  hierarchy: SceneWorldHierarchy,
   audio: JsonAudioSynth | null,
   staticBvh?: StaticObstacleBVH,
   map?: CustomMapAsset,
 ): boolean {
-  if (!crime.inVehiclePursuit || !crime.suspectAlive) return false;
+  const primarySuspect = resolveCrimePrimaryAssailant(crime, assailantsById);
+  if (!crime.inVehiclePursuit || !primarySuspect?.alive) return false;
   if (!unit.mounted || unit.immobilized || unit.status === UnitStatus.DeployingSpikes) {
     return false;
   }
 
-  const spot = pickInterceptRoadSpot(crime, unit, units, roadGraph, nailMats, config, map);
+  const spot = pickInterceptRoadSpot(
+    crime,
+    unit,
+    units,
+    assailantsById,
+    roadGraph,
+    nailMats,
+    config,
+    map,
+  );
   if (!spot) return false;
 
   const matId = `mat-${nailMatCounter++}`;
@@ -349,13 +367,15 @@ export function assignUnitToNailMat(
     halfSpan,
   );
   visuals.group.visible = false;
-  nailMatsGroup.add(visuals.group);
+  hierarchy.addEntity(visuals.group);
+
+  const officerId = unit.officerRefs[1] ?? unit.officerRefs[0] ?? '';
 
   const mat: NailMatActor = {
     id: matId,
     crimeId: crime.id,
     unitId: unit.id,
-    officerIndex: 1,
+    officerId,
     phase: 'en_route',
     roadCenter: spot.roadCenter,
     perpX: spot.perpX,
@@ -394,7 +414,7 @@ export function assignUnitToNailMat(
 
   routeUnitToInterceptSpot(unit, spot, roadGraph, config, staticBvh, map);
   crime.nailMatAttempts++;
-  audio?.playAssetAt('dispatch_chirp');
+  playBoundAudioEvent(audio, config, 'dispatch_chirp');
   return true;
 }
 
@@ -417,10 +437,11 @@ function routeUnitToInterceptSpot(
   const apronThresholdX = primaryApron
     ? primaryApron.cx + primaryApron.width * 0.5 + 1
     : config.world.apronBounds.maxX + 1;
-  const bay = config.vehicles.stationBays[unit.bayIndex];
+  const bays = map?.stationBays?.length ? map.stationBays : config.vehicles.stationBays;
+  const bay = bays[unit.bayIndex] ?? bays[0];
   const wps: THREE.Vector3[] = [];
 
-  if (unit.pos.x < apronThresholdX) {
+  if (bay && unit.pos.x < apronThresholdX) {
     const headingSouth = spot.roadCenter.z >= bay.parkPos[2];
     const laneExitX = exitRoadX + (headingSouth ? -laneOffset : laneOffset);
     wps.push(new THREE.Vector3(apronExitX, surface.surfaceHeights.apron, bay.parkPos[2]));
@@ -458,6 +479,7 @@ function routeUnitToInterceptSpot(
 function startNailMatRecovery(
   mat: NailMatActor,
   unit: PoliceUnit | undefined,
+  officersById: Map<string, OfficerActor>,
 ): void {
   mat.phase = 'recovering';
   if (unit) {
@@ -465,10 +487,10 @@ function startNailMatRecovery(
     if (!unit.mounted && unit.status === UnitStatus.DeployingSpikes) {
       unit.holdTimer = 0;
       unit.mountTimer = 0;
-      unit.officers.forEach((o) => {
+      for (const o of resolveUnitOfficers(unit, officersById)) {
         o.mountPhase = 'walk';
         o.boardTimer = 0;
-      });
+      }
       unit.status = UnitStatus.Mounting;
     } else if (unit.status === UnitStatus.DeployingSpikes) {
       unit.status = unit.targetCrimeId ? UnitStatus.Pursuing : UnitStatus.Returning;
@@ -501,14 +523,16 @@ export function isPointNearArmedNailMat(
 export function updateNailMats(
   nailMats: NailMatActor[],
   units: PoliceUnit[],
+  officersById: Map<string, OfficerActor>,
   crimes: ActiveCrime[],
+  assailantsById: Map<string, AssailantActor>,
   civilianCars: CivilianVehicle[],
   roadGraph: TownRoadGraph,
   staticBvh: StaticObstacleBVH,
   config: EngineConfigAsset,
   vfx: SimVfxManager,
   audio: JsonAudioSynth | null,
-  nailMatsGroup: THREE.Group,
+  hierarchy: SceneWorldHierarchy,
   simTime: number,
   rng: () => number,
   dt: number,
@@ -520,6 +544,8 @@ export function updateNailMats(
     const mat = nailMats[i];
     const unit = units.find((u) => u.id === mat.unitId);
     const crime = crimes.find((c) => c.id === mat.crimeId);
+    const primarySuspect = crime ? resolveCrimePrimaryAssailant(crime, assailantsById) : undefined;
+    const suspectAlive = Boolean(primarySuspect?.alive);
 
     const beaconBlink = Math.sin(simTime * 11 + i * 1.3) > 0;
     const beaconMat = mat.warningBeacon.material as THREE.MeshBasicMaterial;
@@ -531,20 +557,20 @@ export function updateNailMats(
       unit.status === UnitStatus.Retreating ||
       unit.status === UnitStatus.AtStation
     ) {
-      nailMatsGroup.remove(mat.group);
+      hierarchy.removeEntity(mat.group);
       disposeNailMatObject(mat.group);
       nailMats.splice(i, 1);
       continue;
     }
 
     if (mat.phase === 'en_route') {
-      if (!crime || !crime.suspectAlive || !crime.inVehiclePursuit) {
-        nailMatsGroup.remove(mat.group);
+      if (!crime || !suspectAlive || !crime.inVehiclePursuit) {
+        hierarchy.removeEntity(mat.group);
         disposeNailMatObject(mat.group);
         nailMats.splice(i, 1);
         unit.pursuitRole = 'direct';
         if (unit.status === UnitStatus.DeployingSpikes) {
-          unit.status = crime && crime.suspectAlive ? UnitStatus.Responding : UnitStatus.Returning;
+          unit.status = crime && suspectAlive ? UnitStatus.Responding : UnitStatus.Returning;
           unit.repathTimer = 0;
         }
         continue;
@@ -563,7 +589,20 @@ export function updateNailMats(
         unit.lightsActive = true;
         unit.mounted = false;
 
-        const off = unit.officers[mat.officerIndex];
+        const off =
+          officersById.get(mat.officerId) ?? resolveUnitOfficers(unit, officersById)[0];
+        if (!off) {
+          startNailMatRecovery(mat, unit, officersById);
+          continue;
+        }
+        if (off.occupiedSeatIndex !== null && unit.seats[off.occupiedSeatIndex]) {
+          unit.seats[off.occupiedSeatIndex].occupantOfficerId = null;
+          unit.seats[off.occupiedSeatIndex].doorOpenTimer = 1.2;
+        }
+        off.occupiedUnitId = null;
+        off.occupiedSeatIndex = null;
+        off.boardingState = 'dismounted';
+
         const curbX = mat.roadCenter.x + mat.perpX * (mat.curbSideSign * (mat.halfSpan + 0.55));
         const curbZ = mat.roadCenter.z + mat.perpZ * (mat.curbSideSign * (mat.halfSpan + 0.55));
         off.pos.set(curbX, 0, curbZ);
@@ -600,9 +639,18 @@ export function updateNailMats(
           (toMatZ / (suspectDist || 1)) * suspectFwdZ;
 
         if (suspectDist > 34 && movingToward < -0.25 && distToStage > 18) {
-          const better = pickInterceptRoadSpot(crime, unit, units, roadGraph, nailMats, config, map);
+          const better = pickInterceptRoadSpot(
+            crime,
+            unit,
+            units,
+            assailantsById,
+            roadGraph,
+            nailMats,
+            config,
+            map,
+          );
           if (better) {
-            nailMatsGroup.remove(mat.group);
+            hierarchy.removeEntity(mat.group);
             disposeNailMatObject(mat.group);
             const visuals = buildNailMatVisuals(
               better.roadCenter,
@@ -612,7 +660,7 @@ export function updateNailMats(
               mat.halfSpan,
             );
             visuals.group.visible = false;
-            nailMatsGroup.add(visuals.group);
+            hierarchy.addEntity(visuals.group);
 
             mat.roadCenter.copy(better.roadCenter);
             mat.roadDirX = better.roadDirX;
@@ -627,7 +675,7 @@ export function updateNailMats(
             mat.warningBeacon = visuals.warningBeacon;
             routeUnitToInterceptSpot(unit, better, roadGraph, config, staticBvh, map);
           } else {
-            nailMatsGroup.remove(mat.group);
+            hierarchy.removeEntity(mat.group);
             disposeNailMatObject(mat.group);
             nailMats.splice(i, 1);
             unit.pursuitRole = 'direct';
@@ -639,7 +687,12 @@ export function updateNailMats(
       continue;
     }
 
-    const off = unit.officers[mat.officerIndex];
+    const off =
+      officersById.get(mat.officerId) ?? resolveUnitOfficers(unit, officersById)[0];
+    if (!off) {
+      startNailMatRecovery(mat, unit, officersById);
+      continue;
+    }
 
     if (mat.phase === 'deploying') {
       unit.speed = 0;
@@ -662,13 +715,13 @@ export function updateNailMats(
           );
           vfx.spawnBloodImpact(off.pos.x, off.pos.y + 1.0, off.pos.z, hitDirX, hitDirZ, 0.85, true);
           off.hp = Math.max(15, off.hp - 36);
-          startNailMatRecovery(mat, unit);
+          startNailMatRecovery(mat, unit, officersById);
           continue;
         }
       }
 
-      if (!crime || !crime.suspectAlive || !crime.inVehiclePursuit || off.hp <= 0 || off.ragdoll.active) {
-        startNailMatRecovery(mat, unit);
+      if (!crime || !suspectAlive || !crime.inVehiclePursuit || off.hp <= 0 || off.ragdoll.active) {
+        startNailMatRecovery(mat, unit, officersById);
         continue;
       }
 
@@ -687,9 +740,9 @@ export function updateNailMats(
       off.rig.root.rotation.y = off.yaw;
 
       if (mat.deployProgress >= 0.72) {
-        const hit = checkSuspectOverNailMat(mat, crime, vfx, audio, rng);
+        const hit = checkSuspectOverNailMat(mat, crime, config, vfx, audio, rng);
         if (hit) {
-          startNailMatRecovery(mat, unit);
+          startNailMatRecovery(mat, unit, officersById);
           continue;
         }
       }
@@ -710,8 +763,8 @@ export function updateNailMats(
       unit.dyn.vz = 0;
       mat.armedTimer -= dt;
 
-      if (!crime || !crime.suspectAlive || !crime.inVehiclePursuit || mat.armedTimer <= 0 || off.hp <= 0) {
-        startNailMatRecovery(mat, unit);
+      if (!crime || !suspectAlive || !crime.inVehiclePursuit || mat.armedTimer <= 0 || off.hp <= 0) {
+        startNailMatRecovery(mat, unit, officersById);
         continue;
       }
 
@@ -744,8 +797,8 @@ export function updateNailMats(
       );
 
       if (!friendlyPassing) {
-        if (checkSuspectOverNailMat(mat, crime, vfx, audio, rng)) {
-          startNailMatRecovery(mat, unit);
+        if (checkSuspectOverNailMat(mat, crime, config, vfx, audio, rng)) {
+          startNailMatRecovery(mat, unit, officersById);
           continue;
         }
 
@@ -757,13 +810,13 @@ export function updateNailMats(
             civ.immobilizeTilt = (rng() < 0.5 ? 1 : -1) * 0.14;
             civ.damageSmokeTimer = Math.max(civ.damageSmokeTimer, 12);
             vfx.spawnImpactSparks(civ.pos.x, 0.35, civ.pos.z, 9, 1.0, 0, 0);
-            audio?.playTireBlowoutAt(civ.pos);
+            playBoundAudioEvent(audio, config, 'vehicle_crash', civ.pos);
             civHit = true;
             break;
           }
         }
         if (civHit) {
-          startNailMatRecovery(mat, unit);
+          startNailMatRecovery(mat, unit, officersById);
           continue;
         }
       }
@@ -772,7 +825,7 @@ export function updateNailMats(
 
     mat.stripPivot.scale.x = THREE.MathUtils.damp(mat.stripPivot.scale.x, 0.04, 16, dt);
     if (mat.stripPivot.scale.x < 0.1) {
-      nailMatsGroup.remove(mat.group);
+      hierarchy.removeEntity(mat.group);
       disposeNailMatObject(mat.group);
       nailMats.splice(i, 1);
     }
@@ -790,6 +843,7 @@ function isVehicleTouchingStrip(pos: THREE.Vector3, mat: NailMatActor): boolean 
 function checkSuspectOverNailMat(
   mat: NailMatActor,
   crime: ActiveCrime,
+  config: EngineConfigAsset,
   vfx: SimVfxManager,
   audio: JsonAudioSynth | null,
   rng: () => number,
@@ -819,6 +873,7 @@ function checkSuspectOverNailMat(
     }
   }
 
-  audio?.playTireBlowoutAt(crime.vehiclePos);
+  playBoundAudioEvent(audio, config, 'vehicle_crash', crime.vehiclePos);
   return true;
 }
+

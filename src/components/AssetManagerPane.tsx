@@ -18,7 +18,14 @@ export interface AssetManagerPaneProps {
   onOpenErrorDialog: () => void;
 }
 
-type AssetTab = 'textures' | 'models' | 'materials' | 'audio' | 'media' | 'map' | 'config';
+type AssetTab =
+  | 'models'
+  | 'lightbars'
+  | 'materials'
+  | 'textures'
+  | 'audio'
+  | 'map'
+  | 'config';
 
 export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
   snapshot,
@@ -53,6 +60,14 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
           meta: `${mdl.parts.length} parts · ${Object.keys(mdl.materials).length} mats`,
         }));
     }
+    if (tab === 'lightbars') {
+      return Object.entries(loadedAssets.lightbars ?? {})
+        .filter(([id, lb]) => !q || id.toLowerCase().includes(q) || lb.name.toLowerCase().includes(q))
+        .map(([id, lb]) => ({
+          id,
+          meta: `${lb.hardwareStyle} · ${lb.patternType}`,
+        }));
+    }
     if (tab === 'materials') {
       return Object.entries(loadedAssets.materials)
         .filter(([id]) => !q || id.toLowerCase().includes(q))
@@ -69,36 +84,25 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
           meta: aud.kind,
         }));
     }
-    if (tab === 'media') {
-      return Object.values(loadedAssets.media)
-        .filter((m) => !q || m.id.toLowerCase().includes(q) || m.path.toLowerCase().includes(q))
-        .map((m) => ({
-          id: m.id,
-          meta: `${m.kind}${m.width && m.height ? ` · ${m.width}×${m.height}` : ''}`,
-        }));
-    }
     if (tab === 'map') {
       const m = loadedAssets.map;
       return [
-        { id: 'map.id', meta: m.id },
-        { id: 'map.name', meta: m.name },
+        { id: 'active.id', meta: m.id },
+        { id: 'active.name', meta: m.name },
+        { id: 'pack.maps', meta: Object.keys(loadedAssets.maps ?? {}).join(', ') },
         { id: 'map.bounds', meta: `±${m.bounds.halfSize}m` },
         { id: 'map.roadNodes', meta: `${m.roadNetwork.nodes.length} nodes` },
         { id: 'map.roadEdges', meta: `${m.roadNetwork.edges.length} edges` },
         { id: 'map.buildings', meta: `${m.buildings.length} structures` },
-        { id: 'map.zones', meta: `${m.zones.length} zones` },
-        { id: 'map.pedLoops', meta: `${m.pedLoops.length} loops` },
-        { id: 'map.trees', meta: `${m.trees.length} trees` },
+        { id: 'map.bays', meta: `${(m.stationBays ?? []).length} station bays` },
       ].filter(
         (row) => !q || row.id.toLowerCase().includes(q) || row.meta.toLowerCase().includes(q),
       );
     }
     const cfg = loadedAssets.config;
     return [
-      { id: 'world.townHalfSize', meta: `${cfg.world.townHalfSize}m` },
-      { id: 'world.trafficCount', meta: `${cfg.world.trafficCount} cars` },
-      { id: 'world.pedestrianCount', meta: `${cfg.world.pedestrianCount} peds` },
-      { id: 'vehicles.stationBays', meta: `${cfg.vehicles.stationBays.length} units` },
+      { id: 'vehicleDefs', meta: `${Object.keys(loadedAssets.vehicleDefs ?? {}).length} vehicles` },
+      { id: 'lightbars', meta: `${Object.keys(loadedAssets.lightbars ?? {}).length} presets` },
       { id: 'vehicles.liveries', meta: `${Object.keys(cfg.vehicles.liveries).length} presets` },
       { id: 'vehicles.paintPalette', meta: `${cfg.vehicles.paintPalette.length} swatches` },
       { id: 'weapons', meta: Object.keys(cfg.weapons).join(', ') },
@@ -141,15 +145,16 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
         <div className="flex items-center justify-between gap-2">
           <span className="text-zinc-400">Format</span>
           <span className="text-zinc-200">
-            v{loadedAssets?.manifest.formatVersion ?? '1.0'} · cfg {snapshot.configVersion}
+            v{loadedAssets?.manifest.formatVersion ?? '1.5.0'} · cfg {snapshot.configVersion}
           </span>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-1.5 pt-0.5 text-[10px] text-zinc-300">
+          <span>{snapshot.assetCounts.maps} map</span>
+          <span>{snapshot.assetCounts.lightbars} bar</span>
           <span>{snapshot.assetCounts.models} mdl</span>
           <span>{snapshot.assetCounts.materials} mat</span>
           <span>{snapshot.assetCounts.textures} tex</span>
           <span>{snapshot.assetCounts.audio} sfx</span>
-          <span>{snapshot.assetCounts.media} media</span>
         </div>
       </div>
 
@@ -179,7 +184,7 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
           }`}
         >
           <Download className="h-3.5 w-3.5" />
-          Export Pack 2.0
+          Export V3 ZIP
         </button>
 
         <button
@@ -215,10 +220,10 @@ export const AssetManagerPane: React.FC<AssetManagerPaneProps> = ({
         {(
           [
             { key: 'models', label: 'Mdl' },
+            { key: 'lightbars', label: 'Bar' },
             { key: 'materials', label: 'Mat' },
             { key: 'textures', label: 'Tex' },
             { key: 'audio', label: 'Sfx' },
-            { key: 'media', label: 'Med' },
             { key: 'map', label: 'Map' },
             { key: 'config', label: 'Cfg' },
           ] as const

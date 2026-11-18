@@ -1,58 +1,30 @@
-import React, { useMemo, useState } from 'react';
+import React from 'react';
 import {
   Activity,
   Car,
   Crosshair,
   Footprints,
   HeartHandshake,
-  Layers,
   Plus,
   Siren,
+  Sliders,
   Trash2,
   Users,
   Volume2,
   Wrench,
 } from 'lucide-react';
 import { DevEditorController, DevEditorState } from '../../sim/devEditorController';
-import { AIDebugFlags, WorldEntityKind } from '../../sim/types';
+import { AIDebugFlags } from '../../sim/types';
 
 export interface WorldInstanceEditorTabProps {
   controller: DevEditorController | null;
   state: DevEditorState;
 }
 
-const KIND_FILTER_OPTIONS: Array<{ id: 'all' | WorldEntityKind; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'police', label: 'Police' },
-  { id: 'traffic', label: 'Traffic' },
-  { id: 'ped', label: 'Peds' },
-  { id: 'crime', label: 'Incidents' },
-  { id: 'nail_mat', label: 'Spikes' },
-];
-
 export const WorldInstanceEditorTab: React.FC<WorldInstanceEditorTabProps> = ({
   controller,
   state,
 }) => {
-  const [kindFilter, setKindFilter] = useState<'all' | WorldEntityKind>('all');
-  const [search, setSearch] = useState('');
-
-  const filteredEntities = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return state.worldEntities.filter((e) => {
-      if (kindFilter !== 'all' && e.kind !== kindFilter) return false;
-      if (
-        q &&
-        !e.label.toLowerCase().includes(q) &&
-        !e.statusText.toLowerCase().includes(q) &&
-        !e.id.toLowerCase().includes(q)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [state.worldEntities, kindFilter, search]);
-
   const sel = state.selectedWorldEntity;
   const isVehicle = sel?.kind === 'police' || sel?.kind === 'traffic';
   const isPolice = sel?.kind === 'police';
@@ -71,7 +43,7 @@ export const WorldInstanceEditorTab: React.FC<WorldInstanceEditorTabProps> = ({
       <div className="grid grid-cols-3 gap-0.5 border border-zinc-600 bg-zinc-900/60 p-0.5">
         {(
           [
-            { id: 'hierarchy', label: 'Live Scene', icon: <Layers className="h-3 w-3" /> },
+            { id: 'hierarchy', label: 'Inspector', icon: <Sliders className="h-3 w-3" /> },
             { id: 'spawn', label: 'Spawn', icon: <Plus className="h-3 w-3" /> },
             { id: 'debug', label: 'AI Debug', icon: <Activity className="h-3 w-3" /> },
           ] as const
@@ -92,193 +64,148 @@ export const WorldInstanceEditorTab: React.FC<WorldInstanceEditorTabProps> = ({
         ))}
       </div>
 
-      {/* LIVE WORLD SCENE HIERARCHY */}
+      {/* SELECTED INSTANCE INSPECTOR */}
       {state.worldTab === 'hierarchy' && (
-        <div className="space-y-2">
-          <div className="ui-subpanel p-2 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
-              <span>Active World Instances ({state.worldEntities.length})</span>
-              <span className="font-mono-tabular text-[10px] text-zinc-400">
-                Click in 3D or list
-              </span>
-            </div>
-
-            <div className="grid grid-cols-6 gap-0.5">
-              {KIND_FILTER_OPTIONS.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setKindFilter(opt.id)}
-                  className={`border py-0.5 text-[9px] font-medium cursor-pointer rounded-none ${
-                    kindFilter === opt.id
-                      ? 'border-sky-400 bg-sky-600 text-white'
-                      : 'border-zinc-600 bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter active objects..."
-              className="w-full border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-100 placeholder:text-zinc-500 rounded-none"
-            />
-
-            <div className="max-h-48 overflow-y-auto border border-zinc-700 bg-zinc-900 divide-y divide-zinc-800">
-              {filteredEntities.length === 0 ? (
-                <div className="p-2 text-center text-[11px] text-zinc-400">
-                  No active world objects match.
-                </div>
-              ) : (
-                filteredEntities.map((ent) => {
-                  const selected = ent.uid === state.selectedWorldEntityUid;
-                  return (
-                    <button
-                      key={ent.uid}
-                      type="button"
-                      onClick={() => controller?.selectWorldEntity(ent.kind, ent.id)}
-                      className={`w-full flex items-center justify-between gap-2 px-2 py-1 text-left font-mono-tabular text-[10px] cursor-pointer rounded-none ${
-                        selected
-                          ? 'bg-sky-600/35 text-white'
-                          : 'text-zinc-200 hover:bg-zinc-800/80'
-                      }`}
-                    >
-                      <span className="truncate font-semibold">{ent.label}</span>
-                      <span className="shrink-0 text-zinc-400">{ent.statusText}</span>
-                    </button>
-                  );
-                })
-              )}
+        <div className="ui-subpanel p-2 space-y-2">
+          <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+            <span className="truncate">
+              {sel ? `Instance: ${sel.label}` : 'No World Instance Selected'}
+            </span>
+            <div className="flex gap-1 shrink-0">
+              <button
+                type="button"
+                disabled={!sel}
+                onClick={() => controller?.focusSelectedWorldEntity()}
+                className={`flex items-center gap-0.5 border px-1.5 py-0.5 text-[10px] rounded-none ${
+                  sel
+                    ? 'border-zinc-500 bg-zinc-700 text-zinc-100 hover:bg-zinc-600 cursor-pointer'
+                    : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                }`}
+              >
+                <Crosshair className="h-3 w-3" />
+                Focus
+              </button>
+              <button
+                type="button"
+                disabled={!sel}
+                onClick={() => controller?.deleteSelectedWorldEntity()}
+                className={`flex items-center gap-0.5 border px-1.5 py-0.5 text-[10px] rounded-none ${
+                  sel
+                    ? 'border-red-500/70 bg-red-800/40 text-red-100 hover:bg-red-700/60 cursor-pointer'
+                    : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                }`}
+              >
+                <Trash2 className="h-3 w-3" />
+                Delete
+              </button>
             </div>
           </div>
 
-          {/* Selected Instance Inspector */}
-          <div className="ui-subpanel p-2 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
-              <span>{sel ? `Selected: ${sel.label}` : 'No World Instance Selected'}</span>
-              <div className="flex gap-1">
+          {!sel ? (
+            <div className="border border-zinc-700 bg-zinc-900/70 p-3 text-[11px] text-zinc-400">
+              Select any live actor, vehicle, incident, or spike strip from the World
+              Hierarchy on the left, or click it directly in the 3D viewport.
+            </div>
+          ) : (
+            <div className="space-y-2 text-[10px] font-mono-tabular">
+              <div className="border border-zinc-700 bg-zinc-900/80 px-2 py-1 flex items-center justify-between text-zinc-200">
+                <span>State: {sel.statusText}</span>
+                {sel.hp !== undefined && sel.maxHp !== undefined && (
+                  <span>
+                    HP {Math.round(sel.hp)}/{Math.round(sel.maxHp)}
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-4 gap-1 text-zinc-300 border border-zinc-700 bg-zinc-900/80 p-1.5">
+                <span>X {sel.x}</span>
+                <span>Y {sel.y}</span>
+                <span>Z {sel.z}</span>
+                <span>Yaw {sel.yaw}</span>
+              </div>
+
+              {sel.extra && (
+                <div className="border border-zinc-700 bg-zinc-900/60 px-2 py-1 text-zinc-300 break-words">
+                  {sel.extra}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-1">
                 <button
                   type="button"
-                  disabled={!sel}
-                  onClick={() => controller?.focusSelectedWorldEntity()}
-                  className={`flex items-center gap-0.5 border px-1.5 py-0.5 text-[10px] rounded-none ${
-                    sel
+                  disabled={!canRepairHeal}
+                  onClick={() => controller?.modifySelectedWorldEntity('repair_heal')}
+                  className={`flex items-center justify-center gap-1 border py-1.5 font-sans text-[10px] font-medium rounded-none ${
+                    canRepairHeal
+                      ? 'border-emerald-500/70 bg-emerald-700/35 text-emerald-100 hover:bg-emerald-600/50 cursor-pointer'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  {sel.kind === 'crime' ? (
+                    <HeartHandshake className="h-3 w-3" />
+                  ) : (
+                    <Wrench className="h-3 w-3" />
+                  )}
+                  {sel.kind === 'crime' ? 'Heal Suspect' : 'Repair / Heal'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!canClearImpatience}
+                  onClick={() => controller?.modifySelectedWorldEntity('clear_impatience')}
+                  className={`flex items-center justify-center gap-1 border py-1.5 font-sans text-[10px] font-medium rounded-none ${
+                    canClearImpatience
                       ? 'border-zinc-500 bg-zinc-700 text-zinc-100 hover:bg-zinc-600 cursor-pointer'
                       : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
                   }`}
                 >
-                  <Crosshair className="h-3 w-3" />
-                  Focus
+                  Clear Impatience
                 </button>
+
                 <button
                   type="button"
-                  disabled={!sel}
-                  onClick={() => controller?.deleteSelectedWorldEntity()}
-                  className={`flex items-center gap-0.5 border px-1.5 py-0.5 text-[10px] rounded-none ${
-                    sel
-                      ? 'border-red-500/70 bg-red-800/40 text-red-100 hover:bg-red-700/60 cursor-pointer'
+                  disabled={!isPolice}
+                  onClick={() => controller?.modifySelectedWorldEntity('toggle_lights')}
+                  className={`flex items-center justify-center gap-1 border py-1.5 font-sans text-[10px] font-medium rounded-none ${
+                    isPolice
+                      ? 'border-sky-500/70 bg-sky-700/35 text-sky-100 hover:bg-sky-600/50 cursor-pointer'
                       : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
                   }`}
                 >
-                  <Trash2 className="h-3 w-3" />
-                  Delete
+                  <Siren className="h-3 w-3" />
+                  {sel.lightsActive ? 'Lights Off' : 'Lights On'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!isPolice}
+                  onClick={() => controller?.modifySelectedWorldEntity('toggle_siren')}
+                  className={`flex items-center justify-center gap-1 border py-1.5 font-sans text-[10px] font-medium rounded-none ${
+                    isPolice
+                      ? 'border-amber-500/70 bg-amber-700/35 text-amber-100 hover:bg-amber-600/50 cursor-pointer'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Volume2 className="h-3 w-3" />
+                  {sel.sirensActive ? 'Siren Off' : 'Siren On'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!isPolice}
+                  onClick={() => controller?.modifySelectedWorldEntity('toggle_mount')}
+                  className={`col-span-2 flex items-center justify-center gap-1 border py-1.5 font-sans text-[10px] font-medium rounded-none ${
+                    isPolice
+                      ? 'border-zinc-500 bg-zinc-700 text-zinc-100 hover:bg-zinc-600 cursor-pointer'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Users className="h-3 w-3" />
+                  {sel.mounted ? 'Dismount Crew' : 'Mount Crew'}
                 </button>
               </div>
             </div>
-
-            {sel && (
-              <div className="space-y-1.5 text-[10px] font-mono-tabular">
-                <div className="grid grid-cols-4 gap-1 text-zinc-300 border border-zinc-700 bg-zinc-900/80 p-1">
-                  <span>X {sel.x}</span>
-                  <span>Y {sel.y}</span>
-                  <span>Z {sel.z}</span>
-                  <span>Yaw {sel.yaw}</span>
-                </div>
-                {sel.extra && (
-                  <div className="text-zinc-400 truncate">{sel.extra}</div>
-                )}
-
-                <div className="grid grid-cols-2 gap-1">
-                  <button
-                    type="button"
-                    disabled={!canRepairHeal}
-                    onClick={() => controller?.modifySelectedWorldEntity('repair_heal')}
-                    className={`flex items-center justify-center gap-1 border py-1 font-sans text-[10px] font-medium rounded-none ${
-                      canRepairHeal
-                        ? 'border-emerald-500/70 bg-emerald-700/35 text-emerald-100 hover:bg-emerald-600/50 cursor-pointer'
-                        : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                    }`}
-                  >
-                    {sel.kind === 'crime' ? (
-                      <HeartHandshake className="h-3 w-3" />
-                    ) : (
-                      <Wrench className="h-3 w-3" />
-                    )}
-                    {sel.kind === 'crime' ? 'Heal Suspect' : 'Repair / Heal'}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={!canClearImpatience}
-                    onClick={() => controller?.modifySelectedWorldEntity('clear_impatience')}
-                    className={`flex items-center justify-center gap-1 border py-1 font-sans text-[10px] font-medium rounded-none ${
-                      canClearImpatience
-                        ? 'border-zinc-500 bg-zinc-700 text-zinc-100 hover:bg-zinc-600 cursor-pointer'
-                        : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                    }`}
-                  >
-                    Clear Impatience
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={!isPolice}
-                    onClick={() => controller?.modifySelectedWorldEntity('toggle_lights')}
-                    className={`flex items-center justify-center gap-1 border py-1 font-sans text-[10px] font-medium rounded-none ${
-                      isPolice
-                        ? 'border-sky-500/70 bg-sky-700/35 text-sky-100 hover:bg-sky-600/50 cursor-pointer'
-                        : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                    }`}
-                  >
-                    <Siren className="h-3 w-3" />
-                    {sel.lightsActive ? 'Lights Off' : 'Lights On'}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={!isPolice}
-                    onClick={() => controller?.modifySelectedWorldEntity('toggle_siren')}
-                    className={`flex items-center justify-center gap-1 border py-1 font-sans text-[10px] font-medium rounded-none ${
-                      isPolice
-                        ? 'border-amber-500/70 bg-amber-700/35 text-amber-100 hover:bg-amber-600/50 cursor-pointer'
-                        : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                    }`}
-                  >
-                    <Volume2 className="h-3 w-3" />
-                    {sel.sirensActive ? 'Siren Off' : 'Siren On'}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={!isPolice}
-                    onClick={() => controller?.modifySelectedWorldEntity('toggle_mount')}
-                    className={`col-span-2 flex items-center justify-center gap-1 border py-1 font-sans text-[10px] font-medium rounded-none ${
-                      isPolice
-                        ? 'border-zinc-500 bg-zinc-700 text-zinc-100 hover:bg-zinc-600 cursor-pointer'
-                        : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                    }`}
-                  >
-                    <Users className="h-3 w-3" />
-                    {sel.mounted ? 'Dismount Crew' : 'Mount Crew'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          )}
         </div>
       )}
 

@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { CustomMapAsset } from '../assets/assetTypes';
+import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { StaticObstacleBVH } from './bvh';
+import { playBoundAudioEvent } from './eventBindings';
 import { getSurfaceHeight, WorldConfig } from './roadGraph';
 import { HumanoidRig } from './vehicleModels';
 
@@ -126,6 +127,7 @@ export class SimVfxManager {
   private rng: () => number;
   private textures: TextureRegistry | null = null;
   private world: CustomMapAsset | WorldConfig | null = null;
+  private config: EngineConfigAsset | null = null;
 
   private sparks: ImpactSpark[] = [];
   private smokePuffs: SmokePuff[] = [];
@@ -149,9 +151,11 @@ export class SimVfxManager {
   public configure(
     textures: TextureRegistry,
     world: CustomMapAsset | WorldConfig,
+    config?: EngineConfigAsset,
   ): void {
     this.textures = textures;
     this.world = world;
+    if (config) this.config = config;
   }
 
   public spawnBloodImpact(
@@ -329,7 +333,7 @@ export class SimVfxManager {
 
     if (audio && strikeSpeed >= 5.2) {
       _vPos.set(x, y, z);
-      audio.playAssetAt('vehicle_crash', _vPos);
+      playBoundAudioEvent(audio, this.config, 'vehicle_crash', _vPos);
     }
   }
 

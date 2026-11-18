@@ -6,9 +6,10 @@ import {
   EngineConfigAsset,
   LoadedJsonAssets,
 } from '../assets/assetTypes';
-import { loadJsonAssetBundle, revokeMediaObjectUrls } from '../assets/jsonAssetLoader';
+import { loadJsonAssetBundle, revokeMediaObjectUrls, syncMapOwnedConfig } from '../assets/jsonAssetLoader';
 import { JsonAudioSynth, AudioVoiceQuality } from '../assets/jsonAudioSynth';
 import { mulberry32 } from '../assets/prng';
+import { simEventLog } from '../assets/simEventLog';
 import { TextureRegistry } from '../assets/textureRegistry';
 import {
   evaluateCrimeBackupPolicy,
@@ -22,6 +23,7 @@ import { CombatSystem, VehicleHumanoidCollider } from './combatSystem';
 import { spawnCrime, updateCrimes } from './crimeSystem';
 import { AIDebugVisualizer } from './debugVisualizer';
 import { DevEditorController, DevEditorState } from './devEditorController';
+import { assetIdToLightbarMode, lightbarModeToAssetId } from './lightbarSystem';
 import { updateNailMats } from './nailMatSystem';
 import {
   buildAllVehicleProxies,
@@ -92,6 +94,7 @@ function detectSoftwareWebGL(): boolean {
 }
 
 export interface PoliceSimInitialSettings {
+  initialMapId?: string;
   audioEnabled?: boolean;
   audioVolume?: number;
   audioQuality?: AudioVoiceQuality;
@@ -100,6 +103,7 @@ export interface PoliceSimInitialSettings {
   backupMode?: BackupMode;
   drivingMode?: DrivingMode;
   lightbarMode?: LightbarMode;
+  activeLightbarId?: string;
   sirenPattern?: SirenPattern;
   trafficScale?: number;
   pedScale?: number;
@@ -156,6 +160,8 @@ export class PoliceSimEngine {
   private paintPalette: PaintSwatchSummary[] = [];
 
   private lightbarMode: LightbarMode = LightbarMode.LED;
+  private activeLightbarId = 'led_array';
+  private pendingMapId: string | undefined;
   private sirenPattern: SirenPattern = SirenPattern.AutoCycle;
   private drivingMode: DrivingMode = DrivingMode.Standard;
   private backupMode: BackupMode = BackupMode.Standard;
@@ -210,6 +216,7 @@ export class PoliceSimEngine {
     this.shadowsEnabled = !this.isSoftwareGl;
 
     if (initialSettings) {
+      if (initialSettings.initialMapId) this.pendingMapId = initialSettings.initialMapId;
       if (initialSettings.audioEnabled !== undefined) this.audioWanted = initialSettings.audioEnabled;
       if (initialSettings.audioVolume !== undefined) this.audioVolume = initialSettings.audioVolume;
       if (initialSettings.audioQuality !== undefined) this.audioQuality = initialSettings.audioQuality;
@@ -217,7 +224,13 @@ export class PoliceSimEngine {
       if (initialSettings.weather !== undefined) this.weather = initialSettings.weather;
       if (initialSettings.backupMode !== undefined) this.backupMode = initialSettings.backupMode;
       if (initialSettings.drivingMode !== undefined) this.drivingMode = initialSettings.drivingMode;
-      if (initialSettings.lightbarMode !== undefined) this.lightbarMode = initialSettings.lightbarMode;
+      if (initialSettings.lightbarMode !== undefined) {
+        this.lightbarMode = initialSettings.lightbarMode;
+        this.activeLightbarId = lightbarModeToAssetId(initialSettings.lightbarMode);
+      }
+      if (initialSettings.activeLightbarId) {
+        this.activeLightbarId = initialSettings.activeLightbarId;
+      }
       if (initialSettings.sirenPattern !== undefined) this.sirenPattern = initialSettings.sirenPattern;
       if (initialSettings.trafficScale !== undefined) {
         this.trafficScale = THREE.MathUtils.clamp(initialSettings.trafficScale, 0, 2);
@@ -314,6 +327,11 @@ export class PoliceSimEngine {
     );
     if (!exists) {
       this.assetIssues = [...this.assetIssues, issue];
+      if (issue.severity === 'error') {
+        simEventLog.error('asset', `[${issue.category}] ${issue.id}: ${issue.message}`, issue.path);
+      } else {
+        simEventLog.warn('asset', `[${issue.category}] ${issue.id}: ${issue.message}`, issue.path);
+      }
     }
   };
 
@@ -359,9 +377,35 @@ export class PoliceSimEngine {
 
     const assets = result.assets;
     const config = result.config;
+    if (this.pendingMapId && assets.maps[this.pendingMapId]) {
+      assets.activeMapId = this.pendingMapId;
+      assets.map = assets.maps[this.pendingMapId];
+      this.pendingMapId = undefined;
+    }
+    syncMapOwnedConfig(assets.map, config);
+    if (assets.map.cameraOverview) {
+      config.camera.overviewPos = [...assets.map.cameraOverview.pos];
+      config.camera.overviewTarget = [...assets.map.cameraOverview.target];
+    }
     this.assets = assets;
     this.config = config;
+    if (assets.lightbars[this.activeLightbarId]) {
+      this.lightbarMode = assetIdToLightbarMode(
+        this.activeLightbarId,
+        assets.lightbars[this.activeLightbarId],
+      );
+    } else {
+      const fallbackLbId = lightbarModeToAssetId(this.lightbarMode);
+      this.activeLightbarId = assets.lightbars[fallbackLbId]
+        ? fallbackLbId
+        : Object.keys(assets.lightbars)[0] ?? 'led_array';
+    }
     this.simRng = mulberry32(20261116);
+    simEventLog.info(
+      'system',
+      `Loaded pack "${assets.manifest.packName}" (v${assets.manifest.formatVersion ?? '1.5.0'})`,
+      `Map: ${assets.map.name} (${Object.keys(assets.maps).length} maps, ${Object.keys(assets.lightbars).length} lightbars)`,
+    );
 
     this.casualtyCount = 0;
     this.paintPalette = config.vehicles.paintPalette.map((sw) => ({
@@ -433,6 +477,7 @@ export class PoliceSimEngine {
           getAIDebugFlags: () => this.getAIDebugFlags(),
           setAIDebugFlags: (patch) => this.setAIDebugFlags(patch),
           getAIDebugStats: () => this.getAIDebugStats(),
+          onSwitchMap: (mapId) => this.switchMap(mapId),
         },
       );
     }
@@ -608,8 +653,50 @@ export class PoliceSimEngine {
 
   // --- Public Controls API ---
 
+  public switchMap(mapId: string): boolean {
+    if (!this.assets || !this.config) return false;
+    const nextMap = this.assets.maps[mapId];
+    if (!nextMap) return false;
+
+    this.assets.activeMapId = mapId;
+    this.assets.map = nextMap;
+    syncMapOwnedConfig(nextMap, this.config);
+    if (nextMap.cameraOverview) {
+      this.config.camera.overviewPos = [...nextMap.cameraOverview.pos];
+      this.config.camera.overviewTarget = [...nextMap.cameraOverview.target];
+      this.cameraController?.applyConfig(this.config.camera);
+      this.cameraController?.resetView();
+    }
+    this.rebuildMapAndWorld();
+    this.devEditor?.setAssets(this.assets, this.textures, this.audio);
+    simEventLog.info('map', `Switched map to "${nextMap.name}"`, `ID: ${mapId}`);
+    this.emitSnapshot();
+    return true;
+  }
+
   public setLightbarMode(mode: LightbarMode): void {
     this.lightbarMode = mode;
+    this.activeLightbarId = lightbarModeToAssetId(mode);
+    for (const u of this.units) {
+      u.lightbarId = this.activeLightbarId;
+    }
+    this.emitSnapshot();
+  }
+
+  public setLightbarById(lightbarId: string): void {
+    const asset = this.assets?.lightbars[lightbarId];
+    this.activeLightbarId = lightbarId;
+    this.lightbarMode = assetIdToLightbarMode(lightbarId, asset);
+    for (const u of this.units) {
+      u.lightbarId = lightbarId;
+    }
+    this.emitSnapshot();
+  }
+
+  public setUnitLightbar(unitId: string, lightbarId: string): void {
+    const unit = this.units.find((u) => u.id === unitId);
+    if (!unit) return;
+    unit.lightbarId = lightbarId;
     this.emitSnapshot();
   }
 
@@ -951,6 +1038,7 @@ export class PoliceSimEngine {
         staticBvh: this.staticBvh,
         config,
         map,
+        lightbars: this.assets?.lightbars,
         combat: this.combat,
         vfx: this.vfx,
         audio: this.audio,
@@ -1039,9 +1127,11 @@ export class PoliceSimEngine {
       dt,
       () => {
         this.neutralizedCount++;
+        simEventLog.info('combat', `Suspect neutralized (Total: ${this.neutralizedCount})`);
       },
       () => {
         this.casualtyCount++;
+        simEventLog.warn('combat', `Civilian casualty reported (Total: ${this.casualtyCount})`);
       },
     );
     this.vfx.update(dt);
@@ -1212,6 +1302,9 @@ export class PoliceSimEngine {
         crashIntensity: this.crashIntensity,
         onHeavyCrash: (mag) => {
           this.cameraController?.triggerImpactShake(Math.min(0.6, mag * 0.024));
+          if (mag > 14) {
+            simEventLog.warn('crash', `High-energy vehicle collision (${Math.round(mag)} m/s)`);
+          }
         },
       },
     );
@@ -1308,10 +1401,13 @@ export class PoliceSimEngine {
         callsign: u.callsign,
         vehicleKind: u.vehicleKind,
         liveryLabel: liveries?.[u.liveryId]?.label ?? u.liveryId,
+        lightbarId: u.lightbarId,
         baseColorHex: u.baseColorHex,
         isHeavyUnit: u.isHeavyUnit,
         weaponKind: u.weaponKind,
         status: u.status,
+        activeGoal: u.activeGoal,
+        goalReason: u.goalReason,
         mounted: u.mounted,
         immobilized: u.immobilized,
         freeRoam: u.freeRoam,
@@ -1376,6 +1472,10 @@ export class PoliceSimEngine {
       activeNailMats: this.nailMats.filter((m) => m.phase !== 'recovering').length,
       selectedUnitId: this.selectedUnitId,
       lightbarMode: this.lightbarMode,
+      activeLightbarId: this.activeLightbarId,
+      availableLightbars: this.assets
+        ? Object.values(this.assets.lightbars).map((lb) => ({ id: lb.id, name: lb.name }))
+        : [],
       sirenPattern: this.sirenPattern,
       drivingMode: this.drivingMode,
       backupMode: this.backupMode,
@@ -1396,13 +1496,23 @@ export class PoliceSimEngine {
       assetPackName: this.assets?.manifest.packName ?? 'unloaded',
       assetSourceLabel: this.assetSourceLabel,
       configVersion: this.config?.version ?? 'missing',
+      activeMapId: this.assets?.activeMapId ?? this.assets?.map.id ?? 'metro_default',
       mapName: this.assets?.map.name ?? 'Unloaded',
+      availableMaps: this.assets
+        ? Object.values(this.assets.maps).map((m) => ({
+            id: m.id,
+            name: m.name,
+            description: m.description,
+          }))
+        : [],
       assetCounts: {
         textures: this.assets ? Object.keys(this.assets.textures).length : 0,
         models: this.assets ? Object.keys(this.assets.models).length : 0,
         audio: this.assets ? Object.keys(this.assets.audio).length : 0,
         materials: this.assets ? Object.keys(this.assets.materials).length : 0,
         media: this.assets ? Object.keys(this.assets.media).length : 0,
+        lightbars: this.assets ? Object.keys(this.assets.lightbars).length : 0,
+        maps: this.assets ? Object.keys(this.assets.maps).length : 0,
       },
       assetsLoaded: this.assetsLoaded,
       assetIssues: this.assetIssues,
@@ -1724,6 +1834,7 @@ export class PoliceSimEngine {
         stuckTimer: 0,
         reverseTimer: 0,
         reverseSteerDir: 1,
+        stallCount: 0,
         immobilized: false,
         immobilizeTilt: 0,
         damageSmokeTimer: 0,
@@ -1815,6 +1926,7 @@ export class PoliceSimEngine {
       bayIndex: refBayIdx,
       vehicleKind,
       liveryId,
+      lightbarId: this.activeLightbarId,
       baseColorHex: 0x0f172a,
       isHeavyUnit: isHeavy,
       weaponKind,
@@ -1829,6 +1941,8 @@ export class PoliceSimEngine {
       dyn: createVehicleDynState(),
       lateralOffset: 0,
       status: UnitStatus.Engaging,
+      activeGoal: 'MANUAL_FOOT_PATROL',
+      goalReason: 'Spawned in world editor',
       mounted: true,
       freeRoam: true,
       dismountTimer: 0,
@@ -1855,6 +1969,7 @@ export class PoliceSimEngine {
       impatience: 0,
       reverseTimer: 0,
       reverseSteerDir: 1,
+      stallCount: 0,
       towRequested: false,
       beingTowed: false,
     });

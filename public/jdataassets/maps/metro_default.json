@@ -1,8 +1,103 @@
 {
-  "format": "jdata-map-v1",
+  "format": "jdata-map-v3",
   "id": "metro_default",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "name": "Metro Precinct Core",
+  "description": "Downtown 4x4 grid precinct with Civic Plaza Park and North Market",
+  "trafficCount": 14,
+  "pedestrianCount": 32,
+  "defaultWeather": "CLEAR",
+  "treePalette": ["#3d6b41", "#4a7c44", "#2f5a38", "#568247"],
+  "cameraOverview": {
+    "pos": [-148, 62, 54],
+    "target": [-35, 0, -15]
+  },
+  "stationBays": [
+    {
+      "id": "unit-1",
+      "callsign": "UNIT 101",
+      "vehicleKind": "sedan",
+      "liveryId": "classic_bw",
+      "lightbarId": "led_array",
+      "weaponKind": "pistol",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -58],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 6
+    },
+    {
+      "id": "unit-2",
+      "callsign": "UNIT 102",
+      "vehicleKind": "suv",
+      "liveryId": "navy_silver",
+      "lightbarId": "led_array",
+      "weaponKind": "rifle",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -50],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 6
+    },
+    {
+      "id": "unit-3",
+      "callsign": "UNIT 103",
+      "vehicleKind": "sedan",
+      "liveryId": "forest_cream",
+      "lightbarId": "rotator_classic",
+      "weaponKind": "pistol",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -42],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 7
+    },
+    {
+      "id": "unit-4",
+      "callsign": "UNIT 104",
+      "vehicleKind": "suv",
+      "liveryId": "slate_cobalt",
+      "lightbarId": "vector_v_pods",
+      "weaponKind": "rifle",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -34],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 7
+    },
+    {
+      "id": "unit-5",
+      "callsign": "VAN 205",
+      "vehicleKind": "van",
+      "liveryId": "transport_blue",
+      "lightbarId": "mini_beacon",
+      "weaponKind": "pistol",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -26],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 7
+    },
+    {
+      "id": "unit-6",
+      "callsign": "SWAT 301",
+      "vehicleKind": "van",
+      "liveryId": "tactical_swat",
+      "lightbarId": "halogen_flash",
+      "weaponKind": "rifle",
+      "isHeavyUnit": true,
+      "parkPos": [-92, 0.18, -18],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 7
+    },
+    {
+      "id": "unit-7",
+      "callsign": "APC 401",
+      "vehicleKind": "apc",
+      "liveryId": "tactical_swat",
+      "lightbarId": "visor_stealth",
+      "weaponKind": "rifle",
+      "isHeavyUnit": true,
+      "parkPos": [-92, 0.18, -10],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 7
+    }
+  ],
   "bounds": {
     "halfSize": 200
   },

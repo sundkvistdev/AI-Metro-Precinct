@@ -1,8 +1,31 @@
 {
-  "formatVersion": "1.3.0",
+  "formatVersion": "1.5.0",
   "packName": "metro_precinct_core",
   "config": "/jdataassets/engine_config.json",
   "map": "/jdataassets/maps/metro_default.json",
+  "defaultMap": "metro_default",
+  "maps": {
+    "metro_default": "/jdataassets/maps/metro_default.json",
+    "harbor_industrial": "/jdataassets/maps/harbor_industrial.json"
+  },
+  "lightbars": {
+    "led_array": "/jdataassets/lightbars/led_array.json",
+    "halogen_flash": "/jdataassets/lightbars/halogen_flash.json",
+    "rotator_classic": "/jdataassets/lightbars/rotator_classic.json",
+    "vector_v_pods": "/jdataassets/lightbars/vector_v_pods.json",
+    "visor_stealth": "/jdataassets/lightbars/visor_stealth.json",
+    "mini_beacon": "/jdataassets/lightbars/mini_beacon.json"
+  },
+  "vehicles": {
+    "police_sedan": "/jdataassets/vehicles/police_sedan.json",
+    "police_suv": "/jdataassets/vehicles/police_suv.json",
+    "police_van": "/jdataassets/vehicles/police_van.json",
+    "police_apc": "/jdataassets/vehicles/police_apc.json",
+    "civilian_sedan": "/jdataassets/vehicles/civilian_sedan.json",
+    "civilian_hatch": "/jdataassets/vehicles/civilian_hatch.json",
+    "civilian_taxi": "/jdataassets/vehicles/civilian_taxi.json",
+    "civilian_van": "/jdataassets/vehicles/civilian_van.json"
+  },
   "textures": {
     "asphalt_road_v": "/jdataassets/textures/asphalt_road_v.json",
     "asphalt_road_h": "/jdataassets/textures/asphalt_road_h.json",
@@ -38,7 +61,21 @@
     "officer_humanoid": "/jdataassets/models/officer_humanoid.json",
     "heavy_officer_humanoid": "/jdataassets/models/heavy_officer_humanoid.json",
     "suspect_humanoid": "/jdataassets/models/suspect_humanoid.json",
-    "pedestrian_humanoid": "/jdataassets/models/pedestrian_humanoid.json"
+    "pedestrian_humanoid": "/jdataassets/models/pedestrian_humanoid.json",
+    "building_storefront": "/jdataassets/models/building_storefront.json",
+    "building_brick": "/jdataassets/models/building_brick.json",
+    "building_concrete": "/jdataassets/models/building_concrete.json",
+    "building_limestone": "/jdataassets/models/building_limestone.json",
+    "building_office": "/jdataassets/models/building_office.json",
+    "building_station_hall": "/jdataassets/models/building_station_hall.json",
+    "building_station_glass": "/jdataassets/models/building_station_glass.json",
+    "building_trim": "/jdataassets/models/building_trim.json",
+    "prop_fountain": "/jdataassets/models/prop_fountain.json",
+    "prop_sign": "/jdataassets/models/prop_sign.json",
+    "prop_beacon": "/jdataassets/models/prop_beacon.json",
+    "prop_tree": "/jdataassets/models/prop_tree.json",
+    "prop_streetlight": "/jdataassets/models/prop_streetlight.json",
+    "prop_road_sign": "/jdataassets/models/prop_road_sign.json"
   },
   "audio": {
     "siren_standard_wail": "/jdataassets/audio/siren_standard_wail.json",

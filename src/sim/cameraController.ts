@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EngineConfigAsset } from '../assets/assetTypes';
-import { PoliceUnit } from './simActors';
+import { keybindStore } from './keybinds';
+import { OfficerActor, PoliceUnit, resolveUnitOfficers } from './simActors';
 import { CameraMode } from './types';
 
 export type CameraConfig = EngineConfigAsset['camera'];
@@ -171,24 +172,31 @@ export class SimCameraController {
     this.controls.update();
   }
 
-  public update(dt: number, selectedUnit: PoliceUnit | undefined): void {
+  public update(
+    dt: number,
+    selectedUnit: PoliceUnit | undefined,
+    officersById?: Map<string, OfficerActor>,
+  ): void {
     if (this.appliedShake.lengthSq() > 0) {
       this.camera.position.sub(this.appliedShake);
       this.appliedShake.set(0, 0, 0);
     }
 
     const moveFwd =
-      (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0) -
-      (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0);
+      (keybindStore.isActionHeld(this.keys, 'camForward') ? 1 : 0) -
+      (keybindStore.isActionHeld(this.keys, 'camBackward') ? 1 : 0);
     const moveRight =
-      (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) -
-      (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0);
+      (keybindStore.isActionHeld(this.keys, 'camRight') ? 1 : 0) -
+      (keybindStore.isActionHeld(this.keys, 'camLeft') ? 1 : 0);
     const moveVert =
-      (this.keys.has('KeyR') ? 1 : 0) - (this.keys.has('KeyF') ? 1 : 0);
+      (keybindStore.isActionHeld(this.keys, 'camUp') ? 1 : 0) -
+      (keybindStore.isActionHeld(this.keys, 'camDown') ? 1 : 0);
     const yawRot =
-      (this.keys.has('KeyQ') ? 1 : 0) - (this.keys.has('KeyE') ? 1 : 0);
+      (keybindStore.isActionHeld(this.keys, 'camOrbitLeft') ? 1 : 0) -
+      (keybindStore.isActionHeld(this.keys, 'camOrbitRight') ? 1 : 0);
     const zoomKey =
-      (this.keys.has('KeyZ') ? 1 : 0) - (this.keys.has('KeyX') ? 1 : 0);
+      (keybindStore.isActionHeld(this.keys, 'camZoomIn') ? 1 : 0) -
+      (keybindStore.isActionHeld(this.keys, 'camZoomOut') ? 1 : 0);
 
     const speedMult =
       this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
@@ -315,9 +323,14 @@ export class SimCameraController {
     } else if (this.mode === CameraMode.FollowUnit) {
       let focusX = selectedUnit.pos.x;
       let focusZ = selectedUnit.pos.z;
-      if (!selectedUnit.mounted) {
-        focusX = (selectedUnit.officers[0].pos.x + selectedUnit.officers[1].pos.x) * 0.5;
-        focusZ = (selectedUnit.officers[0].pos.z + selectedUnit.officers[1].pos.z) * 0.5;
+      if (!selectedUnit.mounted && officersById) {
+        const crew = resolveUnitOfficers(selectedUnit, officersById).filter(
+          (o) => o.boardingState === 'dismounted',
+        );
+        if (crew.length > 0) {
+          focusX = crew.reduce((s, o) => s + o.pos.x, 0) / crew.length;
+          focusZ = crew.reduce((s, o) => s + o.pos.z, 0) / crew.length;
+        }
       }
 
       _targetGoal.set(focusX, 1.2, focusZ);

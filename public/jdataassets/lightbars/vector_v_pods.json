@@ -1,0 +1,25 @@
+{
+  "format": "jdata-lightbar-v3",
+  "id": "vector_v_pods",
+  "name": "Vector V-Pods + Advisor",
+  "hardwareStyle": "vector_pods",
+  "patternType": "vector_pods",
+  "rateMult": 1.0,
+  "hasTrafficAdvisor": true,
+  "hasCookies": false,
+  "hasGrilleStrobes": false,
+  "hasRearDeck": true,
+  "leftColor": "#ff2020",
+  "rightColor": "#2070ff",
+  "centerColor": "#ffffff",
+  "haloOpacity": 0.74,
+  "pointLightRange": 22,
+  "pointLightIntensity": 16,
+  "emitters": [
+    { "id": "vec_1", "x": 0.66, "y": 0.13, "z": -0.06, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "cylinder", "color": "#c8232c", "emissive": "#ff2020", "phase": 0.0, "duty": 0.45, "freqHz": 2.5, "mode": "sweep", "group": "roof" },
+    { "id": "vec_2", "x": 0.34, "y": 0.13, "z": 0.06, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "cylinder", "color": "#c8232c", "emissive": "#ff2828", "phase": 0.2, "duty": 0.45, "freqHz": 2.5, "mode": "sweep", "group": "roof" },
+    { "id": "vec_3", "x": 0.0, "y": 0.13, "z": 0.18, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "cylinder", "color": "#f8fafc", "emissive": "#ffffff", "phase": 0.4, "duty": 0.45, "freqHz": 2.5, "mode": "sweep", "group": "roof" },
+    { "id": "vec_4", "x": -0.34, "y": 0.13, "z": 0.06, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "cylinder", "color": "#2558c9", "emissive": "#2070ff", "phase": 0.6, "duty": 0.45, "freqHz": 2.5, "mode": "sweep", "group": "roof" },
+    { "id": "vec_5", "x": -0.66, "y": 0.13, "z": -0.06, "w": 0.12, "h": 0.12, "d": 0.12, "shape": "cylinder", "color": "#2558c9", "emissive": "#2070ff", "phase": 0.8, "duty": 0.45, "freqHz": 2.5, "mode": "sweep", "group": "roof" }
+  ]
+}

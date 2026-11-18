@@ -1,0 +1,231 @@
+{
+  "format": "jdata-map-v3",
+  "id": "harbor_industrial",
+  "version": "1.5.0",
+  "name": "Harbor Precinct & Docks",
+  "description": "Industrial waterfront precinct with curved dockside boulevard, freight depots, and bridge loop",
+  "trafficCount": 12,
+  "pedestrianCount": 24,
+  "defaultWeather": "OVERCAST",
+  "treePalette": ["#365e40", "#4b7152", "#2f4e37"],
+  "cameraOverview": {
+    "pos": [-135, 68, 72],
+    "target": [-10, 0, -5]
+  },
+  "bounds": {
+    "halfSize": 200
+  },
+  "surfaceHeights": {
+    "terrain": 0,
+    "road": 0.035,
+    "sidewalk": 0.14,
+    "apron": 0.18,
+    "park": 0.21
+  },
+  "stationExit": {
+    "apronPoint": [-82.5, -36]
+  },
+  "stationBays": [
+    {
+      "id": "unit-1",
+      "callsign": "HARBOR 11",
+      "vehicleKind": "sedan",
+      "liveryId": "classic_bw",
+      "lightbarId": "led_array",
+      "weaponKind": "pistol",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -58],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 2
+    },
+    {
+      "id": "unit-2",
+      "callsign": "HARBOR 12",
+      "vehicleKind": "suv",
+      "liveryId": "navy_silver",
+      "lightbarId": "vector_v_pods",
+      "weaponKind": "rifle",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -50],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 2
+    },
+    {
+      "id": "unit-3",
+      "callsign": "PORT 14",
+      "vehicleKind": "sedan",
+      "liveryId": "slate_cobalt",
+      "lightbarId": "rotator_classic",
+      "weaponKind": "pistol",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -42],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 3
+    },
+    {
+      "id": "unit-4",
+      "callsign": "PORT 16",
+      "vehicleKind": "suv",
+      "liveryId": "navy_silver",
+      "lightbarId": "led_array",
+      "weaponKind": "rifle",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -34],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 3
+    },
+    {
+      "id": "unit-5",
+      "callsign": "CARGO VAN",
+      "vehicleKind": "van",
+      "liveryId": "transport_blue",
+      "lightbarId": "mini_beacon",
+      "weaponKind": "pistol",
+      "isHeavyUnit": false,
+      "parkPos": [-92, 0.18, -26],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 3
+    },
+    {
+      "id": "unit-6",
+      "callsign": "SWAT DOCK",
+      "vehicleKind": "van",
+      "liveryId": "tactical_swat",
+      "lightbarId": "halogen_flash",
+      "weaponKind": "rifle",
+      "isHeavyUnit": true,
+      "parkPos": [-92, 0.18, -18],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 3
+    },
+    {
+      "id": "unit-7",
+      "callsign": "APC PORT",
+      "vehicleKind": "apc",
+      "liveryId": "tactical_swat",
+      "lightbarId": "visor_stealth",
+      "weaponKind": "rifle",
+      "isHeavyUnit": true,
+      "parkPos": [-92, 0.18, -10],
+      "parkYaw": 1.5707963,
+      "exitRoadNodeId": 3
+    }
+  ],
+  "roadNetwork": {
+    "roadWidth": 14,
+    "laneOffset": 3.5,
+    "nodes": [
+      { "id": 0, "x": -145, "z": -135, "nodeType": "join", "hasCrosswalk": false, "priority": "none" },
+      { "id": 1, "x": -75, "z": -135, "nodeType": "junction", "hasCrosswalk": true, "priority": "major" },
+      { "id": 2, "x": -75, "z": -75, "nodeType": "junction", "hasCrosswalk": true, "priority": "none" },
+      { "id": 3, "x": -75, "z": 0, "nodeType": "junction", "hasCrosswalk": true, "priority": "none" },
+      { "id": 4, "x": -75, "z": 85, "nodeType": "junction", "hasCrosswalk": false, "priority": "yield" },
+      { "id": 5, "x": -145, "z": 85, "nodeType": "join", "hasCrosswalk": false, "priority": "none" },
+      { "id": 6, "x": -145, "z": 0, "nodeType": "junction", "hasCrosswalk": false, "priority": "stop" },
+      { "id": 7, "x": 15, "z": -135, "nodeType": "junction", "hasCrosswalk": true, "priority": "major" },
+      { "id": 8, "x": 15, "z": -75, "nodeType": "junction", "hasCrosswalk": true, "priority": "none" },
+      { "id": 9, "x": 15, "z": 0, "nodeType": "junction", "hasCrosswalk": true, "priority": "none" },
+      { "id": 10, "x": 15, "z": 85, "nodeType": "junction", "hasCrosswalk": false, "priority": "yield" },
+      { "id": 11, "x": 115, "z": -125, "nodeType": "join", "hasCrosswalk": false, "priority": "none" },
+      { "id": 12, "x": 135, "z": -45, "nodeType": "junction", "hasCrosswalk": false, "priority": "major" },
+      { "id": 13, "x": 135, "z": 45, "nodeType": "junction", "hasCrosswalk": false, "priority": "major" },
+      { "id": 14, "x": 110, "z": 120, "nodeType": "join", "hasCrosswalk": false, "priority": "none" },
+      { "id": 15, "x": 15, "z": 140, "nodeType": "join", "hasCrosswalk": false, "priority": "none" },
+      { "id": 16, "x": -75, "z": 140, "nodeType": "join", "hasCrosswalk": false, "priority": "none" }
+    ],
+    "edges": [
+      { "from": 0, "to": 1 },
+      { "from": 1, "to": 2 },
+      { "from": 2, "to": 3 },
+      { "from": 3, "to": 4 },
+      { "from": 4, "to": 5 },
+      { "from": 5, "to": 6 },
+      { "from": 6, "to": 0 },
+      { "from": 6, "to": 3 },
+      { "from": 1, "to": 7 },
+      { "from": 2, "to": 8 },
+      { "from": 3, "to": 9 },
+      { "from": 4, "to": 10 },
+      { "from": 7, "to": 8 },
+      { "from": 8, "to": 9 },
+      { "from": 9, "to": 10 },
+      { "from": 7, "to": 11, "ctrlX": 78, "ctrlZ": -142 },
+      { "from": 11, "to": 12, "ctrlX": 142, "ctrlZ": -95 },
+      { "from": 12, "to": 13 },
+      { "from": 13, "to": 14, "ctrlX": 142, "ctrlZ": 95 },
+      { "from": 14, "to": 15, "ctrlX": 68, "ctrlZ": 145 },
+      { "from": 15, "to": 10 },
+      { "from": 15, "to": 16 },
+      { "from": 16, "to": 4 },
+      { "from": 8, "to": 12 },
+      { "from": 9, "to": 13 }
+    ],
+    "extraStrips": [
+      { "x1": -81, "z1": -58, "x2": -75, "z2": -58 },
+      { "x1": -81, "z1": -10, "x2": -75, "z2": -10 }
+    ]
+  },
+  "zones": [
+    { "id": "apron_station", "kind": "apron", "cx": -93, "cz": -36, "width": 24, "depth": 58, "height": 0.18 },
+    { "id": "sw_nw", "kind": "sidewalk", "cx": -110, "cz": -105, "width": 52, "depth": 44, "height": 0.14 },
+    { "id": "sw_mid_n", "kind": "sidewalk", "cx": -30, "cz": -105, "width": 68, "depth": 44, "height": 0.14 },
+    { "id": "sw_mid_c", "kind": "sidewalk", "cx": -30, "cz": -37.5, "width": 68, "depth": 56, "height": 0.14 },
+    { "id": "sw_mid_s", "kind": "sidewalk", "cx": -30, "cz": 42.5, "width": 68, "depth": 66, "height": 0.14 },
+    { "id": "park_waterfront", "kind": "park", "cx": -30, "cz": 42.5, "width": 50, "depth": 48, "height": 0.16, "color": "#385e41" },
+    { "id": "sw_docks_n", "kind": "sidewalk", "cx": 68, "cz": -92, "width": 78, "depth": 58, "height": 0.14 },
+    { "id": "sw_docks_c", "kind": "sidewalk", "cx": 75, "cz": -10, "width": 84, "depth": 58, "height": 0.14 },
+    { "id": "sw_docks_s", "kind": "sidewalk", "cx": 68, "cz": 68, "width": 78, "depth": 54, "height": 0.14 },
+    { "id": "sw_west_s", "kind": "sidewalk", "cx": -110, "cz": 42.5, "width": 52, "depth": 64, "height": 0.14 }
+  ],
+  "buildings": [
+    { "id": "station_hall", "kind": "station", "cx": -116, "cz": -38, "width": 22, "depth": 48, "height": 11, "facadeStyle": "station_hall", "collidable": true },
+    { "id": "station_lobby", "kind": "station", "cx": -103, "cz": -38, "width": 8, "depth": 32, "height": 7.5, "facadeStyle": "station_glass", "collidable": true },
+    { "id": "station_sign", "kind": "station", "cx": -103, "cz": -38, "width": 8.4, "depth": 18, "height": 2.4, "baseY": 7.8, "facadeStyle": "sign", "collidable": false },
+    { "id": "harbor_warehouse_1", "kind": "building", "cx": -110, "cz": -105, "width": 36, "depth": 26, "height": 12, "facadeStyle": "concrete", "color": "#525b68", "collidable": true, "hasHvac": true },
+    { "id": "harbor_office_1", "kind": "building", "cx": -30, "cz": -105, "width": 44, "depth": 28, "height": 18, "facadeStyle": "office", "color": "#475569", "collidable": true, "hasHvac": true },
+    { "id": "harbor_customs", "kind": "building", "cx": -30, "cz": -38, "width": 38, "depth": 34, "height": 15, "facadeStyle": "brick", "color": "#7c4a3c", "collidable": true, "hasAwning": true },
+    { "id": "dock_freight_a", "kind": "building", "cx": 64, "cz": -92, "width": 48, "depth": 30, "height": 10.5, "facadeStyle": "concrete", "color": "#64748b", "collidable": true, "hasHvac": true },
+    { "id": "dock_freight_b", "kind": "building", "cx": 72, "cz": -10, "width": 52, "depth": 32, "height": 12.5, "facadeStyle": "storefront", "color": "#4b5563", "collidable": true, "hasAwning": true },
+    { "id": "dock_tower", "kind": "building", "cx": 66, "cz": 68, "width": 30, "depth": 26, "height": 24, "facadeStyle": "office", "color": "#334155", "collidable": true, "hasHvac": true },
+    { "id": "west_depot", "kind": "building", "cx": -110, "cz": 42, "width": 32, "depth": 40, "height": 13, "facadeStyle": "limestone", "color": "#6d685f", "collidable": true, "hasHvac": true },
+    { "id": "harbor_fountain", "kind": "fountain", "cx": -30, "cz": 42.5, "width": 8, "depth": 8, "height": 2.4, "facadeStyle": "fountain", "collidable": true }
+  ],
+  "signs": [
+    { "id": "sign_harbor_stop1", "style": "stop", "text": "STOP", "x": -136, "z": -12, "rotationY": 1.57, "collidable": true },
+    { "id": "sign_harbor_speed", "style": "speed_limit", "text": "35", "subtext": "MPH", "x": -65, "z": -115, "rotationY": 0, "collidable": true },
+    { "id": "sign_harbor_precinct", "style": "precinct", "text": "HARBOR DIV.", "subtext": "PRECINCT 02", "x": -83, "z": -64, "rotationY": 1.57, "collidable": true },
+    { "id": "sign_harbor_yield", "style": "yield", "text": "YIELD", "x": 24, "z": 75, "rotationY": -1.57, "collidable": true }
+  ],
+  "trees": [
+    { "x": -50, "y": 0.21, "z": 22, "scale": 1.1 },
+    { "x": -10, "y": 0.21, "z": 22, "scale": 1.0 },
+    { "x": -50, "y": 0.21, "z": 63, "scale": 1.05 },
+    { "x": -10, "y": 0.21, "z": 63, "scale": 1.15 },
+    { "x": 40, "y": 0.14, "z": 86, "scale": 0.95 },
+    { "x": -85, "y": 0.14, "z": 20, "scale": 0.95 }
+  ],
+  "streetlights": [
+    { "x": -65.5, "y": 0.14, "z": -84.5, "hasHalo": true },
+    { "x": -65.5, "y": 0.14, "z": -9.5, "hasHalo": true },
+    { "x": 5.5, "y": 0.14, "z": -84.5, "hasHalo": true },
+    { "x": 5.5, "y": 0.14, "z": -9.5, "hasHalo": true },
+    { "x": 5.5, "y": 0.14, "z": 75.5, "hasHalo": true },
+    { "x": 124.5, "y": 0.14, "z": -54, "hasHalo": true },
+    { "x": 124.5, "y": 0.14, "z": 36, "hasHalo": true }
+  ],
+  "districts": [
+    "Pier 4 Docks",
+    "Harbor Precinct",
+    "Freight Yard",
+    "Drydock North",
+    "Seawall Loop",
+    "Customs Plaza"
+  ],
+  "pedLoops": [
+    { "cx": -30, "cz": 42.5, "halfW": 24, "halfD": 24 },
+    { "cx": -30, "cz": -37.5, "halfW": 25, "halfD": 22 },
+    { "cx": 68, "cz": -92, "halfW": 30, "halfD": 20 },
+    { "cx": 72, "cz": -10, "halfW": 32, "halfD": 22 },
+    { "cx": -110, "cz": 42.5, "halfW": 21, "halfD": 24 }
+  ]
+}

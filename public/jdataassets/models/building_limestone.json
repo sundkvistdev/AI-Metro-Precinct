@@ -1,0 +1,14 @@
+{
+  "format": "jdata-model-v1",
+  "id": "building_limestone",
+  "seed": 910104,
+  "flags": { "collidable": true, "castShadow": true, "receiveShadow": true },
+  "materials": {
+    "limestone": { "type": "standard", "color": "#ffffff", "roughness": 0.74, "metalness": 0.05, "textureRef": "facade_limestone", "roughnessTextureRef": "roughness_concrete" },
+    "roof": { "type": "standard", "color": "#64748b", "roughness": 0.88 }
+  },
+  "parts": [
+    { "id": "main_block", "kind": "box", "dimensions": [1.0, 0.97, 1.0], "position": [0, 0.485, 0], "materialRef": "limestone", "castShadow": true, "receiveShadow": true },
+    { "id": "cornice", "kind": "box", "dimensions": [1.04, 0.03, 1.04], "position": [0, 0.985, 0], "materialRef": "roof" }
+  ]
+}

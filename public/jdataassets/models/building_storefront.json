@@ -1,0 +1,20 @@
+{
+  "format": "jdata-model-v1",
+  "id": "building_storefront",
+  "seed": 910101,
+  "flags": { "collidable": true, "castShadow": true, "receiveShadow": true },
+  "materials": {
+    "storefront": { "type": "standard", "color": "#ffffff", "roughness": 0.52, "metalness": 0.16, "textureRef": "storefront_retail", "roughnessTextureRef": "roughness_concrete" },
+    "facade": { "type": "standard", "color": "#ffffff", "roughness": 0.74, "metalness": 0.08, "textureRef": "facade_office", "roughnessTextureRef": "roughness_concrete" },
+    "awning": { "type": "standard", "color": "#1e3a8a", "roughness": 0.62 },
+    "roof": { "type": "standard", "color": "#3b424d", "roughness": 0.92, "roughnessTextureRef": "roughness_concrete" },
+    "hvac": { "type": "standard", "color": "#94a3b8", "roughness": 0.48, "metalness": 0.55 }
+  },
+  "parts": [
+    { "id": "ground_retail", "kind": "box", "dimensions": [1.03, 0.34, 1.03], "position": [0, 0.17, 0], "materialRef": "storefront", "castShadow": true, "receiveShadow": true },
+    { "id": "awning", "kind": "box", "dimensions": [1.08, 0.03, 1.08], "position": [0, 0.355, 0], "materialRef": "awning" },
+    { "id": "upper_tower", "kind": "box", "dimensions": [1.0, 0.64, 1.0], "position": [0, 0.68, 0], "materialRef": "facade", "castShadow": true, "receiveShadow": true },
+    { "id": "roof_cap", "kind": "box", "dimensions": [1.03, 0.03, 1.03], "position": [0, 1.015, 0], "materialRef": "roof" },
+    { "id": "rooftop_hvac", "kind": "box", "dimensions": [0.22, 0.07, 0.18], "position": [0.12, 1.06, -0.08], "materialRef": "hvac", "castShadow": true }
+  ]
+}

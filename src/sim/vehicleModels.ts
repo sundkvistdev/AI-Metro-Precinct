@@ -1,9 +1,17 @@
 import * as THREE from 'three';
-import { AssetIssue, CrashPartRole, EngineConfigAsset, LoadedJsonAssets } from '../assets/assetTypes';
+import {
+  AssetIssue,
+  CrashPartRole,
+  EngineConfigAsset,
+  LightbarEmitterDef,
+  LoadedJsonAssets,
+} from '../assets/assetTypes';
 import {
   buildJsonModel,
   buildMagentaCubeModel,
+  BuiltHingeRef,
   BuiltJsonModel,
+  BuiltSeatRef,
 } from '../assets/jsonModelBuilder';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { PoliceLiveryId, PoliceVehicleKind } from './types';
@@ -32,6 +40,9 @@ export interface LightbarRig {
   miniBeaconGroup: THREE.Group;
   visorStrobeGroup: THREE.Group;
   grilleStrobeGroup: THREE.Group;
+  customEmittersGroup: THREE.Group;
+  customSignature: string;
+  customEmitterMeshes: Array<{ mesh: THREE.Mesh; def: LightbarEmitterDef }>;
   visorStealthActive: boolean;
   detached: boolean;
   headlightLeftDetached: boolean;
@@ -89,6 +100,8 @@ export interface PoliceCruiserRig {
   cabinCrewGroup: THREE.Group;
   clickableMesh: THREE.Mesh;
   detachableParts: DetachablePartRef[];
+  hinges: Record<string, BuiltHingeRef>;
+  seats: BuiltSeatRef[];
   setBaseColor: (colorHex: number) => void;
 }
 
@@ -97,6 +110,8 @@ export interface CivilianCarRig {
   bodyGroup: THREE.Group;
   wheels: THREE.Group[];
   detachableParts: DetachablePartRef[];
+  hinges: Record<string, BuiltHingeRef>;
+  seats: BuiltSeatRef[];
 }
 
 export interface HumanoidRig {
@@ -780,6 +795,11 @@ export function createPoliceCruiser(
   miniBeaconGroup.visible = false;
   lbGroup.add(miniBeaconGroup);
 
+  const customEmittersGroup = new THREE.Group();
+  customEmittersGroup.name = 'lightbar_custom_emitters';
+  customEmittersGroup.visible = false;
+  lbGroup.add(customEmittersGroup);
+
   const miniBase = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.04, 0.28), trimMat);
   miniBase.position.set(0, 0.03, 0);
   const miniCenterCap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.11, 0.24), chromeMat);
@@ -986,6 +1006,8 @@ export function createPoliceCruiser(
     cabinCrewGroup,
     clickableMesh,
     detachableParts,
+    hinges: built.hinges,
+    seats: built.seats,
     setBaseColor,
     lightbar: {
       group: lbGroup,
@@ -994,6 +1016,9 @@ export function createPoliceCruiser(
       miniBeaconGroup,
       visorStrobeGroup,
       grilleStrobeGroup,
+      customEmittersGroup,
+      customSignature: '',
+      customEmitterMeshes: [],
       visorStealthActive: false,
       detached: false,
       headlightLeftDetached: false,
@@ -1107,7 +1132,14 @@ export function createCivilianCar(
   }
   const detachableParts = collectCrashPartsFromBuilt(root, built);
 
-  return { root, bodyGroup, wheels, detachableParts };
+  return {
+    root,
+    bodyGroup,
+    wheels,
+    detachableParts,
+    hinges: built.hinges,
+    seats: built.seats,
+  };
 }
 
 export function createHumanoid(

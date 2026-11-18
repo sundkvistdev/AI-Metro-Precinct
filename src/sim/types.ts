@@ -55,6 +55,18 @@ export enum UnitStatus {
   Returning = 'RETURNING',
 }
 
+export type PoliceUnitGoalId =
+  | 'IMMOBILIZED_HOLD'
+  | 'RETREAT_TO_STATION'
+  | 'DEPLOY_SPIKES'
+  | 'ENGAGE_ON_FOOT'
+  | 'PURSUE_VEHICLE'
+  | 'RESPOND_TO_CALL'
+  | 'MANUAL_FOOT_PATROL'
+  | 'MOUNT_CREW'
+  | 'RETURN_TO_STATION'
+  | 'STATION_STANDBY';
+
 export enum CrimeType {
   ArmedRobbery = 'Armed Robbery',
   ShotsFired = 'Shots Fired',
@@ -106,10 +118,13 @@ export interface UnitSummary {
   callsign: string;
   vehicleKind: PoliceVehicleKind;
   liveryLabel: string;
+  lightbarId: string;
   baseColorHex: number;
   isHeavyUnit: boolean;
   weaponKind: WeaponKind;
   status: UnitStatus;
+  activeGoal: PoliceUnitGoalId;
+  goalReason: string;
   mounted: boolean;
   freeRoam: boolean;
   lightsActive: boolean;
@@ -124,6 +139,8 @@ export interface UnitSummary {
   assignedRole: CaseAssignmentRole | null;
   impatience: number;
   reversing: boolean;
+  seatedCount?: number;
+  seatCapacity?: number;
 }
 
 export interface CrimeSummary {
@@ -160,6 +177,8 @@ export interface SimSnapshot {
   activeNailMats: number;
   selectedUnitId: string;
   lightbarMode: LightbarMode;
+  activeLightbarId: string;
+  availableLightbars: Array<{ id: string; name: string }>;
   sirenPattern: SirenPattern;
   drivingMode: DrivingMode;
   backupMode: BackupMode;
@@ -174,19 +193,25 @@ export interface SimSnapshot {
   debrisObstacles: boolean;
   renderScale: 0.75 | 1 | 1.5;
   crashIntensity: number;
+  maxPhysicsParts: number;
+  experimentalComplexMeshes: boolean;
   simSpeed: 1 | 2;
   isSoftwareGl: boolean;
   paintPalette: PaintSwatchSummary[];
   assetPackName: string;
   assetSourceLabel: string;
   configVersion: string;
+  activeMapId: string;
   mapName: string;
+  availableMaps: Array<{ id: string; name: string; description?: string }>;
   assetCounts: {
     textures: number;
     models: number;
     audio: number;
     materials: number;
     media: number;
+    lightbars: number;
+    maps: number;
   };
   assetsLoaded: boolean;
   assetIssues: AssetIssue[];
@@ -199,12 +224,20 @@ export type DevAssetTab =
   | 'hierarchy'
   | 'map'
   | 'model'
+  | 'lightbars'
   | 'materials'
   | 'texture'
   | 'audio'
   | 'prefabs';
 
-export type WorldEntityKind = 'police' | 'traffic' | 'ped' | 'crime' | 'nail_mat';
+export type WorldEntityKind =
+  | 'police'
+  | 'officer'
+  | 'assailant'
+  | 'traffic'
+  | 'ped'
+  | 'crime'
+  | 'nail_mat';
 
 export interface WorldEntitySummary {
   uid: string;

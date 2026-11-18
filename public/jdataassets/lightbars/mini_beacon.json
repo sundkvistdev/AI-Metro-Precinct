@@ -1,0 +1,22 @@
+{
+  "format": "jdata-lightbar-v3",
+  "id": "mini_beacon",
+  "name": "Mini Dual Beacon",
+  "hardwareStyle": "mini_beacon",
+  "patternType": "mini_beacon",
+  "rateMult": 1.0,
+  "hasTrafficAdvisor": false,
+  "hasCookies": false,
+  "hasGrilleStrobes": true,
+  "hasRearDeck": true,
+  "leftColor": "#ff2828",
+  "rightColor": "#2674ff",
+  "centerColor": "#f8fafc",
+  "haloOpacity": 0.72,
+  "pointLightRange": 20,
+  "pointLightIntensity": 15,
+  "emitters": [
+    { "id": "mini_l", "x": 0.16, "y": 0.11, "z": 0, "w": 0.19, "h": 0.14, "d": 0.19, "shape": "cylinder", "color": "#c8232c", "emissive": "#ff2828", "phase": 0.0, "duty": 1.0, "freqHz": 2.15, "mode": "rotator", "group": "roof" },
+    { "id": "mini_r", "x": -0.16, "y": 0.11, "z": 0, "w": 0.19, "h": 0.14, "d": 0.19, "shape": "cylinder", "color": "#2558c9", "emissive": "#2674ff", "phase": 0.4, "duty": 1.0, "freqHz": 2.26, "mode": "rotator", "group": "roof" }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "format": "jdata-vehicle-v3",
+  "id": "civilian_taxi",
+  "role": "civilian",
+  "label": "Metro Taxi",
+  "vehicleKind": "taxi",
+  "modelRef": "civilian_taxi",
+  "chassis": {
+    "modelRef": "civilian_taxi",
+    "wheelRadius": 0.33,
+    "halfW": 0.92,
+    "halfL": 2.24,
+    "mass": 1.02,
+    "chassisScale": 1.0,
+    "maxSteerScale": 1.0,
+    "lightbarPos": [0, 1.5, 0],
+    "roofLightPos": [0, 1.7, 0],
+    "sideDecalX": 0.95,
+    "sideDecalY": 0.55,
+    "sideDecalZ": 0,
+    "stripeW": 3.5,
+    "stripeH": 0.1,
+    "roofPlateY": 1.48,
+    "roofPlateZ": -0.5,
+    "rearChevronY": 0.7,
+    "rearChevronZ": -2.2,
+    "hitboxSize": [1.9, 1.45, 4.4],
+    "hitboxY": 0.8,
+    "obbHeight": 1.48,
+    "shadowSize": [2.4, 4.8],
+    "shadowY": 0.025
+  }
+}

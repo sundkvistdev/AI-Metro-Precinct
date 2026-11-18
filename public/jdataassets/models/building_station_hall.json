@@ -1,0 +1,14 @@
+{
+  "format": "jdata-model-v1",
+  "id": "building_station_hall",
+  "seed": 910106,
+  "flags": { "collidable": true, "castShadow": true, "receiveShadow": true },
+  "materials": {
+    "masonry": { "type": "standard", "color": "#334155", "roughness": 0.82, "roughnessTextureRef": "roughness_concrete" },
+    "trim": { "type": "standard", "color": "#1e293b", "roughness": 0.6 }
+  },
+  "parts": [
+    { "id": "hall", "kind": "box", "dimensions": [1.0, 0.96, 1.0], "position": [0, 0.48, 0], "materialRef": "masonry", "castShadow": true, "receiveShadow": true },
+    { "id": "coping", "kind": "box", "dimensions": [1.02, 0.04, 1.02], "position": [0, 0.98, 0], "materialRef": "trim" }
+  ]
+}
