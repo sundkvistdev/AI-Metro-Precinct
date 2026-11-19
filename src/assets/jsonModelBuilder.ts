@@ -330,13 +330,15 @@ function buildPart(
     const axis = part.hinge.axis;
     const closedAngle = part.hinge.closedAngle ?? 0;
     obj.rotation[axis] = closedAngle;
-    hinges[part.id] = {
-      id: part.id,
-      object: obj,
-      spec: part.hinge,
-      currentAngle: closedAngle,
-      targetAngle: closedAngle,
-    };
+    if (experimentalEnabled) {
+      hinges[part.id] = {
+        id: part.id,
+        object: obj,
+        spec: part.hinge,
+        currentAngle: closedAngle,
+        targetAngle: closedAngle,
+      };
+    }
   }
 
   if (part.seat) {

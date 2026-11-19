@@ -505,6 +505,15 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
             </button>
           </div>
 
+          <button
+            type="button"
+            onClick={() => controller?.addObject('parking_bay', { parkingBay: true })}
+            className="w-full flex items-center justify-center gap-1 border border-sky-500/70 bg-sky-700/35 py-1 text-[10px] font-medium text-sky-100 hover:bg-sky-600/55 cursor-pointer rounded-none"
+          >
+            <MapPin className="h-3 w-3" />
+            Place Parking Bay
+          </button>
+
           <select
             value={state.selectedObjectId ?? ''}
             onChange={(e) => controller?.selectObject(e.target.value || null)}
@@ -630,18 +639,42 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                     className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
                   />
                 </label>
-                <label className="flex items-center gap-1 pb-1 text-[10px] text-zinc-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selO.collidable ?? true}
-                    onChange={(e) =>
-                      controller?.updateSelectedObject({
-                        collidable: e.target.checked,
-                      })
-                    }
-                  />
-                  Solid
-                </label>
+                <div className="flex items-center gap-2 pb-1 text-[10px] text-zinc-300">
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selO.collidable ?? true}
+                      onChange={(e) =>
+                        controller?.updateSelectedObject({
+                          collidable: e.target.checked,
+                        })
+                      }
+                    />
+                    Solid
+                  </label>
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selO.flags?.parkingBay)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        const nextFlags = { ...(selO.flags ?? {}) };
+                        if (checked) {
+                          nextFlags.parkingBay = true;
+                          nextFlags.driveable = true;
+                        } else {
+                          delete nextFlags.parkingBay;
+                          delete nextFlags.driveable;
+                        }
+                        controller?.updateSelectedObject({
+                          collidable: checked ? false : selO.collidable,
+                          flags: nextFlags,
+                        });
+                      }}
+                    />
+                    Bay
+                  </label>
+                </div>
               </div>
             </div>
           )}
@@ -837,16 +870,99 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                   Solid Post
                 </label>
               </div>
+
+              <label className="flex items-center justify-between gap-2 text-[10px]">
+                <span className="text-zinc-400 shrink-0">Custom Model</span>
+                <select
+                  value={selS.modelRef ?? ''}
+                  onChange={(e) =>
+                    controller?.updateSelectedSign(
+                      { modelRef: e.target.value || undefined },
+                      true,
+                    )
+                  }
+                  className="flex-1 border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                >
+                  <option value="">Procedural Sign Plate</option>
+                  {state.modelIds.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
           )}
         </div>
       )}
 
-      {/* BUILDINGS */}
+      {/* BUILDINGS & PRECINCT DOORS PORTAL */}
       {subMode === 'buildings' && (
-        <div className="ui-subpanel p-2 space-y-1.5">
-          <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
-            <span>Buildings ({state.buildingIds.length})</span>
+        <div className="space-y-2">
+          <div className="ui-subpanel p-2 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+              <span>Precinct Doors Portal (precinctDoors)</span>
+              <span className="font-mono-tabular text-[10px] text-sky-300">
+                Spawn / Entry
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 text-[11px] font-mono-tabular">
+              <label className="space-y-0.5">
+                <span className="text-[10px] text-zinc-400">Door X</span>
+                <input
+                  type="number"
+                  step={0.5}
+                  value={state.precinctDoors.x}
+                  onChange={(e) =>
+                    controller?.updatePrecinctDoors({ x: Number(e.target.value) })
+                  }
+                  className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                />
+              </label>
+              <label className="space-y-0.5">
+                <span className="text-[10px] text-zinc-400">Door Y</span>
+                <input
+                  type="number"
+                  step={0.25}
+                  value={state.precinctDoors.y}
+                  onChange={(e) =>
+                    controller?.updatePrecinctDoors({ y: Number(e.target.value) })
+                  }
+                  className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                />
+              </label>
+              <label className="space-y-0.5">
+                <span className="text-[10px] text-zinc-400">Door Z</span>
+                <input
+                  type="number"
+                  step={0.5}
+                  value={state.precinctDoors.z}
+                  onChange={(e) =>
+                    controller?.updatePrecinctDoors({ z: Number(e.target.value) })
+                  }
+                  className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                />
+              </label>
+              <label className="space-y-0.5">
+                <span className="text-[10px] text-zinc-400">RotY</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={Math.round(state.precinctDoors.rotationY * 100) / 100}
+                  onChange={(e) =>
+                    controller?.updatePrecinctDoors({
+                      rotationY: Number(e.target.value),
+                    })
+                  }
+                  className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="ui-subpanel p-2 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+              <span>Buildings ({state.buildingIds.length})</span>
             <div className="flex gap-1">
               <button
                 type="button"
@@ -1023,8 +1139,29 @@ export const MapWorldEditorTab: React.FC<MapWorldEditorTabProps> = ({
                   Solid
                 </label>
               </div>
+
+              <label className="flex items-center justify-between gap-2 text-[10px]">
+                <span className="text-zinc-400 shrink-0">Model Override</span>
+                <select
+                  value={selB.modelRef ?? ''}
+                  onChange={(e) =>
+                    controller?.updateSelectedBuilding({
+                      modelRef: e.target.value,
+                    })
+                  }
+                  className="flex-1 border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                >
+                  <option value="">Procedural Facade</option>
+                  {state.modelIds.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
           )}
+          </div>
         </div>
       )}
 

@@ -8,6 +8,7 @@ import {
 } from '../assets/assetTypes';
 import { loadJsonAssetBundle, revokeMediaObjectUrls, syncMapOwnedConfig } from '../assets/jsonAssetLoader';
 import { JsonAudioSynth, AudioVoiceQuality } from '../assets/jsonAudioSynth';
+import { isExperimentalComplexMeshesEnabled, setExperimentalComplexMeshesEnabled } from '../assets/jsonModelBuilder';
 import { mulberry32 } from '../assets/prng';
 import { simEventLog } from '../assets/simEventLog';
 import { TextureRegistry } from '../assets/textureRegistry';
@@ -20,14 +21,18 @@ import {
 import { StaticObstacleBVH } from './bvh';
 import { SimCameraController } from './cameraController';
 import { CombatSystem, VehicleHumanoidCollider } from './combatSystem';
-import { spawnCrime, updateCrimes } from './crimeSystem';
+import { promoteCivilianToPursuit, spawnCrime, updateCrimes } from './crimeSystem';
 import { AIDebugVisualizer } from './debugVisualizer';
 import { DevEditorController, DevEditorState } from './devEditorController';
+import { eventBindingStore, playBoundAudioEvent } from './eventBindings';
+import { keybindStore } from './keybinds';
 import { assetIdToLightbarMode, lightbarModeToAssetId } from './lightbarSystem';
 import { updateNailMats } from './nailMatSystem';
 import {
+  assignOfficerToUnitSeat,
   buildAllVehicleProxies,
   dismountUnit,
+  ejectOfficerFromSeat,
   resetOfficerPose,
   spawnPoliceUnits,
   updatePoliceUnits,
@@ -36,12 +41,22 @@ import { getSurfaceHeight, TownRoadGraph } from './roadGraph';
 import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
+  AssailantActor,
   CivilianVehicle,
   NailMatActor,
+  OfficerActor,
   PedestrianActor,
   PoliceUnit,
+  resolveCrimePrimaryAssailant,
+  resolveUnitOfficers,
 } from './simActors';
-import { buildTownEnvironment, TownEnvironmentHandles } from './townBuilder';
+import {
+  buildTownEnvironment,
+  getPrecinctDoorPos,
+  stepBreakableProps,
+  TownEnvironmentHandles,
+  triggerBreakablePropFall,
+} from './townBuilder';
 import {
   spawnCivilianTraffic,
   spawnPedestrians,
@@ -74,10 +89,11 @@ import {
 } from './vehicleModels';
 import {
   createVehicleDynState,
+  DebrisHumanoidTarget,
   VehicleCollisionEntry,
   VehicleCrashPhysicsSystem,
 } from './vehiclePhysics';
-import { createRagdollState, SimVfxManager } from './vfx';
+import { createRagdollState, SimVfxManager, triggerRagdoll } from './vfx';
 import { WeatherSystem } from './weatherSystem';
 
 const _camFwd = new THREE.Vector3();
@@ -113,6 +129,8 @@ export interface PoliceSimInitialSettings {
   debrisObstacles?: boolean;
   renderScale?: 0.75 | 1 | 1.5;
   crashIntensity?: number;
+  maxPhysicsParts?: number;
+  experimentalComplexMeshes?: boolean;
 }
 
 export class PoliceSimEngine {
@@ -152,12 +170,15 @@ export class PoliceSimEngine {
   };
 
   private units: PoliceUnit[] = [];
+  private officers: OfficerActor[] = [];
+  private assailants: AssailantActor[] = [];
   private crimes: ActiveCrime[] = [];
   private nailMats: NailMatActor[] = [];
   private civilianCars: CivilianVehicle[] = [];
   private pedestrians: PedestrianActor[] = [];
   private clickables: THREE.Object3D[] = [];
   private paintPalette: PaintSwatchSummary[] = [];
+  private standaloneActorSeq = 1;
 
   private lightbarMode: LightbarMode = LightbarMode.LED;
   private activeLightbarId = 'led_array';
@@ -180,6 +201,9 @@ export class PoliceSimEngine {
   private debrisObstacles = true;
   private renderScale: 0.75 | 1 | 1.5 = 1;
   private crashIntensity = 1.0;
+  private maxPhysicsParts = 42;
+  private customMaxPhysicsParts: number | undefined;
+  private experimentalComplexMeshes = false;
   private simSpeed: 1 | 2 = 1;
   private neutralizedCount = 0;
   private casualtyCount = 0;
@@ -258,7 +282,19 @@ export class PoliceSimEngine {
       if (initialSettings.crashIntensity !== undefined) {
         this.crashIntensity = THREE.MathUtils.clamp(initialSettings.crashIntensity, 0.5, 1.5);
       }
+      if (initialSettings.maxPhysicsParts !== undefined) {
+        this.customMaxPhysicsParts = THREE.MathUtils.clamp(
+          Math.round(initialSettings.maxPhysicsParts),
+          8,
+          250,
+        );
+        this.maxPhysicsParts = this.customMaxPhysicsParts;
+      }
+      if (initialSettings.experimentalComplexMeshes !== undefined) {
+        this.experimentalComplexMeshes = Boolean(initialSettings.experimentalComplexMeshes);
+      }
     }
+    setExperimentalComplexMeshesEnabled(this.experimentalComplexMeshes);
     this.renderer = new THREE.WebGLRenderer({
       antialias: !this.isSoftwareGl,
       powerPreference: 'high-performance',
@@ -295,6 +331,7 @@ export class PoliceSimEngine {
       this.hierarchy.effects.debris,
       this.simRng,
     );
+    this.crashPhysics.setMaxPhysicsParts(this.maxPhysicsParts);
     this.weatherSystem = new WeatherSystem(
       this.scene,
       this.hierarchy.world.atmosphere,
@@ -302,6 +339,7 @@ export class PoliceSimEngine {
       this.isSoftwareGl,
       this.simRng,
     );
+    this.weatherSystem.setHighQualityLighting(this.shadowsEnabled && this.renderScale >= 1);
     this.aiDebugVisualizer = new AIDebugVisualizer(this.scene);
 
     window.addEventListener('resize', this.handleResize);
@@ -348,6 +386,8 @@ export class PoliceSimEngine {
     this.combat.clearTracers();
     this.crashPhysics.clearDebris();
     this.units = [];
+    this.officers = [];
+    this.assailants = [];
     this.crimes = [];
     this.nailMats = [];
     this.civilianCars = [];
@@ -415,6 +455,15 @@ export class PoliceSimEngine {
     }));
     this.crimeProbability = this.customCrimeProb ?? config.simulation.defaultCrimeProbability;
     this.cowardiceLevel = this.customCowardice ?? config.simulation.defaultCowardiceLevel;
+
+    keybindStore.applyPackDefaults(config.keybinds);
+    eventBindingStore.applyPackDefaults(config.eventBindings);
+    if (config.physics?.defaultMaxPhysicsParts !== undefined) {
+      this.maxPhysicsParts =
+        this.customMaxPhysicsParts ??
+        THREE.MathUtils.clamp(Math.round(config.physics.defaultMaxPhysicsParts), 8, 250);
+      this.crashPhysics.setMaxPhysicsParts(this.maxPhysicsParts);
+    }
 
     const textures = new TextureRegistry(
       this.renderer,
@@ -512,7 +561,7 @@ export class PoliceSimEngine {
     );
     this.staticBvh.build(this.envHandles.obstacles);
 
-    this.units = spawnPoliceUnits(
+    const spawned = spawnPoliceUnits(
       this.hierarchy,
       config,
       assets,
@@ -523,6 +572,9 @@ export class PoliceSimEngine {
       this.recordAssetIssue,
       assets.map,
     );
+    this.units = spawned.units;
+    this.officers = spawned.officers;
+    this.assailants = [];
     if (this.units.length > 0 && !this.units.some((u) => u.id === this.selectedUnitId)) {
       this.selectedUnitId = this.units[0].id;
     }
@@ -573,21 +625,38 @@ export class PoliceSimEngine {
     this.emitSnapshot();
   }
 
+  private getOfficersById(): Map<string, OfficerActor> {
+    const map = new Map<string, OfficerActor>();
+    for (const o of this.officers) map.set(o.id, o);
+    return map;
+  }
+
+  private getAssailantsById(): Map<string, AssailantActor> {
+    const map = new Map<string, AssailantActor>();
+    for (const a of this.assailants) map.set(a.id, a);
+    return map;
+  }
+
+  private isCrimeActive(
+    crime: ActiveCrime,
+    assailantsById: Map<string, AssailantActor>,
+  ): boolean {
+    return crime.assailantRefs.some((aid) => assailantsById.get(aid)?.alive);
+  }
+
   public rebuildDynamicActors(): void {
     if (!this.assets || !this.config || !this.textures || !this.roadGraph) return;
     this.vfx.clearActiveParticles();
     this.combat.clearTracers();
     this.crashPhysics.clearDebris();
     this.crimes = [];
+    this.assailants = [];
+    this.officers = [];
     this.nailMats = [];
     this.clickables = [];
-    disposeGroupContents(this.hierarchy.entities.police);
-    disposeGroupContents(this.hierarchy.entities.traffic);
-    disposeGroupContents(this.hierarchy.entities.pedestrians);
-    disposeGroupContents(this.hierarchy.entities.crimes);
-    disposeGroupContents(this.hierarchy.entities.nailMats);
+    disposeGroupContents(this.hierarchy.entitiesRoot);
 
-    this.units = spawnPoliceUnits(
+    const spawned = spawnPoliceUnits(
       this.hierarchy,
       this.config,
       this.assets,
@@ -598,6 +667,8 @@ export class PoliceSimEngine {
       this.recordAssetIssue,
       this.assets.map,
     );
+    this.units = spawned.units;
+    this.officers = spawned.officers;
     this.civilianCars = spawnCivilianTraffic(
       this.hierarchy,
       this.config.world,
@@ -717,19 +788,28 @@ export class PoliceSimEngine {
 
   public requestBackupNow(crimeId?: string): void {
     if (!this.config || !this.roadGraph) return;
+    const officersById = this.getOfficersById();
+    const assailantsById = this.getAssailantsById();
     const explicitCrime = crimeId
-      ? this.crimes.find((c) => c.id === crimeId && c.suspectAlive)
+      ? this.crimes.find((c) => c.id === crimeId && this.isCrimeActive(c, assailantsById))
       : undefined;
     const selected = this.units.find((u) => u.id === this.selectedUnitId);
     const preferredCrime = selected?.targetCrimeId
-      ? this.crimes.find((c) => c.id === selected.targetCrimeId && c.suspectAlive)
+      ? this.crimes.find(
+          (c) => c.id === selected.targetCrimeId && this.isCrimeActive(c, assailantsById),
+        )
       : undefined;
-    const crime = explicitCrime ?? preferredCrime ?? this.crimes.find((c) => c.suspectAlive);
+    const crime =
+      explicitCrime ??
+      preferredCrime ??
+      this.crimes.find((c) => this.isCrimeActive(c, assailantsById));
     if (!crime) return;
     if (
       requestManualBackup(
         crime,
         this.units,
+        officersById,
+        assailantsById,
         this.roadGraph,
         this.config,
         this.drivingMode,
@@ -744,24 +824,31 @@ export class PoliceSimEngine {
 
   public deployNailMatNow(): void {
     if (!this.config || !this.roadGraph) return;
+    const officersById = this.getOfficersById();
+    const assailantsById = this.getAssailantsById();
     const selected = this.units.find((u) => u.id === this.selectedUnitId);
     const preferredCrime = selected?.targetCrimeId
       ? this.crimes.find(
           (c) =>
-            c.id === selected.targetCrimeId && c.suspectAlive && c.inVehiclePursuit,
+            c.id === selected.targetCrimeId &&
+            this.isCrimeActive(c, assailantsById) &&
+            c.inVehiclePursuit,
         )
       : undefined;
     const crime =
-      preferredCrime ?? this.crimes.find((c) => c.suspectAlive && c.inVehiclePursuit);
+      preferredCrime ??
+      this.crimes.find((c) => this.isCrimeActive(c, assailantsById) && c.inVehiclePursuit);
     if (!crime) return;
     if (
       requestManualNailMat(
         crime,
         this.units,
+        officersById,
+        assailantsById,
         this.nailMats,
         this.roadGraph,
         this.config,
-        this.hierarchy.entities.nailMats,
+        this.hierarchy,
         this.audio,
         this.staticBvh,
         this.assets?.map,
@@ -844,6 +931,7 @@ export class PoliceSimEngine {
     this.shadowsEnabled = enabled && !this.isSoftwareGl;
     this.renderer.shadowMap.enabled = this.shadowsEnabled;
     this.renderer.shadowMap.needsUpdate = true;
+    this.weatherSystem.setHighQualityLighting(this.shadowsEnabled && this.renderScale >= 1);
     this.emitSnapshot();
   }
 
@@ -857,6 +945,7 @@ export class PoliceSimEngine {
     this.renderer.setPixelRatio(
       this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio * scale, 2.25),
     );
+    this.weatherSystem.setHighQualityLighting(this.shadowsEnabled && this.renderScale >= 1);
     this.handleResize();
     this.emitSnapshot();
   }
@@ -866,10 +955,20 @@ export class PoliceSimEngine {
     this.emitSnapshot();
   }
 
+  public setMaxPhysicsParts(limit: number): void {
+    const clamped = THREE.MathUtils.clamp(Math.round(limit), 8, 250);
+    this.customMaxPhysicsParts = clamped;
+    this.maxPhysicsParts = clamped;
+    this.crashPhysics.setMaxPhysicsParts(clamped);
+    this.emitSnapshot();
+  }
+
   public setTrafficDensityScale(scale: number): void {
     this.trafficScale = THREE.MathUtils.clamp(scale, 0, 2);
     if (this.assets && this.config && this.textures && this.roadGraph) {
-      disposeGroupContents(this.hierarchy.entities.traffic);
+      for (const car of this.civilianCars) {
+        this.hierarchy.removeEntity(car.rig.root);
+      }
       this.civilianCars = spawnCivilianTraffic(
         this.hierarchy,
         this.config.world,
@@ -887,7 +986,9 @@ export class PoliceSimEngine {
   public setPedestrianCountScale(scale: number): void {
     this.pedScale = THREE.MathUtils.clamp(scale, 0, 2);
     if (this.assets && this.config && this.textures) {
-      disposeGroupContents(this.hierarchy.entities.pedestrians);
+      for (const ped of this.pedestrians) {
+        this.hierarchy.removeEntity(ped.rig.root);
+      }
       this.pedestrians = spawnPedestrians(
         this.hierarchy,
         this.assets.map,
@@ -912,27 +1013,41 @@ export class PoliceSimEngine {
     if (!this.config) return;
     const unit = this.units.find((u) => u.id === this.selectedUnitId);
     if (!unit) return;
+    const officersById = this.getOfficersById();
 
     if (unit.mounted) {
       dismountUnit(
         unit,
+        officersById,
         this.cowardiceLevel,
         this.staticBvh,
         this.config,
         this.simRng,
         true,
         this.assets?.map,
+        this.hierarchy,
       );
     } else if (
       !unit.immobilized &&
-      (unit.status === UnitStatus.Dismounting || unit.status === UnitStatus.Engaging)
+      (unit.status === UnitStatus.AtStation ||
+        unit.status === UnitStatus.Dismounting ||
+        unit.status === UnitStatus.Engaging)
     ) {
       unit.freeRoam = false;
       unit.mountTimer = 0;
-      unit.officers.forEach((o) => {
+      const doorPos = getPrecinctDoorPos(this.assets?.map, this.config);
+      for (let i = 0; i < unit.officerRefs.length; i++) {
+        const o = officersById.get(unit.officerRefs[i]);
+        if (!o || o.hp <= 0) continue;
+        if (o.locationState === 'in_precinct' || o.locationState === 'entering_precinct') {
+          o.locationState = 'exiting_precinct';
+          o.rig.root.visible = true;
+          o.pos.set(doorPos.x + 1.2 + i * 0.45, doorPos.y, doorPos.z + (i - 0.5) * 0.7);
+          o.rig.root.position.copy(o.pos);
+        }
         o.mountPhase = 'walk';
         o.boardTimer = 0;
-      });
+      }
       unit.status = UnitStatus.Mounting;
     }
     this.emitSnapshot();
@@ -945,6 +1060,8 @@ export class PoliceSimEngine {
       crimes: this.crimes,
       crimeCounter: this.crimeCounter,
       units: this.units,
+      officersById: this.getOfficersById(),
+      assailants: this.assailants,
       hierarchy: this.hierarchy,
       roadGraph: this.roadGraph,
       staticBvh: this.staticBvh,
@@ -1004,16 +1121,21 @@ export class PoliceSimEngine {
     }
 
     const map = this.assets?.map;
+    const officersById = this.getOfficersById();
+    const assailantsById = this.getAssailantsById();
     this.audio?.ensureRunningIfEnabled();
 
     for (const c of this.crimes) {
       evaluateCrimeBackupPolicy(
         c,
         this.units,
+        this.officers,
+        officersById,
+        assailantsById,
         this.nailMats,
         roadGraph,
         config,
-        this.hierarchy.entities.nailMats,
+        this.hierarchy,
         this.backupMode,
         this.drivingMode,
         this.audio,
@@ -1026,12 +1148,16 @@ export class PoliceSimEngine {
       this.units,
       this.civilianCars,
       this.crimes,
+      assailantsById,
     );
 
     updatePoliceUnits(
       {
         units: this.units,
+        officersById,
         crimes: this.crimes,
+        assailants: this.assailants,
+        assailantsById,
         pedestrians: this.pedestrians,
         allVehicles,
         roadGraph,
@@ -1052,17 +1178,71 @@ export class PoliceSimEngine {
       dt,
     );
 
+    // Update standalone officers spawned without an owning PoliceUnit
+    let standaloneOffIdx = 0;
+    for (const off of this.officers) {
+      if (off.unitId !== null) continue;
+      if (off.boardingState !== 'dismounted') continue;
+      let nearestTarget: AssailantActor | null = null;
+      let nearestSq = 58 * 58;
+      for (const a of this.assailants) {
+        if (!a.alive || a.inVehicle) continue;
+        const dSq = a.pos.distanceToSquared(off.pos);
+        if (dSq < nearestSq) {
+          nearestSq = dSq;
+          nearestTarget = a;
+        }
+      }
+      if (nearestTarget) {
+        this.combat.updateOfficerCombat(
+          off,
+          standaloneOffIdx++,
+          nearestTarget,
+          null,
+          this.cowardiceLevel,
+          this.staticBvh,
+          this.pedestrians,
+          this.audio,
+          dt,
+        );
+      } else {
+        this.combat.updateOfficerFreeRoam(
+          off,
+          standaloneOffIdx++,
+          null,
+          this.staticBvh,
+          dt,
+        );
+      }
+    }
+
+    // Update standalone assailants spawned outside a crime container
+    for (const as of this.assailants) {
+      if (as.crimeId !== null) continue;
+      this.combat.updateAssailantCombat(
+        as,
+        this.officers,
+        this.cowardiceLevel,
+        this.staticBvh,
+        this.audio,
+        this.simTime,
+        dt,
+      );
+    }
+
     updateNailMats(
       this.nailMats,
       this.units,
+      officersById,
       this.crimes,
+      assailantsById,
       this.civilianCars,
       roadGraph,
       this.staticBvh,
       config,
       this.vfx,
       this.audio,
-      this.hierarchy.entities.nailMats,
+      this.hierarchy,
       this.simTime,
       this.simRng,
       dt,
@@ -1073,6 +1253,10 @@ export class PoliceSimEngine {
       {
         crimes: this.crimes,
         units: this.units,
+        officers: this.officers,
+        officersById,
+        assailants: this.assailants,
+        assailantsById,
         pedestrians: this.pedestrians,
         allVehicles,
         nailMats: this.nailMats,
@@ -1113,13 +1297,78 @@ export class PoliceSimEngine {
       dt,
     );
 
-    this.resolveAllVehicleCollisions(dt);
-    this.resolveHumanoidCollisions();
-    this.crashPhysics.stepDebris(this.staticBvh, dt);
-    updatePedestrians(this.pedestrians, this.staticBvh, map ?? config.world, dt);
+    this.resolveAllVehicleCollisions(dt, officersById, assailantsById);
+    this.resolveBreakablePropImpacts(dt);
+    this.resolveHumanoidCollisions(assailantsById);
+
+    const debrisHumanoids: DebrisHumanoidTarget[] = [];
+    for (const ped of this.pedestrians) {
+      if (ped.dead || ped.ragdoll.active) continue;
+      debrisHumanoids.push({
+        pos: ped.pos,
+        ragdoll: ped.ragdoll,
+        onHitByDebris: (impactSpeed) => {
+          ped.hp = Math.max(0, ped.hp - Math.min(60, impactSpeed * 2.4));
+          ped.injured = ped.hp > 0 && ped.hp < ped.maxHp;
+          ped.panicTimer = 9;
+          if (ped.hp <= 0 && !ped.dead) {
+            ped.dead = true;
+            this.casualtyCount++;
+          }
+        },
+      });
+    }
+    for (const off of this.officers) {
+      if (off.boardingState !== 'dismounted' || off.hp <= 0 || off.ragdoll.active) continue;
+      debrisHumanoids.push({
+        pos: off.pos,
+        ragdoll: off.ragdoll,
+        onHitByDebris: (impactSpeed) => {
+          off.hp = Math.max(0, off.hp - Math.min(35, impactSpeed * 1.4));
+          off.morale = Math.max(0, off.morale - 15);
+          if (off.hp <= 0) {
+            off.ragdoll.recoverTimer = 999;
+          }
+        },
+      });
+    }
+    for (const as of this.assailants) {
+      if (!as.alive || as.inVehicle || as.ragdoll.active) continue;
+      debrisHumanoids.push({
+        pos: as.pos,
+        ragdoll: as.ragdoll,
+        onHitByDebris: (impactSpeed) => {
+          as.hp = Math.max(0, as.hp - Math.min(40, impactSpeed * 1.6));
+          if (as.hp <= 0 && as.alive) {
+            as.alive = false;
+            this.neutralizedCount++;
+          }
+        },
+      });
+    }
+
+    this.crashPhysics.stepDebris(this.staticBvh, dt, {
+      humanoids: debrisHumanoids,
+      vfx: this.vfx,
+      audio: this.audio,
+      config,
+      surfaceSource: map ?? config.world,
+    });
+    updatePedestrians(
+      this.pedestrians,
+      allVehicles,
+      this.officers,
+      this.assailants,
+      this.staticBvh,
+      map ?? config.world,
+      config,
+      dt,
+    );
     this.combat.updateTracers(
       this.crimes,
       this.units,
+      this.officers,
+      this.assailants,
       this.civilianCars,
       this.pedestrians,
       this.cowardiceLevel,
@@ -1152,19 +1401,22 @@ export class PoliceSimEngine {
         this.sirenPattern,
         this.simTime,
         rawDt,
+        config,
       );
     }
 
     const selectedUnit =
       this.units.find((u) => u.id === this.selectedUnitId) ?? this.units[0];
-    this.cameraController.update(rawDt, selectedUnit);
+    this.cameraController.update(rawDt, selectedUnit, officersById);
     this.aiDebugVisualizer.update(this.aiDebugFlags, {
       units: this.units,
       civilianCars: this.civilianCars,
       crimes: this.crimes,
+      assailantsById,
+      pedestrians: this.pedestrians,
       roadGraph: this.roadGraph,
     });
-    this.devEditor?.update();
+    this.devEditor?.update(rawDt);
 
     this.snapshotAccum += rawDt;
     if (this.snapshotAccum >= config.simulation.snapshotIntervalSec) {
@@ -1181,11 +1433,82 @@ export class PoliceSimEngine {
     }
   };
 
-  private resolveAllVehicleCollisions(dt: number): void {
+  private isLocationWitnessedByPolice(
+    x: number,
+    z: number,
+    officersById: Map<string, OfficerActor>,
+  ): boolean {
+    const maxOfficerDistSq = 58 * 58;
+    for (const off of this.officers) {
+      if (off.hp <= 0 || off.locationState === 'in_precinct') continue;
+      const dx = off.pos.x - x;
+      const dz = off.pos.z - z;
+      if (dx * dx + dz * dz > maxOfficerDistSq) continue;
+      if (this.staticBvh.raycastSegment(off.pos.x, off.pos.z, x, z).clear) {
+        return true;
+      }
+    }
+    const maxUnitDistSq = 62 * 62;
+    for (const u of this.units) {
+      if (u.status === UnitStatus.AtStation || u.immobilized) continue;
+      const hasLiving = u.officerRefs.some((oid) => (officersById.get(oid)?.hp ?? 0) > 0);
+      if (!hasLiving) continue;
+      const dx = u.pos.x - x;
+      const dz = u.pos.z - z;
+      if (dx * dx + dz * dz > maxUnitDistSq) continue;
+      if (this.staticBvh.raycastSegment(u.pos.x, u.pos.z, x, z).clear) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private promoteCivilianDriverIfWitnessed(
+    civilianId: string,
+    x: number,
+    z: number,
+    reason: string,
+    officersById: Map<string, OfficerActor>,
+  ): void {
+    if (!this.assets || !this.config || !this.textures || !this.roadGraph) return;
+    const civ = this.civilianCars.find((c) => c.id === civilianId);
+    if (!civ || civ.immobilized) return;
+    if (!this.isLocationWitnessedByPolice(x, z, officersById)) return;
+
+    const created = promoteCivilianToPursuit({
+      civilian: civ,
+      civilianCars: this.civilianCars,
+      crimeCounter: this.crimeCounter,
+      crimes: this.crimes,
+      units: this.units,
+      officersById,
+      assailants: this.assailants,
+      hierarchy: this.hierarchy,
+      roadGraph: this.roadGraph,
+      staticBvh: this.staticBvh,
+      config: this.config,
+      assets: this.assets,
+      textures: this.textures,
+      drivingMode: this.drivingMode,
+      audio: this.audio,
+      rng: this.simRng,
+      reason,
+      map: this.assets.map,
+      onAssetIssue: this.recordAssetIssue,
+    });
+    if (created) {
+      this.crimeCounter++;
+    }
+  }
+
+  private resolveAllVehicleCollisions(
+    dt: number,
+    officersById: Map<string, OfficerActor>,
+    assailantsById: Map<string, AssailantActor>,
+  ): void {
     const entries: VehicleCollisionEntry[] = [];
 
     for (const u of this.units) {
-      if (u.status === UnitStatus.AtStation) continue;
       entries.push({
         id: u.id,
         kind: 'police',
@@ -1209,7 +1532,7 @@ export class PoliceSimEngine {
             u.damageSmokeTimer = Math.max(u.damageSmokeTimer, 7.5);
           }
           if (strikeSpeed > 13 && this.cowardiceLevel > 0.3) {
-            for (const o of u.officers) {
+            for (const o of resolveUnitOfficers(u, officersById)) {
               o.morale = Math.max(0, o.morale - 22 * this.cowardiceLevel);
             }
           }
@@ -1256,7 +1579,8 @@ export class PoliceSimEngine {
     }
 
     for (const c of this.crimes) {
-      if (c.inVehiclePursuit && c.vehicleRig && c.suspectAlive) {
+      const primarySuspect = resolveCrimePrimaryAssailant(c, assailantsById);
+      if (c.inVehiclePursuit && c.vehicleRig && primarySuspect?.alive) {
         entries.push({
           id: `getaway-${c.id}`,
           kind: 'getaway',
@@ -1306,14 +1630,92 @@ export class PoliceSimEngine {
             simEventLog.warn('crash', `High-energy vehicle collision (${Math.round(mag)} m/s)`);
           }
         },
+        onVehicleCollision: (a, b, strikeSpeed, contactX, contactZ) => {
+          if (a.kind === 'civilian' && b.kind === 'civilian' && strikeSpeed >= 4.2) {
+            const spdA = Math.hypot(a.dyn.vx, a.dyn.vz);
+            const spdB = Math.hypot(b.dyn.vx, b.dyn.vz);
+            const culprit = spdA >= spdB ? a : b;
+            this.promoteCivilianDriverIfWitnessed(
+              culprit.id,
+              contactX,
+              contactZ,
+              'Reckless collision',
+              officersById,
+            );
+          } else if (a.kind === 'civilian' && b.kind === 'police' && strikeSpeed >= 2.6) {
+            this.promoteCivilianDriverIfWitnessed(
+              a.id,
+              contactX,
+              contactZ,
+              'Struck police cruiser',
+              officersById,
+            );
+          } else if (b.kind === 'civilian' && a.kind === 'police' && strikeSpeed >= 2.6) {
+            this.promoteCivilianDriverIfWitnessed(
+              b.id,
+              contactX,
+              contactZ,
+              'Struck police cruiser',
+              officersById,
+            );
+          }
+        },
       },
     );
   }
 
-  private resolveHumanoidCollisions(): void {
-    const humVehicles: VehicleHumanoidCollider[] = [];
+  private resolveBreakablePropImpacts(dt: number): void {
+    const props = this.envHandles?.breakableProps;
+    if (!props || props.length === 0) return;
+
+    const movers: Array<{ pos: THREE.Vector3; speed: number; halfW: number; dyn: { vx: number; vz: number } }> = [];
     for (const u of this.units) {
       if (u.status === UnitStatus.AtStation) continue;
+      const spd = Math.hypot(u.dyn.vx, u.dyn.vz);
+      if (spd >= 4.2) movers.push({ pos: u.pos, speed: spd, halfW: u.halfW, dyn: u.dyn });
+    }
+    for (const c of this.civilianCars) {
+      const spd = Math.hypot(c.dyn.vx, c.dyn.vz);
+      if (spd >= 4.2) movers.push({ pos: c.pos, speed: spd, halfW: 0.92, dyn: c.dyn });
+    }
+    for (const cr of this.crimes) {
+      if (cr.inVehiclePursuit && cr.vehicleRig) {
+        const spd = Math.hypot(cr.vehicleDyn.vx, cr.vehicleDyn.vz);
+        if (spd >= 4.2) {
+          movers.push({ pos: cr.vehiclePos, speed: spd, halfW: 0.92, dyn: cr.vehicleDyn });
+        }
+      }
+    }
+
+    if (movers.length > 0) {
+      for (const prop of props) {
+        if (prop.broken) continue;
+        for (const m of movers) {
+          const hitR = prop.radius + m.halfW + 0.35;
+          const dx = prop.x - m.pos.x;
+          const dz = prop.z - m.pos.z;
+          if (dx * dx + dz * dz <= hitR * hitR && m.speed >= prop.minStrikeSpeed) {
+            const len = Math.hypot(m.dyn.vx, m.dyn.vz) || 1;
+            const dirX = m.dyn.vx / len;
+            const dirZ = m.dyn.vz / len;
+            triggerBreakablePropFall(prop, dirX, dirZ, m.speed);
+            this.vfx.spawnImpactSparks(prop.x, prop.y + 1.1, prop.z, 6, 0.85, dirX * 3, dirZ * 3);
+            playBoundAudioEvent(this.audio, this.config, 'vehicle_crash', prop.group.position);
+            m.dyn.vx *= 0.84;
+            m.dyn.vz *= 0.84;
+            break;
+          }
+        }
+      }
+    }
+
+    stepBreakableProps(props, dt);
+  }
+
+  private resolveHumanoidCollisions(assailantsById: Map<string, AssailantActor>): void {
+    const officersById = this.getOfficersById();
+    const humVehicles: VehicleHumanoidCollider[] = [];
+    for (const u of this.units) {
       humVehicles.push({
         id: u.id,
         kind: 'police',
@@ -1336,7 +1738,8 @@ export class PoliceSimEngine {
       });
     }
     for (const cr of this.crimes) {
-      if (cr.inVehiclePursuit && cr.vehicleRig && cr.suspectAlive) {
+      const primarySuspect = resolveCrimePrimaryAssailant(cr, assailantsById);
+      if (cr.inVehiclePursuit && cr.vehicleRig && primarySuspect?.alive) {
         humVehicles.push({
           id: `getaway-${cr.id}`,
           kind: 'getaway',
@@ -1352,8 +1755,8 @@ export class PoliceSimEngine {
     this.combat.resolveVehicleHumanoidCollisions(
       humVehicles,
       this.pedestrians,
-      this.units,
-      this.crimes,
+      this.officers,
+      this.assailants,
       this.staticBvh,
       this.audio,
       () => {
@@ -1362,11 +1765,22 @@ export class PoliceSimEngine {
       () => {
         this.neutralizedCount++;
       },
+      (veh, hitPos) => {
+        if (veh.kind === 'civilian' && veh.speed >= 2.2) {
+          this.promoteCivilianDriverIfWitnessed(
+            veh.id,
+            hitPos.x,
+            hitPos.z,
+            'Hit pedestrian/officer',
+            officersById,
+          );
+        }
+      },
     );
     this.combat.resolveHumanoidMutualCollisions(
       this.pedestrians,
-      this.units,
-      this.crimes,
+      this.officers,
+      this.assailants,
       this.staticBvh,
     );
   }
@@ -1390,12 +1804,20 @@ export class PoliceSimEngine {
 
   private emitSnapshot(): void {
     const liveries = this.config?.vehicles.liveries;
+    const officersById = this.getOfficersById();
+    const assailantsById = this.getAssailantsById();
+
     const unitsSummary = this.units.map((u) => {
-      const avgMorale = Math.round((u.officers[0].morale + u.officers[1].morale) * 0.5);
-      const fleeingOfficers = u.officers.filter(
+      const crew = resolveUnitOfficers(u, officersById);
+      const avgMorale =
+        crew.length > 0
+          ? Math.round(crew.reduce((acc, o) => acc + o.morale, 0) / crew.length)
+          : 100;
+      const fleeingOfficers = crew.filter(
         (o) => o.hp > 0 && o.cowardiceState === 'fleeing',
       ).length;
-      const downedOfficers = u.officers.filter((o) => o.hp <= 0).length;
+      const downedOfficers = crew.filter((o) => o.hp <= 0).length;
+      const seatedCount = u.seats.filter((s) => s.occupantOfficerId !== null).length;
       return {
         id: u.id,
         callsign: u.callsign,
@@ -1422,12 +1844,16 @@ export class PoliceSimEngine {
         assignedRole: u.assignedRole,
         impatience: Math.round(u.impatience * 100),
         reversing: u.reverseTimer > 0,
+        seatedCount,
+        seatCapacity: u.seats.length,
       };
     });
 
     const crimesSummary: CrimeSummary[] = this.crimes.map((c) => {
       const assigned = this.units.find((u) => u.id === c.assignedUnitId);
       const counts = getCrimeUnitCounts(c, this.units, this.nailMats);
+      const primarySuspect = resolveCrimePrimaryAssailant(c, assailantsById);
+      const anyAlive = this.isCrimeActive(c, assailantsById);
       const assignedUnits: CaseAssignedUnitBadge[] = this.units
         .filter((u) => u.targetCrimeId === c.id && u.status !== UnitStatus.Retreating)
         .map((u) => ({
@@ -1445,9 +1871,9 @@ export class PoliceSimEngine {
         incidentStatus: c.incidentStatus,
         urgency: c.urgency,
         urgencyLevel: c.urgencyLevel,
-        suspectAlive: c.suspectAlive,
-        suspectHp: Math.round(c.suspectHp),
-        suspectWeaponKind: c.suspectWeaponKind,
+        suspectAlive: anyAlive,
+        suspectHp: Math.round(primarySuspect?.hp ?? 0),
+        suspectWeaponKind: primarySuspect?.weaponKind ?? 'pistol',
         inVehiclePursuit: c.inVehiclePursuit,
         vehicleHp: Math.round(c.vehicleHp),
         assignedUnitCallsign: assigned ? assigned.callsign : null,
@@ -1490,6 +1916,8 @@ export class PoliceSimEngine {
       debrisObstacles: this.debrisObstacles,
       renderScale: this.renderScale,
       crashIntensity: this.crashIntensity,
+      maxPhysicsParts: this.maxPhysicsParts,
+      experimentalComplexMeshes: this.experimentalComplexMeshes,
       simSpeed: this.simSpeed,
       isSoftwareGl: this.isSoftwareGl,
       paintPalette: this.paintPalette,
@@ -1532,6 +1960,8 @@ export class PoliceSimEngine {
       units: this.units,
       civilianCars: this.civilianCars,
       crimes: this.crimes,
+      assailantsById: this.getAssailantsById(),
+      pedestrians: this.pedestrians,
       roadGraph: this.roadGraph,
     });
   }
@@ -1547,16 +1977,26 @@ export class PoliceSimEngine {
 
   public getWorldEntitiesSnapshot(): WorldEntitySummary[] {
     const out: WorldEntitySummary[] = [];
+    const officersById = this.getOfficersById();
+    const assailantsById = this.getAssailantsById();
 
     for (const u of this.units) {
-      const avgHp = Math.round((u.officers[0].hp + u.officers[1].hp) * 0.5);
-      const maxHp = Math.round((u.officers[0].maxHp + u.officers[1].maxHp) * 0.5);
+      const crew = resolveUnitOfficers(u, officersById);
+      const avgHp =
+        crew.length > 0
+          ? Math.round(crew.reduce((acc, o) => acc + o.hp, 0) / crew.length)
+          : 100;
+      const maxHp =
+        crew.length > 0
+          ? Math.round(crew.reduce((acc, o) => acc + o.maxHp, 0) / crew.length)
+          : 100;
+      const seated = u.seats.filter((s) => s.occupantOfficerId !== null).length;
       out.push({
         uid: `police:${u.id}`,
         kind: 'police',
         id: u.id,
         label: `${u.callsign} (${u.vehicleKind.toUpperCase()})`,
-        statusText: `${u.status}${u.immobilized ? ' • IMMOB' : ''}${u.reverseTimer > 0 ? ' • REV' : ''}`,
+        statusText: `${u.status}${u.immobilized ? ' • IMMOB' : ''}${u.reverseTimer > 0 ? ' • REV' : ''} • ${seated}/${u.seats.length} seated`,
         x: Math.round(u.pos.x * 100) / 100,
         y: Math.round(u.pos.y * 100) / 100,
         z: Math.round(u.pos.z * 100) / 100,
@@ -1568,6 +2008,50 @@ export class PoliceSimEngine {
         sirensActive: u.sirensActive,
         mounted: u.mounted,
         extra: u.assignedCaseNumber ? `Case #${u.assignedCaseNumber}` : undefined,
+      });
+    }
+
+    for (const off of this.officers) {
+      out.push({
+        uid: `officer:${off.id}`,
+        kind: 'officer',
+        id: off.id,
+        label: `${off.isHeavy ? 'SWAT Cop' : 'Patrol Cop'} (${off.id})`,
+        statusText:
+          off.hp <= 0
+            ? 'Incapacitated'
+            : off.boardingState === 'seated'
+            ? `Seated (${off.occupiedUnitId ?? 'unit'})`
+            : `${off.weaponKind.toUpperCase()} • ${off.cowardiceState}`,
+        x: Math.round(off.pos.x * 100) / 100,
+        y: Math.round(off.pos.y * 100) / 100,
+        z: Math.round(off.pos.z * 100) / 100,
+        yaw: Math.round(off.yaw * 1000) / 1000,
+        hp: Math.round(off.hp),
+        maxHp: off.maxHp,
+        mounted: off.boardingState === 'seated',
+        extra: off.unitId ?? 'Standalone',
+      });
+    }
+
+    for (const as of this.assailants) {
+      out.push({
+        uid: `assailant:${as.id}`,
+        kind: 'assailant',
+        id: as.id,
+        label: `Assailant (${as.weaponKind.toUpperCase()}) • ${as.id}`,
+        statusText: !as.alive
+          ? 'Neutralized'
+          : as.inVehicle
+          ? 'In Getaway Vehicle'
+          : 'Armed / Hostile',
+        x: Math.round(as.pos.x * 100) / 100,
+        y: Math.round(as.pos.y * 100) / 100,
+        z: Math.round(as.pos.z * 100) / 100,
+        yaw: Math.round(as.yaw * 1000) / 1000,
+        hp: Math.round(as.hp),
+        maxHp: as.maxHp,
+        extra: as.crimeId ?? 'Standalone',
       });
     }
 
@@ -1592,13 +2076,17 @@ export class PoliceSimEngine {
     }
 
     this.pedestrians.forEach((p, idx) => {
-      const pid = `ped-${idx + 1}`;
+      const pid = p.id || `ped-${idx + 1}`;
       out.push({
         uid: `ped:${pid}`,
         kind: 'ped',
         id: pid,
         label: `Pedestrian #${idx + 1}`,
-        statusText: p.dead ? 'Deceased' : p.injured ? 'Injured' : p.panicTimer > 0 ? 'Panicking' : 'Walking',
+        statusText: p.dead
+          ? 'Deceased'
+          : p.injured
+          ? 'Injured'
+          : `${p.activeGoal.replace(/_/g, ' ')}`,
         x: Math.round(p.pos.x * 100) / 100,
         y: Math.round(p.pos.y * 100) / 100,
         z: Math.round(p.pos.z * 100) / 100,
@@ -1609,14 +2097,16 @@ export class PoliceSimEngine {
     });
 
     for (const cr of this.crimes) {
-      const pos = cr.inVehiclePursuit && cr.vehicleRig ? cr.vehiclePos : cr.suspectPos;
-      const yaw = cr.inVehiclePursuit && cr.vehicleRig ? cr.vehicleYaw : cr.suspectYaw;
+      const primary = resolveCrimePrimaryAssailant(cr, assailantsById);
+      const anyAlive = this.isCrimeActive(cr, assailantsById);
+      const pos = cr.inVehiclePursuit && cr.vehicleRig ? cr.vehiclePos : primary?.pos ?? cr.pos;
+      const yaw = cr.inVehiclePursuit && cr.vehicleRig ? cr.vehicleYaw : primary?.yaw ?? 0;
       out.push({
         uid: `crime:${cr.id}`,
         kind: 'crime',
         id: cr.id,
         label: `Case #${cr.caseNumber} (${cr.type})`,
-        statusText: !cr.suspectAlive
+        statusText: !anyAlive
           ? 'Neutralized'
           : cr.inVehiclePursuit
           ? `Pursuit • ${cr.urgencyLevel.toUpperCase()}`
@@ -1625,7 +2115,7 @@ export class PoliceSimEngine {
         y: Math.round(pos.y * 100) / 100,
         z: Math.round(pos.z * 100) / 100,
         yaw: Math.round(yaw * 1000) / 1000,
-        hp: Math.round(cr.inVehiclePursuit ? cr.vehicleHp : cr.suspectHp),
+        hp: Math.round(cr.inVehiclePursuit ? cr.vehicleHp : primary?.hp ?? 0),
         maxHp: 100,
         extra: cr.district,
       });
@@ -1650,15 +2140,20 @@ export class PoliceSimEngine {
 
   public getWorldEntityObject(kind: WorldEntityKind, id: string): THREE.Object3D | undefined {
     if (kind === 'police') return this.units.find((u) => u.id === id)?.rig.root;
+    if (kind === 'officer') return this.officers.find((o) => o.id === id)?.rig.root;
+    if (kind === 'assailant') return this.assailants.find((a) => a.id === id)?.rig.root;
     if (kind === 'traffic') return this.civilianCars.find((c) => c.id === id)?.rig.root;
     if (kind === 'ped') {
-      const idx = Number(id.replace('ped-', '')) - 1;
-      return this.pedestrians[idx]?.rig.root;
+      return (
+        this.pedestrians.find((p) => p.id === id)?.rig.root ??
+        this.pedestrians[Number(id.replace('ped-', '')) - 1]?.rig.root
+      );
     }
     if (kind === 'crime') {
       const cr = this.crimes.find((c) => c.id === id);
       if (!cr) return undefined;
-      return cr.inVehiclePursuit && cr.vehicleRig ? cr.vehicleRig.root : cr.suspectRig.root;
+      if (cr.inVehiclePursuit && cr.vehicleRig) return cr.vehicleRig.root;
+      return resolveCrimePrimaryAssailant(cr, this.getAssailantsById())?.rig.root;
     }
     if (kind === 'nail_mat') return this.nailMats.find((n) => n.id === id)?.group;
     return undefined;
@@ -1675,19 +2170,29 @@ export class PoliceSimEngine {
       return false;
     };
 
+    for (const o of this.officers) {
+      if (o.boardingState === 'dismounted' && isAncestor(o.rig.root)) {
+        return { kind: 'officer', id: o.id };
+      }
+    }
     for (const u of this.units) {
       if (isAncestor(u.rig.root)) return { kind: 'police', id: u.id };
+    }
+    for (const a of this.assailants) {
+      if (isAncestor(a.rig.root)) return { kind: 'assailant', id: a.id };
     }
     for (const c of this.civilianCars) {
       if (isAncestor(c.rig.root)) return { kind: 'traffic', id: c.id };
     }
     for (let i = 0; i < this.pedestrians.length; i++) {
       if (isAncestor(this.pedestrians[i].rig.root)) {
-        return { kind: 'ped', id: `ped-${i + 1}` };
+        return { kind: 'ped', id: this.pedestrians[i].id || `ped-${i + 1}` };
       }
     }
+    const assailantsById = this.getAssailantsById();
     for (const cr of this.crimes) {
-      if (isAncestor(cr.vehicleRig?.root) || isAncestor(cr.suspectRig.root)) {
+      const primary = resolveCrimePrimaryAssailant(cr, assailantsById);
+      if (isAncestor(cr.vehicleRig?.root) || isAncestor(primary?.rig.root)) {
         return { kind: 'crime', id: cr.id };
       }
     }
@@ -1703,6 +2208,10 @@ export class PoliceSimEngine {
       | 'police_suv'
       | 'police_van'
       | 'police_apc'
+      | 'officer_patrol'
+      | 'officer_swat'
+      | 'assailant_pistol'
+      | 'assailant_rifle'
       | 'civilian'
       | 'pedestrian'
       | 'crime'
@@ -1722,6 +2231,8 @@ export class PoliceSimEngine {
         crimes: this.crimes,
         crimeCounter: this.crimeCounter,
         units: this.units,
+        officersById: this.getOfficersById(),
+        assailants: this.assailants,
         hierarchy: this.hierarchy,
         roadGraph: this.roadGraph,
         staticBvh: this.staticBvh,
@@ -1738,6 +2249,116 @@ export class PoliceSimEngine {
       this.crimeCounter++;
       this.emitSnapshot();
       return this.getWorldEntitiesSnapshot().find((e) => e.id === created.id) ?? null;
+    }
+
+    if (kind === 'officer_patrol' || kind === 'officer_swat') {
+      const isHeavy = kind === 'officer_swat';
+      const weaponKind: 'pistol' | 'rifle' = isHeavy ? 'rifle' : 'pistol';
+      const maxHp = isHeavy ? 150 : 100;
+      const maxArmor = isHeavy ? 110 : 45;
+      const id = `officer-spawn-${this.standaloneActorSeq++}`;
+      const rig = createHumanoid(
+        isHeavy ? 'heavy_officer' : 'officer',
+        this.assets,
+        this.textures,
+        undefined,
+        this.recordAssetIssue,
+      );
+      const spawnPos = new THREE.Vector3(x, y, z);
+      this.staticBvh.resolveCircle(spawnPos, 0.45);
+      spawnPos.y = getSurfaceHeight(spawnPos.x, spawnPos.z, surface);
+      rig.root.position.copy(spawnPos);
+      rig.root.userData.officerId = id;
+      this.hierarchy.addEntity(rig.root);
+
+      const officer: OfficerActor = {
+        id,
+        unitId: null,
+        occupiedUnitId: null,
+        occupiedSeatIndex: null,
+        boardingState: 'dismounted',
+        targetUnitId: null,
+        targetSeatIndex: null,
+        assignedCrimeId: null,
+        rig,
+        pos: spawnPos,
+        yaw: 0,
+        hp: maxHp,
+        maxHp,
+        armor: maxArmor,
+        maxArmor,
+        weaponKind,
+        isHeavy,
+        morale: 100,
+        cowardiceState: 'steady',
+        ragdoll: createRagdollState(),
+        fireCooldown: 0.2,
+        muzzleTimer: 0,
+        walkPhase: 0,
+        ammo: this.config.weapons[weaponKind].magSize,
+        reloadTimer: 0,
+        recoilKick: 0,
+        strafeSign: 1,
+        strafeTimer: 1.5,
+        roamTarget: null,
+        roamTimer: 0,
+        roamPauseTimer: 0,
+        mountPhase: 'walk',
+        boardTimer: 0,
+        locationState: 'field',
+      };
+      this.officers.push(officer);
+      this.emitSnapshot();
+      return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
+    }
+
+    if (kind === 'assailant_pistol' || kind === 'assailant_rifle') {
+      const weaponKind: 'pistol' | 'rifle' = kind === 'assailant_rifle' ? 'rifle' : 'pistol';
+      const maxArmor = weaponKind === 'rifle' ? 40 : 15;
+      const id = `assailant-spawn-${this.standaloneActorSeq++}`;
+      const rig = createHumanoid(
+        'suspect',
+        this.assets,
+        this.textures,
+        undefined,
+        this.recordAssetIssue,
+      );
+      const spawnPos = new THREE.Vector3(x, y, z);
+      this.staticBvh.resolveCircle(spawnPos, 0.48);
+      spawnPos.y = getSurfaceHeight(spawnPos.x, spawnPos.z, surface);
+      rig.root.position.copy(spawnPos);
+      rig.root.userData.assailantId = id;
+      this.hierarchy.addEntity(rig.root);
+
+      const assailant: AssailantActor = {
+        id,
+        crimeId: null,
+        rig,
+        pos: spawnPos,
+        yaw: 0,
+        hp: 100,
+        maxHp: 100,
+        armor: maxArmor,
+        maxArmor,
+        weaponKind,
+        alive: true,
+        inVehicle: false,
+        ammo: this.config.weapons[weaponKind].magSize,
+        reloadTimer: 0,
+        recoilKick: 0,
+        strafeDir: 1,
+        moveTimer: 1.5,
+        walkPhase: 0,
+        ragdoll: createRagdollState(),
+        lastHitDir: new THREE.Vector3(0, 0, 1),
+        fireCooldown: 0.45,
+        muzzleTimer: 0,
+        roamTarget: null,
+        roamTimer: 0,
+      };
+      this.assailants.push(assailant);
+      this.emitSnapshot();
+      return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
     }
 
     if (kind === 'pedestrian') {
@@ -1759,11 +2380,18 @@ export class PoliceSimEngine {
       this.staticBvh.resolveCircle(spawnPos, 0.45);
       spawnPos.y = getSurfaceHeight(spawnPos.x, spawnPos.z, surface);
       rig.root.position.copy(spawnPos);
-      this.hierarchy.entities.pedestrians.add(rig.root);
+      this.hierarchy.addEntity(rig.root);
+      const pid = `ped-spawn-${this.standaloneActorSeq++}`;
       this.pedestrians.push({
+        id: pid,
         rig,
         pos: spawnPos,
         yaw: 0,
+        velX: 0,
+        velZ: 0,
+        jumpY: 0,
+        jumpVelY: 0,
+        activeGoal: 'SIDEWALK_STROLL',
         blockCx: spawnPos.x,
         blockCz: spawnPos.z,
         loopRadius: 12,
@@ -1778,9 +2406,8 @@ export class PoliceSimEngine {
         dead: false,
         ragdoll: createRagdollState(),
       });
-      const id = `ped-${this.pedestrians.length}`;
       this.emitSnapshot();
-      return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
+      return this.getWorldEntitiesSnapshot().find((e) => e.id === pid) ?? null;
     }
 
     if (kind === 'civilian') {
@@ -1802,14 +2429,13 @@ export class PoliceSimEngine {
       const nextId = nearest.neighbors[0] ?? nearest.id;
       const spawnPos = new THREE.Vector3(x, y, z);
       rig.root.position.copy(spawnPos);
-      this.hierarchy.entities.traffic.add(rig.root);
-      const id = `civ-spawn-${Date.now().toString(36).slice(-4)}`;
+      this.hierarchy.addEntity(rig.root);
+      const id = `civ-spawn-${this.standaloneActorSeq++}`;
       const reachable = this.roadGraph
         .getReachableNodeIds(nearest.id)
         .filter((nid) => nid !== nearest.id && nid !== nextId);
       const destId = reachable[0] ?? nextId;
-      const plan =
-        destId !== nextId ? this.roadGraph.findNodePath(nextId, destId) : [];
+      const plan = destId !== nextId ? this.roadGraph.findNodePath(nextId, destId) : [];
 
       this.civilianCars.push({
         id,
@@ -1844,7 +2470,7 @@ export class PoliceSimEngine {
       return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
     }
 
-    // Spawn Police Unit
+    // Spawn Police Unit with real seated crew & vehicle seats/hinges
     const vehicleKind: PoliceVehicleKind =
       kind === 'police_apc'
         ? 'apc'
@@ -1857,7 +2483,7 @@ export class PoliceSimEngine {
     const liveryId = isHeavy ? 'tactical_swat' : 'classic_bw';
     const weaponKind: 'rifle' | 'pistol' = isHeavy ? 'rifle' : 'pistol';
     const unitNum = this.units.length + 1;
-    const id = `unit-spawn-${Date.now().toString(36).slice(-4)}`;
+    const id = `unit-spawn-${this.standaloneActorSeq++}`;
     const rig = createPoliceCruiser(
       unitNum,
       vehicleKind,
@@ -1869,58 +2495,39 @@ export class PoliceSimEngine {
       undefined,
       this.recordAssetIssue,
     );
+    rig.cabinCrewGroup.visible = false;
     const spawnPos = new THREE.Vector3(x, y, z);
     rig.root.position.copy(spawnPos);
     rig.clickableMesh.userData.unitId = id;
-    this.hierarchy.entities.police.add(rig.root);
+    this.hierarchy.addEntity(rig.root);
     this.clickables.push(rig.clickableMesh);
 
-    const chassis = this.config.vehicles.chassis[vehicleKind] ?? this.config.vehicles.chassis.sedan;
+    const chassis =
+      this.config.vehicles.chassis[vehicleKind] ?? this.config.vehicles.chassis.sedan;
     const maxHp = vehicleKind === 'apc' ? 185 : isHeavy ? 160 : 100;
     const maxArmor = vehicleKind === 'apc' ? 150 : isHeavy ? 120 : 45;
     const magSize = this.config.weapons[weaponKind].magSize;
 
-    const makeOff = (strafe: 1 | -1) => {
-      const oRig = createHumanoid(
-        isHeavy ? 'heavy_officer' : 'officer',
-        this.assets!,
-        this.textures!,
-        undefined,
-        this.recordAssetIssue,
-      );
-      oRig.root.visible = false;
-      this.hierarchy.entities.police.add(oRig.root);
-      return {
-        rig: oRig,
-        pos: spawnPos.clone(),
-        yaw: 0,
-        hp: maxHp,
-        maxHp,
-        armor: maxArmor,
-        maxArmor,
-        weaponKind,
-        isHeavy,
-        morale: 100,
-        cowardiceState: 'steady' as const,
-        ragdoll: createRagdollState(),
-        fireCooldown: 0.25,
-        muzzleTimer: 0,
-        walkPhase: 0,
-        ammo: magSize,
-        reloadTimer: 0,
-        recoilKick: 0,
-        strafeSign: strafe,
-        strafeTimer: 1.5,
-        roamTarget: null,
-        roamTimer: 0,
-        roamPauseTimer: 0,
-        mountPhase: 'walk' as const,
-        boardTimer: 0,
-      };
-    };
+    const seats = rig.seats.map((s, idx) => ({
+      slotIndex: idx,
+      role: s.spec.role,
+      spec: s.spec,
+      localOffset: s.localOffset.clone(),
+      enterOffset: new THREE.Vector3(
+        ...(s.spec.enterOffset ?? [s.localOffset.x >= 0 ? 1.45 : -1.45, 0, s.localOffset.z]),
+      ),
+      exitOffset: new THREE.Vector3(
+        ...(s.spec.exitOffset ?? [s.localOffset.x >= 0 ? 1.45 : -1.45, 0, s.localOffset.z]),
+      ),
+      hingePartId: s.spec.hingePartId,
+      hingeRef: s.spec.hingePartId ? rig.hinges[s.spec.hingePartId] : undefined,
+      seatedPitch: s.spec.seatedPitch ?? -1.48,
+      occupantOfficerId: null as string | null,
+      doorOpenTimer: 0,
+    }));
 
     const refBayIdx = Math.max(0, Math.min(this.config.vehicles.stationBays.length - 1, 0));
-    this.units.push({
+    const unit: PoliceUnit = {
       id,
       callsign: `UNIT-${unitNum}`,
       bayIndex: refBayIdx,
@@ -1963,7 +2570,9 @@ export class PoliceSimEngine {
       assignedCaseNumber: null,
       assignedRole: null,
       pursuitRole: 'direct',
-      officers: [makeOff(1), makeOff(-1)],
+      officerRefs: [],
+      seats,
+      hinges: rig.hinges,
       holdTimer: 0,
       stuckTimer: 0,
       impatience: 0,
@@ -1972,7 +2581,67 @@ export class PoliceSimEngine {
       stallCount: 0,
       towRequested: false,
       beingTowed: false,
-    });
+      patrolTimer: 0,
+      patrolTargetNodeId: null,
+      stalledGoalTimer: 0,
+      bayApproachTimer: 0,
+    };
+
+    const crewCount = Math.min(2, Math.max(1, seats.length || 2));
+    for (let sIdx = 0; sIdx < crewCount; sIdx++) {
+      const offId = `officer-spawn-${this.standaloneActorSeq++}`;
+      const oRig = createHumanoid(
+        isHeavy ? 'heavy_officer' : 'officer',
+        this.assets,
+        this.textures,
+        undefined,
+        this.recordAssetIssue,
+      );
+      oRig.root.userData.unitId = id;
+      oRig.root.userData.officerId = offId;
+      this.hierarchy.addEntity(oRig.root);
+      const officer: OfficerActor = {
+        id: offId,
+        unitId: id,
+        occupiedUnitId: null,
+        occupiedSeatIndex: null,
+        boardingState: 'dismounted',
+        targetUnitId: id,
+        targetSeatIndex: sIdx,
+        assignedCrimeId: null,
+        rig: oRig,
+        pos: spawnPos.clone(),
+        yaw: 0,
+        hp: maxHp,
+        maxHp,
+        armor: maxArmor,
+        maxArmor,
+        weaponKind,
+        isHeavy,
+        morale: 100,
+        cowardiceState: 'steady',
+        ragdoll: createRagdollState(),
+        fireCooldown: 0.25,
+        muzzleTimer: 0,
+        walkPhase: 0,
+        ammo: magSize,
+        reloadTimer: 0,
+        recoilKick: 0,
+        strafeSign: sIdx % 2 === 0 ? 1 : -1,
+        strafeTimer: 1.5,
+        roamTarget: null,
+        roamTimer: 0,
+        roamPauseTimer: 0,
+        mountPhase: 'walk',
+        boardTimer: 0,
+        locationState: 'field',
+      };
+      this.officers.push(officer);
+      unit.officerRefs.push(offId);
+      assignOfficerToUnitSeat(officer, unit, sIdx < seats.length ? sIdx : undefined);
+    }
+
+    this.units.push(unit);
     this.emitSnapshot();
     return this.getWorldEntitiesSnapshot().find((e) => e.id === id) ?? null;
   }
@@ -1982,11 +2651,55 @@ export class PoliceSimEngine {
       const idx = this.units.findIndex((u) => u.id === id);
       if (idx < 0) return false;
       const [u] = this.units.splice(idx, 1);
-      this.hierarchy.entities.police.remove(u.rig.root);
-      u.officers.forEach((o) => this.hierarchy.entities.police.remove(o.rig.root));
+      for (const oid of u.officerRefs) {
+        const oIdx = this.officers.findIndex((o) => o.id === oid);
+        if (oIdx >= 0) {
+          const [off] = this.officers.splice(oIdx, 1);
+          this.hierarchy.removeEntity(off.rig.root);
+        }
+      }
+      this.hierarchy.removeEntity(u.rig.root);
       if (this.selectedUnitId === id && this.units.length > 0) {
         this.selectedUnitId = this.units[0].id;
       }
+      this.emitSnapshot();
+      return true;
+    }
+    if (kind === 'officer') {
+      const idx = this.officers.findIndex((o) => o.id === id);
+      if (idx < 0) return false;
+      const [off] = this.officers.splice(idx, 1);
+      if (off.occupiedUnitId) {
+        const owner = this.units.find((u) => u.id === off.occupiedUnitId);
+        if (owner) {
+          for (const seat of owner.seats) {
+            if (seat.occupantOfficerId === off.id) seat.occupantOfficerId = null;
+          }
+          owner.officerRefs = owner.officerRefs.filter((oid) => oid !== off.id);
+        }
+      }
+      if (off.unitId) {
+        const unit = this.units.find((u) => u.id === off.unitId);
+        if (unit) unit.officerRefs = unit.officerRefs.filter((oid) => oid !== off.id);
+      }
+      this.hierarchy.removeEntity(off.rig.root);
+      this.emitSnapshot();
+      return true;
+    }
+    if (kind === 'assailant') {
+      const idx = this.assailants.findIndex((a) => a.id === id);
+      if (idx < 0) return false;
+      const [as] = this.assailants.splice(idx, 1);
+      if (as.crimeId) {
+        const cr = this.crimes.find((c) => c.id === as.crimeId);
+        if (cr) {
+          cr.assailantRefs = cr.assailantRefs.filter((aid) => aid !== as.id);
+          if (cr.primaryAssailantId === as.id) {
+            cr.primaryAssailantId = cr.assailantRefs[0] ?? null;
+          }
+        }
+      }
+      this.hierarchy.removeEntity(as.rig.root);
       this.emitSnapshot();
       return true;
     }
@@ -1994,15 +2707,16 @@ export class PoliceSimEngine {
       const idx = this.civilianCars.findIndex((c) => c.id === id);
       if (idx < 0) return false;
       const [car] = this.civilianCars.splice(idx, 1);
-      this.hierarchy.entities.traffic.remove(car.rig.root);
+      this.hierarchy.removeEntity(car.rig.root);
       this.emitSnapshot();
       return true;
     }
     if (kind === 'ped') {
-      const idx = Number(id.replace('ped-', '')) - 1;
+      let idx = this.pedestrians.findIndex((p) => p.id === id);
+      if (idx < 0) idx = Number(id.replace('ped-', '')) - 1;
       if (idx < 0 || idx >= this.pedestrians.length) return false;
       const [ped] = this.pedestrians.splice(idx, 1);
-      this.hierarchy.entities.pedestrians.remove(ped.rig.root);
+      this.hierarchy.removeEntity(ped.rig.root);
       this.emitSnapshot();
       return true;
     }
@@ -2010,8 +2724,14 @@ export class PoliceSimEngine {
       const idx = this.crimes.findIndex((c) => c.id === id);
       if (idx < 0) return false;
       const [cr] = this.crimes.splice(idx, 1);
-      this.hierarchy.entities.crimes.remove(cr.suspectRig.root);
-      if (cr.vehicleRig) this.hierarchy.entities.crimes.remove(cr.vehicleRig.root);
+      for (const aid of cr.assailantRefs) {
+        const aIdx = this.assailants.findIndex((a) => a.id === aid);
+        if (aIdx >= 0) {
+          const [as] = this.assailants.splice(aIdx, 1);
+          this.hierarchy.removeEntity(as.rig.root);
+        }
+      }
+      if (cr.vehicleRig) this.hierarchy.removeEntity(cr.vehicleRig.root);
       for (const u of this.units) {
         if (u.targetCrimeId === id) {
           u.targetCrimeId = null;
@@ -2025,7 +2745,7 @@ export class PoliceSimEngine {
       const idx = this.nailMats.findIndex((n) => n.id === id);
       if (idx < 0) return false;
       const [nm] = this.nailMats.splice(idx, 1);
-      this.hierarchy.entities.nailMats.remove(nm.group);
+      this.hierarchy.removeEntity(nm.group);
       this.emitSnapshot();
       return true;
     }
@@ -2041,9 +2761,14 @@ export class PoliceSimEngine {
       | 'toggle_siren'
       | 'toggle_mount'
       | 'clear_impatience'
+      | 'board_nearest_unit'
+      | 'eject_seat'
       | 'set_transform',
     transform?: { x?: number; y?: number; z?: number; yaw?: number },
   ): boolean {
+    const officersById = this.getOfficersById();
+    const assailantsById = this.getAssailantsById();
+
     if (kind === 'police') {
       const u = this.units.find((item) => item.id === id);
       if (!u) return false;
@@ -2067,13 +2792,15 @@ export class PoliceSimEngine {
           w.userData.bentAmount = 0;
           w.rotation.z = 0;
         });
-        u.officers.forEach((o) => {
+        resolveUnitOfficers(u, officersById).forEach((o) => {
           o.hp = o.maxHp;
           o.armor = o.maxArmor;
           o.morale = 100;
           o.cowardiceState = 'steady';
           o.ragdoll.active = false;
-          resetOfficerPose(o, u.yaw);
+          if (o.boardingState === 'dismounted') {
+            resetOfficerPose(o, u.yaw);
+          }
         });
       } else if (action === 'toggle_lights') {
         u.lightsActive = !u.lightsActive;
@@ -2083,21 +2810,21 @@ export class PoliceSimEngine {
         if (u.mounted) {
           dismountUnit(
             u,
+            officersById,
             this.cowardiceLevel,
             this.staticBvh,
             this.config,
             this.simRng,
             true,
             this.assets?.map,
+            this.hierarchy,
           );
         } else {
           u.mounted = true;
           u.freeRoam = false;
-          u.rig.cabinCrewGroup.visible = true;
-          u.officers.forEach((o) => {
-            o.rig.root.visible = false;
+          resolveUnitOfficers(u, officersById).forEach((o, sIdx) => {
             o.ragdoll.active = false;
-            resetOfficerPose(o, u.yaw);
+            assignOfficerToUnitSeat(o, u, sIdx < u.seats.length ? sIdx : undefined);
           });
           u.status = UnitStatus.Engaging;
         }
@@ -2105,6 +2832,81 @@ export class PoliceSimEngine {
         u.impatience = 0;
         u.stuckTimer = 0;
         u.reverseTimer = 0;
+      }
+      this.emitSnapshot();
+      return true;
+    }
+
+    if (kind === 'officer') {
+      const off = this.officers.find((item) => item.id === id);
+      if (!off) return false;
+      if (action === 'set_transform' && transform) {
+        if (off.boardingState === 'seated' && off.occupiedUnitId) {
+          const unit = this.units.find((u) => u.id === off.occupiedUnitId);
+          if (unit && this.assets) {
+            ejectOfficerFromSeat(off, unit, this.staticBvh, this.assets.map, this.hierarchy);
+          }
+        }
+        if (transform.x !== undefined) off.pos.x = transform.x;
+        if (transform.y !== undefined) off.pos.y = transform.y;
+        if (transform.z !== undefined) off.pos.z = transform.z;
+        if (transform.yaw !== undefined) off.yaw = transform.yaw;
+        off.rig.root.position.copy(off.pos);
+        off.rig.root.rotation.y = off.yaw;
+        return true;
+      }
+      if (action === 'repair_heal') {
+        off.hp = off.maxHp;
+        off.armor = off.maxArmor;
+        off.morale = 100;
+        off.cowardiceState = 'steady';
+        off.ragdoll.active = false;
+        if (off.boardingState === 'dismounted') {
+          resetOfficerPose(off, off.yaw);
+        }
+      } else if (action === 'eject_seat' && off.occupiedUnitId && this.assets) {
+        const unit = this.units.find((u) => u.id === off.occupiedUnitId);
+        if (unit) {
+          ejectOfficerFromSeat(off, unit, this.staticBvh, this.assets.map, this.hierarchy);
+        }
+      } else if (action === 'board_nearest_unit') {
+        let bestUnit: PoliceUnit | null = null;
+        let bestDistSq = Infinity;
+        for (const u of this.units) {
+          if (u.seats.every((s) => s.occupantOfficerId !== null)) continue;
+          const dSq = u.pos.distanceToSquared(off.pos);
+          if (dSq < bestDistSq) {
+            bestDistSq = dSq;
+            bestUnit = u;
+          }
+        }
+        if (bestUnit) {
+          assignOfficerToUnitSeat(off, bestUnit);
+        }
+      }
+      this.emitSnapshot();
+      return true;
+    }
+
+    if (kind === 'assailant') {
+      const as = this.assailants.find((item) => item.id === id);
+      if (!as) return false;
+      if (action === 'set_transform' && transform) {
+        if (transform.x !== undefined) as.pos.x = transform.x;
+        if (transform.y !== undefined) as.pos.y = transform.y;
+        if (transform.z !== undefined) as.pos.z = transform.z;
+        if (transform.yaw !== undefined) as.yaw = transform.yaw;
+        as.rig.root.position.copy(as.pos);
+        as.rig.root.rotation.y = as.yaw;
+        return true;
+      }
+      if (action === 'repair_heal') {
+        as.hp = as.maxHp;
+        as.armor = as.maxArmor;
+        as.alive = true;
+        as.ragdoll.active = false;
+        as.rig.root.rotation.set(0, as.yaw, 0);
+        if (as.rig.threatRing) as.rig.threatRing.visible = !as.inVehicle;
       }
       this.emitSnapshot();
       return true;
@@ -2138,7 +2940,7 @@ export class PoliceSimEngine {
 
     if (kind === 'ped') {
       const idx = Number(id.replace('ped-', '')) - 1;
-      const ped = this.pedestrians[idx];
+      const ped = this.pedestrians.find((p) => p.id === id) ?? this.pedestrians[idx];
       if (!ped) return false;
       if (action === 'set_transform' && transform) {
         if (transform.x !== undefined) ped.pos.x = transform.x;
@@ -2163,6 +2965,7 @@ export class PoliceSimEngine {
     if (kind === 'crime') {
       const cr = this.crimes.find((c) => c.id === id);
       if (!cr) return false;
+      const primary = resolveCrimePrimaryAssailant(cr, assailantsById);
       if (action === 'set_transform' && transform) {
         if (cr.inVehiclePursuit && cr.vehicleRig) {
           if (transform.x !== undefined) cr.vehiclePos.x = transform.x;
@@ -2171,19 +2974,27 @@ export class PoliceSimEngine {
           if (transform.yaw !== undefined) cr.vehicleYaw = transform.yaw;
           cr.vehicleRig.root.position.copy(cr.vehiclePos);
           cr.vehicleRig.root.rotation.y = cr.vehicleYaw;
-        } else {
-          if (transform.x !== undefined) cr.suspectPos.x = transform.x;
-          if (transform.y !== undefined) cr.suspectPos.y = transform.y;
-          if (transform.z !== undefined) cr.suspectPos.z = transform.z;
-          if (transform.yaw !== undefined) cr.suspectYaw = transform.yaw;
-          cr.suspectRig.root.position.copy(cr.suspectPos);
-          cr.suspectRig.root.rotation.y = cr.suspectYaw;
+        } else if (primary) {
+          if (transform.x !== undefined) primary.pos.x = transform.x;
+          if (transform.y !== undefined) primary.pos.y = transform.y;
+          if (transform.z !== undefined) primary.pos.z = transform.z;
+          if (transform.yaw !== undefined) primary.yaw = transform.yaw;
+          primary.rig.root.position.copy(primary.pos);
+          primary.rig.root.rotation.y = primary.yaw;
         }
         return true;
       }
       if (action === 'repair_heal') {
-        cr.suspectHp = 100;
-        cr.suspectAlive = true;
+        for (const aid of cr.assailantRefs) {
+          const as = assailantsById.get(aid);
+          if (as) {
+            as.hp = as.maxHp;
+            as.armor = as.maxArmor;
+            as.alive = true;
+            as.ragdoll.active = false;
+            as.rig.root.rotation.set(0, as.yaw, 0);
+          }
+        }
         cr.vehicleHp = 100;
         cr.vehicleImmobilized = false;
       }

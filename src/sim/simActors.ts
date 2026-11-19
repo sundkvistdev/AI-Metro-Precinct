@@ -68,6 +68,7 @@ export interface OfficerActor {
   roamPauseTimer: number;
   mountPhase: 'walk' | 'boarding';
   boardTimer: number;
+  locationState: 'field' | 'entering_precinct' | 'in_precinct' | 'exiting_precinct';
 }
 
 export interface AssailantActor {
@@ -152,6 +153,10 @@ export interface PoliceUnit {
   towRequested: boolean;
   beingTowed: boolean;
   debugAvoidActive?: boolean;
+  patrolTimer?: number;
+  patrolTargetNodeId?: number | null;
+  stalledGoalTimer?: number;
+  bayApproachTimer?: number;
 }
 
 export type NailMatPhase = 'en_route' | 'deploying' | 'armed' | 'recovering';
@@ -285,6 +290,8 @@ export interface PedestrianActor {
   injured: boolean;
   dead: boolean;
   ragdoll: RagdollState;
+  avoidSideSign?: 1 | -1;
+  avoidSideTimer?: number;
 }
 
 export interface BulletTracer {

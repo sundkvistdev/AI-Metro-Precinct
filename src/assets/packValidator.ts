@@ -238,6 +238,19 @@ export function validateAssetPackLive(assets: LoadedJsonAssets | null): Validati
       }
     }
 
+    if (!map.precinctDoors) {
+      issues.push({
+        id: `map:${mapId}:no_precinct_doors`,
+        severity: 'warning',
+        category: 'map',
+        assetId: mapId,
+        fieldPath: 'precinctDoors',
+        message: `Map "${map.name}" has no precinctDoors marker; falling back to station lobby east doorway.`,
+        jumpTab: 'map',
+        jumpTarget: mapId,
+      });
+    }
+
     const halfLimit = (map.bounds?.halfSize ?? 200) + 45;
     for (const obj of map.objects ?? []) {
       if (!assets.models[obj.modelRef]) {

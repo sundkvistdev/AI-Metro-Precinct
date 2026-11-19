@@ -225,6 +225,13 @@ export interface CollisionResolutionOptions {
   debrisObstacles?: boolean;
   crashIntensity?: number;
   onHeavyCrash?: (strikeSpeed: number) => void;
+  onVehicleCollision?: (
+    a: VehicleCollisionEntry,
+    b: VehicleCollisionEntry,
+    strikeSpeed: number,
+    contactX: number,
+    contactZ: number,
+  ) => void;
 }
 
 const _worldPos = new THREE.Vector3();
@@ -443,6 +450,7 @@ export class VehicleCrashPhysicsSystem {
 
       a.onImpact(strikeSpeed, b.kind === 'police');
       b.onImpact(strikeSpeed, a.kind === 'police');
+      options?.onVehicleCollision?.(a, b, strikeSpeed, sat.contactX, sat.contactZ);
       if (strikeSpeed >= 9.5) {
         onHeavyCrash?.(strikeSpeed * crashIntensity);
       }

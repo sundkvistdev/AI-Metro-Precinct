@@ -8,10 +8,15 @@ import {
   Square,
   Trash2,
   Upload,
+  Volume2,
 } from 'lucide-react';
-import { ProceduralAudioAsset } from '../../assets/assetTypes';
+import { ProceduralAudioAsset, SimEventId } from '../../assets/assetTypes';
 import { mulberry32 } from '../../assets/prng';
 import { DevEditorController, DevEditorState } from '../../sim/devEditorController';
+import {
+  DEFAULT_EVENT_BINDINGS,
+  SIM_EVENT_DEFINITIONS,
+} from '../../sim/eventBindings';
 import { downloadJsonText, readFileAsText } from './editorFileUtils';
 
 export interface AudioEditorTabProps {
@@ -667,6 +672,68 @@ export const AudioEditorTab: React.FC<AudioEditorTabProps> = ({
           )}
         </div>
       )}
+
+      {/* Asset Pack Audio Event Bindings (lives in Debug Menu / Asset Editor) */}
+      <div className="ui-subpanel p-2 space-y-1.5">
+        <div className="flex items-center justify-between text-[11px] font-semibold text-zinc-200">
+          <span className="flex items-center gap-1.5">
+            <Volume2 className="h-3.5 w-3.5 text-emerald-300" />
+            Pack Event-to-Audio Bindings
+          </span>
+          <span className="text-[10px] font-mono-tabular text-zinc-400">
+            engine_config.json
+          </span>
+        </div>
+        <div className="max-h-48 overflow-y-auto space-y-1 text-[10px]">
+          {SIM_EVENT_DEFINITIONS.map((ev) => {
+            const cur =
+              state.configEventBindings[ev.id] ?? DEFAULT_EVENT_BINDINGS[ev.id];
+            const updateEv = (patch: Partial<typeof cur>) => {
+              controller?.updateConfigEventBindings({
+                [ev.id as SimEventId]: { ...cur, ...patch },
+              });
+            };
+            return (
+              <div
+                key={ev.id}
+                className="flex items-center justify-between gap-1 border border-zinc-700 bg-zinc-900/80 px-1.5 py-1"
+              >
+                <label className="flex items-center gap-1 text-zinc-200 truncate min-w-0 flex-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cur.enabled ?? true}
+                    onChange={(e) => updateEv({ enabled: e.target.checked })}
+                  />
+                  <span className="truncate">{ev.label}</span>
+                </label>
+                <select
+                  value={cur.audioId}
+                  onChange={(e) => updateEv({ audioId: e.target.value })}
+                  className="w-28 border border-zinc-600 bg-zinc-950 px-1 py-0.5 font-mono-tabular text-zinc-100 rounded-none"
+                >
+                  {state.audioIds.map((aid) => (
+                    <option key={aid} value={aid}>
+                      {aid}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  title="Gain Scale"
+                  value={cur.gainScale ?? 1}
+                  onChange={(e) =>
+                    updateEv({ gainScale: Number(e.target.value) })
+                  }
+                  className="w-11 border border-zinc-600 bg-zinc-950 px-1 py-0.5 font-mono-tabular text-zinc-100 rounded-none"
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       {/* Save to Pack + JSON Load/Export */}
       <input

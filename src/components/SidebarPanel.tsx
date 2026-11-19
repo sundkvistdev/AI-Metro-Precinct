@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Camera,
   Car,
   CloudRain,
   Crosshair,
   Eye,
+  FlaskConical,
   FolderArchive,
   Gauge,
+  Keyboard,
   LayoutGrid,
   MapPin,
   RotateCcw,
@@ -21,8 +23,14 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { LoadedJsonAssets } from '../assets/assetTypes';
+import { KeybindActionId, LoadedJsonAssets } from '../assets/assetTypes';
 import { hudLayoutStore, HudWidgetId, useHudLayout } from '../sim/hudLayout';
+import {
+  formatKeyCode,
+  KEYBIND_ACTIONS,
+  keybindStore,
+  useKeybinds,
+} from '../sim/keybinds';
 import { HudEditableFrame } from './HudEditableFrame';
 import {
   BackupMode,
@@ -72,6 +80,7 @@ export interface SidebarPanelProps {
   onToggleSimSpeed: () => void;
   onSetDebrisObstacles: (enabled: boolean) => void;
   onSetCrashIntensity: (intensity: number) => void;
+  onSetMaxPhysicsParts: (limit: number) => void;
   onLoadZipPack: (file: File) => void;
   onExportZipPack: () => void;
   onReloadDefaultPack: () => void;
@@ -86,9 +95,9 @@ const STATUS_LABELS: Record<UnitStatus, string> = {
   [UnitStatus.Pursuing]: 'Pursuit',
   [UnitStatus.DeployingSpikes]: 'Spikes',
   [UnitStatus.Dismounting]: 'Dismount',
-  [UnitStatus.Engaging]: 'Firing',
+  [UnitStatus.Engaging]: 'Engaging',
   [UnitStatus.Mounting]: 'Mounting',
-  [UnitStatus.Retreating]: 'Fleeing',
+  [UnitStatus.Retreating]: 'Retreating',
   [UnitStatus.Returning]: 'Returning',
 };
 
@@ -96,12 +105,12 @@ const PANE_META: Record<SidebarPaneId, { title: string; icon: React.ReactNode }>
   units: { title: 'Patrol Units', icon: <Car className="h-4 w-4" /> },
   dispatch: { title: 'Dispatch & Tactics', icon: <ShieldAlert className="h-4 w-4" /> },
   world: { title: 'Maps & Lightbars', icon: <MapPin className="h-4 w-4" /> },
-  settings: { title: 'Sim & HUD Settings', icon: <Settings className="h-4 w-4" /> },
+  settings: { title: 'Settings & Controls', icon: <Settings className="h-4 w-4" /> },
   assets: { title: 'Asset Pack V3', icon: <FolderArchive className="h-4 w-4" /> },
-  devtools: { title: 'Dev & Asset Studio', icon: <Wrench className="h-4 w-4" /> },
+  devtools: { title: 'World & Asset Studio', icon: <Wrench className="h-4 w-4" /> },
 };
 
-type IngameSettingsTab = 'sim' | 'audio' | 'graphics' | 'hud';
+type IngameSettingsTab = 'sim' | 'audio' | 'graphics' | 'keybinds' | 'hud';
 
 export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
   const {
@@ -132,6 +141,7 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
     onToggleSimSpeed,
     onSetDebrisObstacles,
     onSetCrashIntensity,
+    onSetMaxPhysicsParts,
     onLoadZipPack,
     onExportZipPack,
     onReloadDefaultPack,
@@ -141,7 +151,23 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
   } = props;
 
   const [settingsTab, setSettingsTab] = useState<IngameSettingsTab>('sim');
+  const [capturingKeyFor, setCapturingKeyFor] = useState<KeybindActionId | null>(null);
   const hud = useHudLayout();
+  const keybinds = useKeybinds();
+
+  useEffect(() => {
+    if (!capturingKeyFor) return;
+    const onCapture = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.code !== 'Escape') {
+        keybindStore.setUserOverride(capturingKeyFor, e.code);
+      }
+      setCapturingKeyFor(null);
+    };
+    window.addEventListener('keydown', onCapture, true);
+    return () => window.removeEventListener('keydown', onCapture, true);
+  }, [capturingKeyFor]);
 
   const selectedUnit =
     snapshot.units.find((u) => u.id === snapshot.selectedUnitId) ?? snapshot.units[0];
@@ -149,8 +175,9 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
     selectedUnit &&
       (selectedUnit.mounted ||
         (!selectedUnit.immobilized &&
-          (selectedUnit.status === UnitStatus.Engaging ||
-            selectedUnit.status === UnitStatus.Dismounting))),
+          (selectedUnit.status === UnitStatus.AtStation ||
+            selectedUnit.status === UnitStatus.Dismounting ||
+            selectedUnit.status === UnitStatus.Engaging))),
   );
   const hasStandbyUnit = snapshot.units.some(
     (u) =>
@@ -337,8 +364,11 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                       </div>
                       <div className="border border-zinc-700 bg-zinc-900/70 px-2 py-1 font-mono-tabular text-[10px] space-y-0.5">
                         <div className="flex justify-between text-sky-300">
-                          <span>GOAL: {selectedUnit.activeGoal}</span>
-                          <span>IMP {selectedUnit.impatience}%</span>
+                          <span>Task: {selectedUnit.activeGoal}</span>
+                          <span>
+                            {selectedUnit.seatedCount ?? 0}/
+                            {selectedUnit.seatCapacity ?? 2} Seated
+                          </span>
                         </div>
                         <div className="text-zinc-400 truncate">
                           {selectedUnit.goalReason}
@@ -349,7 +379,7 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                               ? `Case #${selectedUnit.assignedCaseNumber} (${selectedUnit.assignedRole ?? 'assigned'})`
                               : 'Unassigned'}
                           </span>
-                          <span>Bar: {selectedUnit.lightbarId}</span>
+                          <span>Lightbar: {selectedUnit.lightbarId}</span>
                         </div>
                       </div>
 
@@ -862,12 +892,13 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
               {/* TABBED IN-GAME SETTINGS & HUD CONFIGURATOR */}
               {activePane === 'settings' && (
                 <div className="space-y-2 text-xs">
-                  <div className="grid grid-cols-4 gap-0.5 border border-zinc-600 bg-zinc-900/60 p-0.5">
+                  <div className="grid grid-cols-5 gap-0.5 border border-zinc-600 bg-zinc-900/60 p-0.5">
                     {(
                       [
                         { id: 'sim', label: 'Sim' },
                         { id: 'audio', label: 'Audio' },
                         { id: 'graphics', label: 'Physics' },
+                        { id: 'keybinds', label: 'Keys' },
                         { id: 'hud', label: 'HUD' },
                       ] as const
                     ).map((t) => (
@@ -992,6 +1023,24 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                         />
                       </label>
 
+                      <label className="block space-y-1">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-zinc-300">Max Active Physics Parts</span>
+                          <span className="font-mono-tabular text-zinc-100">
+                            {snapshot.maxPhysicsParts} parts
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={8}
+                          max={250}
+                          step={4}
+                          value={snapshot.maxPhysicsParts}
+                          onChange={(e) => onSetMaxPhysicsParts(Number(e.target.value))}
+                          className="sharp-slider w-full"
+                        />
+                      </label>
+
                       <label className="flex items-center justify-between text-[11px] text-zinc-300 cursor-pointer">
                         <span>Debris Road Hitboxes</span>
                         <input
@@ -1000,6 +1049,76 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                           onChange={(e) => onSetDebrisObstacles(e.target.checked)}
                         />
                       </label>
+
+                      <div className="border-t border-zinc-700 pt-2">
+                        <label
+                          className="flex items-start justify-between gap-2 text-[10px] text-zinc-500 opacity-70 cursor-not-allowed"
+                          title="Pre-launch setting — return to Main Menu to change"
+                        >
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1 font-medium text-zinc-400">
+                              <FlaskConical className="h-3 w-3" />
+                              Experimental Meshes, UVs &amp; Hinges
+                            </div>
+                            <div>
+                              {snapshot.experimentalComplexMeshes ? 'Enabled' : 'Disabled'} ·
+                              Pre-launch setting (return to Main Menu to change)
+                            </div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            disabled
+                            checked={snapshot.experimentalComplexMeshes}
+                            className="mt-0.5 cursor-not-allowed"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
+                  {settingsTab === 'keybinds' && (
+                    <div className="ui-subpanel p-2 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1 text-[11px] font-medium text-zinc-200">
+                          <Keyboard className="h-3.5 w-3.5 text-sky-400" />
+                          Keybindings
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => keybindStore.resetAllToDefaults()}
+                          className="border border-zinc-500 bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+                        >
+                          Reset All
+                        </button>
+                      </div>
+                      <div className="max-h-64 overflow-y-auto space-y-1 pr-0.5">
+                        {KEYBIND_ACTIONS.map((action) => {
+                          const isCapturing = capturingKeyFor === action.id;
+                          return (
+                            <div
+                              key={action.id}
+                              className="flex items-center justify-between gap-1 border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-[10px]"
+                            >
+                              <span className="text-zinc-200 truncate">{action.label}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCapturingKeyFor(isCapturing ? null : action.id)
+                                }
+                                className={`border px-1.5 py-0.5 font-mono-tabular shrink-0 cursor-pointer rounded-none ${
+                                  isCapturing
+                                    ? 'border-amber-400 bg-amber-600 text-white'
+                                    : 'border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
+                                }`}
+                              >
+                                {isCapturing
+                                  ? 'Press Key...'
+                                  : formatKeyCode(keybinds[action.id])}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
 

@@ -860,6 +860,12 @@ export interface CustomMapAsset {
   stationExit?: {
     apronPoint: [number, number];
   };
+  precinctDoors?: {
+    x: number;
+    y?: number;
+    z: number;
+    rotationY?: number;
+  };
   stationBays?: StationBayDef[];
   treePalette?: string[];
   trafficCount?: number;

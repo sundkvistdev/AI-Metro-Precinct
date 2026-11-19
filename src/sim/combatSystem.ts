@@ -3,6 +3,7 @@ import { CustomMapAsset, EngineConfigAsset } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { StaticObstacleBVH } from './bvh';
 import { playBoundAudioEvent } from './eventBindings';
+import { applyRigidHumanoidPose } from './humanoidAnim';
 import { getSurfaceHeight, WorldConfig } from './roadGraph';
 import {
   ActiveCrime,
@@ -199,6 +200,7 @@ export class CombatSystem {
     audio: JsonAudioSynth | null,
     onPedCasualty?: () => void,
     onSuspectNeutralized?: (assailant: AssailantActor) => void,
+    onVehicleHitHumanoid?: (veh: VehicleHumanoidCollider, hitPos: THREE.Vector3) => void,
   ): void {
     if (!this.world && !this.map) return;
     const surface = this.surfaceSource;
@@ -287,6 +289,9 @@ export class CombatSystem {
           playBoundAudioEvent(audio, this.config, 'ped_impact', ped.pos);
           ped.panicTimer = 10.0;
         }
+        if (v.speed >= 2.2) {
+          onVehicleHitHumanoid?.(v, ped.pos);
+        }
         if (!ped.ragdoll.active) {
           ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surface) + ped.jumpY;
           ped.rig.root.position.copy(ped.pos);
@@ -334,6 +339,9 @@ export class CombatSystem {
               }
             }
           }
+        }
+        if (v.speed >= 2.2) {
+          onVehicleHitHumanoid?.(v, off.pos);
         }
         if (!off.ragdoll.active) {
           off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, surface);
@@ -486,6 +494,11 @@ export class CombatSystem {
     if (off.hp <= 0) {
       if (off.ragdoll.active) {
         stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
+      } else {
+        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world) + 0.16;
+        off.rig.root.position.copy(off.pos);
+        off.rig.root.rotation.set(Math.PI * 0.5, off.yaw, 0);
+        applyRigidHumanoidPose(off.rig, 'dead_flat', { snap: true });
       }
       if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
       return;
@@ -501,11 +514,7 @@ export class CombatSystem {
         off.cowardiceState = off.isHeavy ? 'steady' : 'fleeing';
         off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
         off.rig.root.rotation.set(0, off.yaw, 0);
-        off.rig.torso.position.y = off.rig.torsoBaseY;
-        off.rig.leftArm.rotation.set(0, 0, 0);
-        off.rig.rightArm.rotation.set(0, 0, 0);
-        off.rig.leftLeg.rotation.set(0, 0, 0);
-        off.rig.rightLeg.rotation.set(0, 0, 0);
+        applyRigidHumanoidPose(off.rig, 'idle', { snap: true });
       }
       return;
     }
@@ -550,23 +559,11 @@ export class CombatSystem {
       off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
 
       off.walkPhase += dt * 15;
-      const swing = Math.sin(off.walkPhase) * 0.68;
-      off.rig.leftLeg.rotation.x = swing;
-      off.rig.rightLeg.rotation.x = -swing;
-      off.rig.leftArm.rotation.x = -swing * 0.9;
-      off.rig.leftArm.rotation.z = 0;
-      off.rig.rightArm.rotation.x = swing * 0.9;
-      off.rig.rightArm.rotation.z = 0;
-      off.rig.torso.position.y = THREE.MathUtils.damp(
-        off.rig.torso.position.y,
-        off.rig.torsoBaseY - 0.05,
-        10,
-        dt,
-      );
+      applyRigidHumanoidPose(off.rig, 'run', { phase: off.walkPhase, dt });
       if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
 
       off.rig.root.position.copy(off.pos);
-      off.rig.root.rotation.y = off.yaw;
+      off.rig.root.rotation.set(0, off.yaw, 0);
       return;
     }
 
@@ -595,24 +592,12 @@ export class CombatSystem {
       off.weaponKind === 'rifle' ? (idx % 2 === 0 ? 14.5 : 17.5) : idx % 2 === 0 ? 9.5 : 12.0;
 
     if (isSuppressed) {
-      off.rig.torso.position.y = THREE.MathUtils.damp(
-        off.rig.torso.position.y,
-        off.rig.torsoBaseY - 0.18,
-        10,
-        dt,
-      );
       if (dist < 19) {
         moveX = -ux * 0.8 + perpX * 0.45;
         moveZ = -uz * 0.8 + perpZ * 0.45;
         moving = true;
       }
     } else {
-      off.rig.torso.position.y = THREE.MathUtils.damp(
-        off.rig.torso.position.y,
-        off.rig.torsoBaseY,
-        10,
-        dt,
-      );
       if (!hasLos) {
         moveX = ux * 0.45 + perpX * 0.88;
         moveZ = uz * 0.45 + perpZ * 0.88;
@@ -638,14 +623,7 @@ export class CombatSystem {
       off.pos.x += (moveX / mLen) * moveSpd * dt;
       off.pos.z += (moveZ / mLen) * moveSpd * dt;
       staticBvh.resolveCircle(off.pos, 0.48);
-
       off.walkPhase += dt * 11;
-      const swing = Math.sin(off.walkPhase) * 0.55;
-      off.rig.leftLeg.rotation.x = swing;
-      off.rig.rightLeg.rotation.x = -swing;
-    } else {
-      off.rig.leftLeg.rotation.x = THREE.MathUtils.damp(off.rig.leftLeg.rotation.x, 0, 10, dt);
-      off.rig.rightLeg.rotation.x = THREE.MathUtils.damp(off.rig.rightLeg.rotation.x, 0, 10, dt);
     }
 
     off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
@@ -653,42 +631,28 @@ export class CombatSystem {
     const spec = this.weapons[off.weaponKind];
     if (off.reloadTimer > 0) {
       off.reloadTimer -= dt;
-      off.rig.rightArm.rotation.x = THREE.MathUtils.damp(off.rig.rightArm.rotation.x, -0.52, 10, dt);
-      off.rig.rightArm.rotation.z = THREE.MathUtils.damp(off.rig.rightArm.rotation.z, 0.24, 10, dt);
-      off.rig.leftArm.rotation.x = THREE.MathUtils.damp(off.rig.leftArm.rotation.x, -0.6, 10, dt);
-      off.rig.leftArm.rotation.z = THREE.MathUtils.damp(off.rig.leftArm.rotation.z, -0.38, 10, dt);
       if (off.reloadTimer <= 0) off.ammo = spec.magSize;
-    } else if (isSuppressed) {
-      off.rig.rightArm.rotation.x = THREE.MathUtils.damp(
-        off.rig.rightArm.rotation.x,
-        -Math.PI * 0.36,
-        10,
-        dt,
-      );
-      off.rig.rightArm.rotation.z = THREE.MathUtils.damp(off.rig.rightArm.rotation.z, 0.22, 10, dt);
-      off.rig.leftArm.rotation.x = THREE.MathUtils.damp(
-        off.rig.leftArm.rotation.x,
-        -Math.PI * 0.44,
-        10,
-        dt,
-      );
-      off.rig.leftArm.rotation.z = THREE.MathUtils.damp(off.rig.leftArm.rotation.z, -0.44, 10, dt);
-    } else {
+    } else if (!isSuppressed) {
       off.recoilKick = THREE.MathUtils.damp(off.recoilKick, 0, 16, dt);
-      off.rig.rightArm.rotation.x = THREE.MathUtils.damp(
-        off.rig.rightArm.rotation.x,
-        -Math.PI * 0.48 - off.recoilKick,
-        16,
-        dt,
-      );
-      off.rig.rightArm.rotation.z = THREE.MathUtils.damp(off.rig.rightArm.rotation.z, 0.22, 14, dt);
-      off.rig.leftArm.rotation.x = THREE.MathUtils.damp(
-        off.rig.leftArm.rotation.x,
-        -Math.PI * 0.45 - off.recoilKick * 0.65,
-        16,
-        dt,
-      );
-      off.rig.leftArm.rotation.z = THREE.MathUtils.damp(off.rig.leftArm.rotation.z, -0.46, 14, dt);
+    }
+
+    const combatPoseMode =
+      off.reloadTimer > 0
+        ? 'reload'
+        : isSuppressed
+        ? 'suppressed'
+        : off.weaponKind === 'rifle'
+        ? 'aim_rifle'
+        : 'aim_pistol';
+    applyRigidHumanoidPose(off.rig, combatPoseMode, {
+      phase: moving ? off.walkPhase : 0,
+      dt,
+      recoilKick: off.recoilKick,
+      snap: !moving && off.reloadTimer <= 0 && !isSuppressed && off.recoilKick < 0.01 ? false : false,
+    });
+    if (!moving) {
+      off.rig.leftLeg.rotation.x = THREE.MathUtils.damp(off.rig.leftLeg.rotation.x, 0, 12, dt);
+      off.rig.rightLeg.rotation.x = THREE.MathUtils.damp(off.rig.rightLeg.rotation.x, 0, 12, dt);
     }
 
     if (off.muzzleTimer > 0) {
@@ -768,6 +732,11 @@ export class CombatSystem {
     if (off.hp <= 0) {
       if (off.ragdoll.active) {
         stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
+      } else {
+        off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world) + 0.16;
+        off.rig.root.position.copy(off.pos);
+        off.rig.root.rotation.set(Math.PI * 0.5, off.yaw, 0);
+        applyRigidHumanoidPose(off.rig, 'dead_flat', { snap: true });
       }
       return;
     }
@@ -782,11 +751,7 @@ export class CombatSystem {
         off.cowardiceState = 'steady';
         off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
         off.rig.root.rotation.set(0, off.yaw, 0);
-        off.rig.torso.position.y = off.rig.torsoBaseY;
-        off.rig.leftArm.rotation.set(0, 0, 0);
-        off.rig.rightArm.rotation.set(0, 0, 0);
-        off.rig.leftLeg.rotation.set(0, 0, 0);
-        off.rig.rightLeg.rotation.set(0, 0, 0);
+        applyRigidHumanoidPose(off.rig, 'idle', { snap: true });
       }
       return;
     }
@@ -794,25 +759,16 @@ export class CombatSystem {
     off.morale = Math.min(100, off.morale + 5.5 * dt);
     off.cowardiceState = 'steady';
     if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
-    off.rig.torso.position.y = THREE.MathUtils.damp(
-      off.rig.torso.position.y,
-      off.rig.torsoBaseY,
-      10,
-      dt,
-    );
 
     if (off.roamPauseTimer > 0) {
       off.roamPauseTimer -= dt;
       off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
-      off.rig.leftLeg.rotation.x = THREE.MathUtils.damp(off.rig.leftLeg.rotation.x, 0, 10, dt);
-      off.rig.rightLeg.rotation.x = THREE.MathUtils.damp(off.rig.rightLeg.rotation.x, 0, 10, dt);
-      off.rig.rightArm.rotation.x = THREE.MathUtils.damp(off.rig.rightArm.rotation.x, -0.4, 8, dt);
-      off.rig.rightArm.rotation.z = THREE.MathUtils.damp(off.rig.rightArm.rotation.z, 0.2, 8, dt);
-      off.rig.leftArm.rotation.x = THREE.MathUtils.damp(off.rig.leftArm.rotation.x, -0.36, 8, dt);
-      off.rig.leftArm.rotation.z = THREE.MathUtils.damp(off.rig.leftArm.rotation.z, -0.4, 8, dt);
-      off.rig.head.rotation.y = Math.sin(off.roamPauseTimer * 2.2 + idx) * 0.35;
+      applyRigidHumanoidPose(off.rig, 'idle', {
+        dt,
+        headLookYaw: Math.sin(off.roamPauseTimer * 2.2 + idx) * 0.35,
+      });
       off.rig.root.position.copy(off.pos);
-      off.rig.root.rotation.y = off.yaw;
+      off.rig.root.rotation.set(0, off.yaw, 0);
       return;
     }
 
@@ -882,20 +838,12 @@ export class CombatSystem {
           : Math.atan2(ux, uz);
 
       off.walkPhase += dt * 7.5;
-      const swing = Math.sin(off.walkPhase) * 0.46;
-      off.rig.leftLeg.rotation.x = swing;
-      off.rig.rightLeg.rotation.x = -swing;
-      off.rig.head.rotation.y = THREE.MathUtils.damp(off.rig.head.rotation.y, 0, 8, dt);
-
-      off.rig.rightArm.rotation.x = THREE.MathUtils.damp(off.rig.rightArm.rotation.x, -0.4, 8, dt);
-      off.rig.rightArm.rotation.z = THREE.MathUtils.damp(off.rig.rightArm.rotation.z, 0.2, 8, dt);
-      off.rig.leftArm.rotation.x = THREE.MathUtils.damp(off.rig.leftArm.rotation.x, -0.35, 8, dt);
-      off.rig.leftArm.rotation.z = THREE.MathUtils.damp(off.rig.leftArm.rotation.z, -0.38, 8, dt);
+      applyRigidHumanoidPose(off.rig, 'walk', { phase: off.walkPhase, dt });
     }
 
     off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
     off.rig.root.position.copy(off.pos);
-    off.rig.root.rotation.y = off.yaw;
+    off.rig.root.rotation.set(0, off.yaw, 0);
   }
 
   public updateAssailantCombat(
@@ -931,6 +879,11 @@ export class CombatSystem {
     if (!assailant.alive) {
       if (assailant.ragdoll.active) {
         stepRagdollPhysics(assailant.ragdoll, assailant.pos, assailant.rig, staticBvh, world, dt);
+      } else {
+        assailant.pos.y = getSurfaceHeight(assailant.pos.x, assailant.pos.z, world) + 0.16;
+        assailant.rig.root.position.copy(assailant.pos);
+        assailant.rig.root.rotation.set(Math.PI * 0.5, assailant.yaw, 0);
+        applyRigidHumanoidPose(assailant.rig, 'dead_flat', { snap: true });
       }
       return;
     }
@@ -942,7 +895,7 @@ export class CombatSystem {
         assailant.ragdoll.active = false;
         assailant.pos.y = getSurfaceHeight(assailant.pos.x, assailant.pos.z, world);
         assailant.rig.root.rotation.set(0, assailant.yaw, 0);
-        assailant.rig.torso.position.y = assailant.rig.torsoBaseY;
+        applyRigidHumanoidPose(assailant.rig, 'idle', { snap: true });
       }
       return;
     }
@@ -1003,53 +956,22 @@ export class CombatSystem {
       assailant.rig.root.position.copy(assailant.pos);
 
       assailant.walkPhase += dt * 9;
-      const legSwing = Math.sin(assailant.walkPhase) * 0.42;
-      assailant.rig.leftLeg.rotation.x = legSwing;
-      assailant.rig.rightLeg.rotation.x = -legSwing;
-
       const sSpec = this.weapons[assailant.weaponKind];
       if (assailant.reloadTimer > 0) {
         assailant.reloadTimer -= dt;
-        assailant.rig.rightArm.rotation.x = THREE.MathUtils.damp(
-          assailant.rig.rightArm.rotation.x,
-          -0.45,
-          10,
-          dt,
-        );
-        assailant.rig.rightArm.rotation.z = THREE.MathUtils.damp(
-          assailant.rig.rightArm.rotation.z,
-          0.2,
-          10,
-          dt,
-        );
         if (assailant.reloadTimer <= 0) assailant.ammo = sSpec.magSize;
       } else {
         assailant.recoilKick = THREE.MathUtils.damp(assailant.recoilKick, 0, 14, dt);
-        assailant.rig.rightArm.rotation.x = THREE.MathUtils.damp(
-          assailant.rig.rightArm.rotation.x,
-          -Math.PI * 0.46 - assailant.recoilKick,
-          12,
-          dt,
-        );
-        assailant.rig.rightArm.rotation.z = THREE.MathUtils.damp(
-          assailant.rig.rightArm.rotation.z,
-          0.18,
-          12,
-          dt,
-        );
-        assailant.rig.leftArm.rotation.x = THREE.MathUtils.damp(
-          assailant.rig.leftArm.rotation.x,
-          -Math.PI * 0.4,
-          12,
-          dt,
-        );
-        assailant.rig.leftArm.rotation.z = THREE.MathUtils.damp(
-          assailant.rig.leftArm.rotation.z,
-          -0.38,
-          12,
-          dt,
-        );
       }
+      applyRigidHumanoidPose(
+        assailant.rig,
+        assailant.reloadTimer > 0
+          ? 'reload'
+          : assailant.weaponKind === 'rifle'
+          ? 'aim_rifle'
+          : 'aim_pistol',
+        { phase: assailant.walkPhase, dt, recoilKick: assailant.recoilKick },
+      );
 
       assailant.fireCooldown -= dt;
       if (hasLos && assailant.reloadTimer <= 0 && assailant.fireCooldown <= 0) {
@@ -1118,16 +1040,16 @@ export class CombatSystem {
         assailant.pos.z += (dz / dist) * 2.1 * dt;
         staticBvh.resolveCircle(assailant.pos, 0.5);
         assailant.walkPhase += dt * 7;
-        const sw = Math.sin(assailant.walkPhase) * 0.4;
-        assailant.rig.leftLeg.rotation.x = sw;
-        assailant.rig.rightLeg.rotation.x = -sw;
+        applyRigidHumanoidPose(assailant.rig, 'walk', { phase: assailant.walkPhase, dt });
       } else {
         assailant.roamTarget = null;
+        applyRigidHumanoidPose(assailant.rig, 'idle', { dt });
       }
       assailant.pos.y = getSurfaceHeight(assailant.pos.x, assailant.pos.z, world);
       assailant.rig.root.position.copy(assailant.pos);
-      assailant.rig.root.rotation.y = assailant.yaw;
+      assailant.rig.root.rotation.set(0, assailant.yaw, 0);
     } else {
+      applyRigidHumanoidPose(assailant.rig, 'idle', { dt });
       assailant.rig.root.position.copy(assailant.pos);
     }
   }

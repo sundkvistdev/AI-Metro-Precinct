@@ -11,6 +11,8 @@ export interface ObstacleAABB {
   halfW?: number;
   halfD?: number;
   rotationY?: number;
+  disabled?: boolean;
+  propId?: string;
 }
 
 export function makeObstacleBox(
@@ -181,6 +183,7 @@ export class StaticObstacleBVH {
       if (n.left === -1) {
         for (let i = n.start; i < n.start + n.count; i++) {
           const b = this.items[i];
+          if (b.disabled) continue;
           const rot = b.rotationY ?? 0;
 
           if (Math.abs(rot) > 1e-4 && b.cx !== undefined && b.cz !== undefined && b.halfW !== undefined && b.halfD !== undefined) {
@@ -325,6 +328,7 @@ export class StaticObstacleBVH {
       if (n.left === -1) {
         for (let i = n.start; i < n.start + n.count; i++) {
           const b = this.items[i];
+          if (b.disabled) continue;
           if (
             vehOBB.maxX < b.minX ||
             vehOBB.minX > b.maxX ||
@@ -388,6 +392,7 @@ export class StaticObstacleBVH {
       if (n.left === -1) {
         for (let i = n.start; i < n.start + n.count; i++) {
           const b = this.items[i];
+          if (b.disabled) continue;
           const hit = this.slabHitBox(x0, z0, dx, dz, invDx, invDz, b, bestT);
           if (hit && hit.t < bestT) {
             bestT = hit.t;

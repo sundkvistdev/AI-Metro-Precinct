@@ -22,6 +22,7 @@ import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
   AssailantActor,
+  CivilianVehicle,
   NailMatActor,
   OfficerActor,
   PedestrianActor,
@@ -324,6 +325,191 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     'dispatch',
     `New Case #${crime.caseNumber}: ${crime.type}`,
     `${crime.district} • Urgency ${crime.urgency}${isPursuit ? ' (Vehicle Pursuit)' : ''}`,
+  );
+  dispatchNearestUnit(
+    crime,
+    units,
+    officersById,
+    roadGraph,
+    config,
+    drivingMode,
+    audio,
+    false,
+    false,
+    undefined,
+    staticBvh,
+    map,
+  );
+  return crime;
+}
+
+export interface PromoteCivilianPursuitParams {
+  civilian: CivilianVehicle;
+  civilianCars: CivilianVehicle[];
+  crimeCounter: number;
+  crimes: ActiveCrime[];
+  units: PoliceUnit[];
+  officersById: Map<string, OfficerActor>;
+  assailants: AssailantActor[];
+  hierarchy: SceneWorldHierarchy;
+  roadGraph: TownRoadGraph;
+  staticBvh: StaticObstacleBVH;
+  config: EngineConfigAsset;
+  assets: LoadedJsonAssets;
+  textures: TextureRegistry;
+  drivingMode: DrivingMode;
+  audio: JsonAudioSynth | null;
+  rng: () => number;
+  reason: string;
+  map?: CustomMapAsset;
+  onAssetIssue?: (issue: AssetIssue) => void;
+}
+
+export function promoteCivilianToPursuit(
+  params: PromoteCivilianPursuitParams,
+): ActiveCrime | null {
+  const {
+    civilian,
+    civilianCars,
+    crimeCounter,
+    crimes,
+    units,
+    officersById,
+    assailants,
+    hierarchy,
+    roadGraph,
+    staticBvh,
+    config,
+    assets,
+    textures,
+    drivingMode,
+    audio,
+    rng,
+    reason,
+    map,
+    onAssetIssue,
+  } = params;
+
+  if (civilian.immobilized) return null;
+  const civIdx = civilianCars.indexOf(civilian);
+  if (civIdx < 0) return null;
+  if (crimes.length >= config.simulation.maxActiveCrimes + 2) return null;
+
+  civilianCars.splice(civIdx, 1);
+
+  const id = `crime-${crimeCounter}`;
+  const nearestNode = roadGraph.findNearestNode(civilian.pos.x, civilian.pos.z);
+  const districts = map?.districts?.length ? map.districts : config.world.districts;
+  const district = districts[crimeCounter % districts.length] ?? 'Downtown';
+
+  const suspectRig = createHumanoid(
+    'suspect',
+    assets,
+    textures,
+    undefined,
+    onAssetIssue,
+  );
+  suspectRig.root.position.copy(civilian.pos);
+  suspectRig.root.visible = false;
+  hierarchy.addEntity(suspectRig.root);
+
+  const vehicleThreatRing = new THREE.Mesh(
+    new THREE.RingGeometry(1.75, 2.25, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xef4444,
+      transparent: true,
+      opacity: 0.78,
+      side: THREE.DoubleSide,
+    }),
+  );
+  vehicleThreatRing.position.y = 0.06;
+  civilian.rig.root.add(vehicleThreatRing);
+
+  const magSize = config.weapons.pistol.magSize;
+  const assailantId = `assailant-${assailantIdSeq++}`;
+  const assailant: AssailantActor = {
+    id: assailantId,
+    crimeId: id,
+    rig: suspectRig,
+    pos: civilian.pos.clone(),
+    yaw: civilian.yaw,
+    hp: 100,
+    maxHp: 100,
+    armor: 15,
+    maxArmor: 15,
+    weaponKind: 'pistol',
+    alive: true,
+    inVehicle: true,
+    ammo: magSize,
+    reloadTimer: 0,
+    recoilKick: 0,
+    strafeDir: rng() < 0.5 ? 1 : -1,
+    moveTimer: 1.5,
+    walkPhase: 0,
+    ragdoll: createRagdollState(),
+    lastHitDir: new THREE.Vector3(0, 0, 1),
+    fireCooldown: 1.1,
+    muzzleTimer: 0,
+    roamTarget: null,
+    roamTimer: 0,
+  };
+  assailants.push(assailant);
+
+  const crime: ActiveCrime = {
+    id,
+    caseNumber: 100 + crimeCounter,
+    type: CrimeType.VehiclePursuit,
+    district,
+    incidentStatus: 'pursuit',
+    baseUrgency: 74,
+    urgency: 74,
+    urgencyLevel: computeUrgencyLevel(74),
+    pos: civilian.pos.clone(),
+    roadPullOverPos: civilian.pos.clone(),
+    roadPullOverYaw: civilian.yaw,
+    nearestNodeId: nearestNode.id,
+    segmentNodeA: civilian.currentNodeId,
+    segmentNodeB: civilian.nextNodeId,
+    assailantRefs: [assailantId],
+    primaryAssailantId: assailantId,
+    assignedOfficerRefs: [],
+    inVehiclePursuit: true,
+    vehicleRig: civilian.rig,
+    vehicleThreatRing,
+    vehiclePos: civilian.pos.clone(),
+    vehicleYaw: civilian.yaw,
+    vehicleSpeed: Math.max(8, Math.abs(civilian.speed)),
+    vehicleDyn: civilian.dyn,
+    vehicleMaxSpeed: 18.8 + rng() * 2.2,
+    vehicleHp: 90,
+    vehicleNodeId: civilian.currentNodeId,
+    vehicleNextNodeId: civilian.nextNodeId,
+    vehicleTurnApex: null,
+    vehiclePinnedTimer: 0,
+    vehicleStuckTimer: 0,
+    vehicleImpatience: 0,
+    vehicleReverseTimer: 0,
+    vehicleReverseSteerDir: 1,
+    vehicleImmobilized: false,
+    vehicleImmobilizeTilt: 0,
+    vehicleTireBlowoutTimer: 0,
+    vehicleSmokeTimer: 0,
+    vehicleSmokeAccum: 0,
+    assignedUnitId: null,
+    assignedUnitIds: [],
+    backupDispatched: false,
+    heavyDeployed: false,
+    nailMatAttempts: 0,
+    cleanupTimer: 4.5,
+    elapsedSec: 0,
+    engagedSec: 0,
+  };
+
+  crimes.push(crime);
+  simEventLog.warn(
+    'dispatch',
+    `Case #${crime.caseNumber}: Reckless driver flagged (${reason})`,
+    `${crime.district} • Police witnessed violation`,
   );
   dispatchNearestUnit(
     crime,

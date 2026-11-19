@@ -15,6 +15,8 @@ import { SidebarPaneId, SidebarPanel } from './components/SidebarPanel';
 import { TopStatusHud } from './components/TopStatusHud';
 import { ValidatorDialog } from './components/ValidatorDialog';
 import { DevEditorState } from './sim/devEditorController';
+import { eventBindingStore } from './sim/eventBindings';
+import { keybindStore } from './sim/keybinds';
 import { PoliceSimEngine } from './sim/PoliceSimEngine';
 import {
   BackupMode,
@@ -55,6 +57,8 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   debrisObstacles: true,
   renderScale: 1,
   crashIntensity: 1.0,
+  maxPhysicsParts: 120,
+  experimentalComplexMeshes: false,
   simSpeed: 1,
   isSoftwareGl: false,
   paintPalette: [],
@@ -103,6 +107,8 @@ export default function App() {
     debrisObstacles: true,
     renderScale: 1,
     crashIntensity: 1.0,
+    maxPhysicsParts: 120,
+    experimentalComplexMeshes: false,
   });
 
   const [preflightResult, setPreflightResult] = useState<AssetLoadResult | null>(null);
@@ -117,16 +123,29 @@ export default function App() {
 
   const applyNewAssetResult = useCallback((result: AssetLoadResult) => {
     setPreflightResult(result);
+    if (result.config) {
+      keybindStore.applyPackDefaults(result.config.keybinds);
+      eventBindingStore.applyPackDefaults(result.config.eventBindings);
+    }
     if (result.assets) {
       const firstMapId =
         result.assets.activeMapId || Object.keys(result.assets.maps ?? {})[0];
-      if (firstMapId) {
-        setMenuSettings((prev) =>
-          result.assets?.maps?.[prev.initialMapId]
-            ? prev
-            : { ...prev, initialMapId: firstMapId },
-        );
-      }
+      const packMaxParts = result.config?.physics?.defaultMaxPhysicsParts;
+      setMenuSettings((prev) => {
+        const nextMap =
+          firstMapId && !result.assets?.maps?.[prev.initialMapId]
+            ? firstMapId
+            : prev.initialMapId;
+        const nextParts =
+          typeof packMaxParts === 'number' && packMaxParts >= 8
+            ? Math.round(packMaxParts)
+            : prev.maxPhysicsParts;
+        return {
+          ...prev,
+          initialMapId: nextMap,
+          maxPhysicsParts: nextParts,
+        };
+      });
       simEventLog.info(
         'asset',
         `Loaded pack "${result.assets.manifest.packName}" (v${result.assets.manifest.formatVersion})`,
@@ -193,23 +212,26 @@ export default function App() {
       ) {
         return;
       }
-      if (e.key === 'h' || e.key === 'H') {
+      if (keybindStore.matchesEvent(e, 'toggleHud')) {
         setActivePane((prev) => {
           engine.getDevEditor()?.setActive(false);
           return prev ? null : 'units';
         });
-      } else if (e.code === 'Space') {
+      } else if (keybindStore.matchesEvent(e, 'spawnCrime')) {
         e.preventDefault();
-        engine.triggerCrimeNow();
-      } else if (e.key === '0') {
+        engine.triggerCrimeNow(false);
+      } else if (keybindStore.matchesEvent(e, 'spawnPursuit')) {
+        e.preventDefault();
+        engine.triggerCrimeNow(true);
+      } else if (keybindStore.matchesEvent(e, 'cameraReset')) {
         engine.resetCameraView();
-      } else if (e.key === '1') {
+      } else if (keybindStore.matchesEvent(e, 'cameraOverview')) {
         engine.setCameraMode(CameraMode.Overview);
-      } else if (e.key === '2') {
+      } else if (keybindStore.matchesEvent(e, 'cameraFreeFly')) {
         engine.setCameraMode(CameraMode.FreeFly);
-      } else if (e.key === '3') {
+      } else if (keybindStore.matchesEvent(e, 'cameraFollow')) {
         engine.setCameraMode(CameraMode.FollowUnit);
-      } else if (e.key === '4') {
+      } else if (keybindStore.matchesEvent(e, 'cameraLightbar')) {
         engine.setCameraMode(CameraMode.RearLightbar);
       }
     };
@@ -348,6 +370,10 @@ export default function App() {
 
   const handleSetCrashIntensity = useCallback((intensity: number) => {
     engineRef.current?.setCrashIntensity(intensity);
+  }, []);
+
+  const handleSetMaxPhysicsParts = useCallback((limit: number) => {
+    engineRef.current?.setMaxPhysicsParts(limit);
   }, []);
 
   const handleJumpToValidationIssue = useCallback((issue: ValidationIssue) => {
@@ -505,6 +531,7 @@ export default function App() {
             onToggleSimSpeed={handleToggleSimSpeed}
             onSetDebrisObstacles={handleSetDebrisObstacles}
             onSetCrashIntensity={handleSetCrashIntensity}
+            onSetMaxPhysicsParts={handleSetMaxPhysicsParts}
             onLoadZipPack={(file) => void handleLoadZipPack(file)}
             onExportZipPack={() => void handleExportZipPack()}
             onReloadDefaultPack={() => void loadDefaultPack()}

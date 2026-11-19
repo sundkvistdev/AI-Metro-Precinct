@@ -37,13 +37,14 @@
     "police": [
       { "id": "AWAIT_TOW", "label": "Await Roadside Recovery", "enabled": true, "priority": 100 },
       { "id": "RETREAT_TO_PRECINCT", "label": "Retreat / Casualties", "enabled": true, "priority": 90 },
-      { "id": "MANUAL_FOOT_PATROL", "label": "Free-Roam Patrol / Combat", "enabled": true, "priority": 80 },
+      { "id": "DEPLOY_NAIL_MAT", "label": "Deploy Road Spike Strip", "enabled": true, "priority": 85 },
       { "id": "DISMOUNT_COMBAT", "label": "Dismount & Engage Foot Target", "enabled": true, "priority": 75, "params": { "dismountDist": 22.0 } },
       { "id": "PURSUE_INTERCEPT", "label": "Vehicle Pursuit & PIT", "enabled": true, "priority": 70, "params": { "ramRange": 20.0 } },
-      { "id": "DEPLOY_NAIL_MAT", "label": "Deploy Road Spike Strip", "enabled": true, "priority": 65 },
-      { "id": "RESPOND_TO_CALL", "label": "Code-3 Respond to Scene", "enabled": true, "priority": 60, "params": { "approachDist": 16.0 } },
+      { "id": "RESPOND_TO_CALL", "label": "Code-3 Respond to Scene", "enabled": true, "priority": 65, "params": { "approachDist": 16.0 } },
       { "id": "BOARD_CRUISER", "label": "Board Vehicle After Scene", "enabled": true, "priority": 50 },
-      { "id": "RETURN_TO_PRECINCT", "label": "RTB & Park in Station Bay", "enabled": true, "priority": 35 },
+      { "id": "MANUAL_FOOT_PATROL", "label": "Free-Roam Patrol / Combat", "enabled": true, "priority": 40 },
+      { "id": "PATROL_STREETS", "label": "Aimless Street Patrol", "enabled": true, "priority": 25, "params": { "patrolDuration": 16.0, "cruiseSpeed": 10.5 } },
+      { "id": "RETURN_TO_PRECINCT", "label": "RTB & Park in Station Bay", "enabled": true, "priority": 20 },
       { "id": "PARKED_STANDBY", "label": "Standby at Precinct", "enabled": true, "priority": 10 }
     ],
     "pedestrian": [

@@ -5,10 +5,14 @@ import {
   Crosshair,
   Footprints,
   HeartHandshake,
+  LogIn,
+  LogOut,
   Plus,
+  Shield,
   Siren,
   Sliders,
   Trash2,
+  UserPlus,
   Users,
   Volume2,
   Wrench,
@@ -28,8 +32,14 @@ export const WorldInstanceEditorTab: React.FC<WorldInstanceEditorTabProps> = ({
   const sel = state.selectedWorldEntity;
   const isVehicle = sel?.kind === 'police' || sel?.kind === 'traffic';
   const isPolice = sel?.kind === 'police';
+  const isOfficer = sel?.kind === 'officer';
   const canRepairHeal = Boolean(
-    sel && (sel.kind === 'police' || sel.kind === 'traffic' || sel.kind === 'crime'),
+    sel &&
+      (sel.kind === 'police' ||
+        sel.kind === 'officer' ||
+        sel.kind === 'assailant' ||
+        sel.kind === 'traffic' ||
+        sel.kind === 'crime'),
   );
   const canClearImpatience = Boolean(isVehicle);
 
@@ -203,6 +213,34 @@ export const WorldInstanceEditorTab: React.FC<WorldInstanceEditorTabProps> = ({
                   <Users className="h-3 w-3" />
                   {sel.mounted ? 'Dismount Crew' : 'Mount Crew'}
                 </button>
+
+                <button
+                  type="button"
+                  disabled={!isOfficer}
+                  onClick={() => controller?.modifySelectedWorldEntity('board_nearest_unit')}
+                  className={`flex items-center justify-center gap-1 border py-1.5 font-sans text-[10px] font-medium rounded-none ${
+                    isOfficer
+                      ? 'border-sky-500/70 bg-sky-700/35 text-sky-100 hover:bg-sky-600/50 cursor-pointer'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  <LogIn className="h-3 w-3" />
+                  Board Nearest Cruiser
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!isOfficer}
+                  onClick={() => controller?.modifySelectedWorldEntity('eject_seat')}
+                  className={`flex items-center justify-center gap-1 border py-1.5 font-sans text-[10px] font-medium rounded-none ${
+                    isOfficer
+                      ? 'border-amber-500/70 bg-amber-700/35 text-amber-100 hover:bg-amber-600/50 cursor-pointer'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  <LogOut className="h-3 w-3" />
+                  Eject Seat
+                </button>
               </div>
             </div>
           )}
@@ -217,7 +255,45 @@ export const WorldInstanceEditorTab: React.FC<WorldInstanceEditorTabProps> = ({
           </div>
 
           <div className="space-y-1">
-            <div className="text-[10px] text-zinc-400">Police Reinforcements</div>
+            <div className="text-[10px] text-zinc-400">Officers &amp; Assailants (1-Click)</div>
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                onClick={() => controller?.spawnWorldEntity('officer_patrol')}
+                className="flex items-center justify-center gap-1 border border-sky-500/70 bg-sky-700/35 py-1.5 text-[11px] font-medium text-sky-100 hover:bg-sky-600/55 cursor-pointer rounded-none"
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                Patrol Cop
+              </button>
+              <button
+                type="button"
+                onClick={() => controller?.spawnWorldEntity('officer_swat')}
+                className="flex items-center justify-center gap-1 border border-indigo-400/70 bg-indigo-700/40 py-1.5 text-[11px] font-medium text-indigo-100 hover:bg-indigo-600/60 cursor-pointer rounded-none"
+              >
+                <Shield className="h-3.5 w-3.5" />
+                SWAT Cop
+              </button>
+              <button
+                type="button"
+                onClick={() => controller?.spawnWorldEntity('assailant_pistol')}
+                className="flex items-center justify-center gap-1 border border-rose-500/70 bg-rose-800/45 py-1.5 text-[11px] font-medium text-rose-100 hover:bg-rose-700/65 cursor-pointer rounded-none"
+              >
+                <Crosshair className="h-3.5 w-3.5" />
+                Assailant (Pistol)
+              </button>
+              <button
+                type="button"
+                onClick={() => controller?.spawnWorldEntity('assailant_rifle')}
+                className="flex items-center justify-center gap-1 border border-red-500/80 bg-red-800/55 py-1.5 text-[11px] font-medium text-red-100 hover:bg-red-700/75 cursor-pointer rounded-none"
+              >
+                <Crosshair className="h-3.5 w-3.5" />
+                Assailant (Rifle)
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-[10px] text-zinc-400">Police Units (Cruiser + Crew)</div>
             <div className="grid grid-cols-2 gap-1">
               {(
                 [

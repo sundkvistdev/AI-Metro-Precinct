@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   AssetIssue,
   CustomMapAsset,
+  EngineConfigAsset,
   LoadedJsonAssets,
   MapBuildingDef,
   MapRoadSignDef,
@@ -18,8 +19,28 @@ import { makeObstacleBox, ObstacleAABB } from './bvh';
 import { getSurfaceHeight, sampleEdgeBezier } from './roadGraph';
 import { SceneWorldHierarchy } from './sceneHierarchy';
 
+export interface BreakablePropRef {
+  id: string;
+  kind: 'sign' | 'streetlight';
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+  minStrikeSpeed: number;
+  obstacle?: ObstacleAABB;
+  group: THREE.Object3D;
+  haloSprite?: THREE.Sprite;
+  bulbMesh?: THREE.Mesh;
+  brokenBulbMat?: THREE.Material;
+  broken: boolean;
+  fallAngle: number;
+  fallVel: number;
+  fallYaw: number;
+}
+
 export interface TownEnvironmentHandles {
   obstacles: ObstacleAABB[];
+  breakableProps: BreakablePropRef[];
   roadMaterials: THREE.MeshStandardMaterial[];
   sidewalkMaterial: THREE.MeshStandardMaterial;
   apronMaterial: THREE.MeshStandardMaterial;
@@ -38,6 +59,51 @@ function freezeStatic(obj: THREE.Object3D): void {
   obj.matrixAutoUpdate = false;
 }
 
+export function getPrecinctDoorPos(
+  map?: CustomMapAsset | null,
+  config?: EngineConfigAsset | null,
+): { x: number; y: number; z: number; rotationY: number } {
+  const fallbackY =
+    map?.surfaceHeights?.apron ?? config?.world?.surfaceHeights?.apron ?? 0.08;
+  if (!map) {
+    return { x: -112, y: fallbackY, z: -40, rotationY: Math.PI * 0.5 };
+  }
+  if (map.precinctDoors) {
+    return {
+      x: map.precinctDoors.x,
+      y: map.precinctDoors.y ?? fallbackY,
+      z: map.precinctDoors.z,
+      rotationY: map.precinctDoors.rotationY ?? Math.PI * 0.5,
+    };
+  }
+  const lobby = map.buildings.find(
+    (b) => b.id === 'station_lobby' || b.id === 'station_hall' || b.kind === 'station',
+  );
+  if (lobby) {
+    return {
+      x: lobby.cx + lobby.width * 0.5 + 0.25,
+      y: fallbackY,
+      z: lobby.cz,
+      rotationY: Math.PI * 0.5,
+    };
+  }
+  const apron = map.stationExit?.apronPoint;
+  if (apron) {
+    return {
+      x: apron[0] - 10,
+      y: fallbackY,
+      z: apron[1],
+      rotationY: Math.PI * 0.5,
+    };
+  }
+  return {
+    x: -108.3,
+    y: map.surfaceHeights.apron,
+    z: -38,
+    rotationY: Math.PI * 0.5,
+  };
+}
+
 export function buildTownEnvironment(
   hierarchy: SceneWorldHierarchy,
   map: CustomMapAsset,
@@ -47,6 +113,7 @@ export function buildTownEnvironment(
   onAssetIssue?: (issue: AssetIssue) => void,
 ): TownEnvironmentHandles {
   const obstacles: ObstacleAABB[] = [];
+  const breakableProps: BreakablePropRef[] = [];
   const buildingMeshesById = new Map<string, THREE.Object3D>();
   const objectMeshesById = new Map<string, THREE.Object3D>();
   const signMeshesById = new Map<string, THREE.Object3D>();
@@ -486,8 +553,13 @@ export function buildTownEnvironment(
       hierarchy.world.buildings.add(built.root);
       objectMeshesById.set(objDef.id, built.root);
 
-      const isCollidable =
-        objDef.collidable ?? modelDef?.flags?.collidable ?? true;
+      const isParkingBay =
+        objDef.flags?.parkingBay === true ||
+        objDef.flags?.kind === 'parkingBay' ||
+        objDef.modelRef === 'parking_bay';
+      const isCollidable = isParkingBay
+        ? objDef.collidable === true
+        : (objDef.collidable ?? modelDef?.flags?.collidable ?? true);
       if (isCollidable) {
         let obsW = objDef.hitboxWidth;
         let obsD = objDef.hitboxDepth;
@@ -505,16 +577,71 @@ export function buildTownEnvironment(
     }
   }
 
-  // Procedural road signs
+  // Procedural road signs (breakable & collidable)
   if (map.signs && map.signs.length > 0) {
-    buildRoadSigns(hierarchy, map, signMeshesById, obstacles, assets, textures);
+    buildRoadSigns(hierarchy, map, signMeshesById, obstacles, breakableProps, assets, textures);
   }
 
+  // Precinct main glass entrance doors (non-collidable entry/exit portal)
+  const doorSpec = getPrecinctDoorPos(map, assets?.config);
+  const doorGroup = new THREE.Group();
+  doorGroup.name = 'precinctDoors';
+  doorGroup.userData.precinctDoors = true;
+  doorGroup.position.set(doorSpec.x, doorSpec.y, doorSpec.z);
+  doorGroup.rotation.y = doorSpec.rotationY;
+
+  const frameMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    metalness: 0.72,
+    roughness: 0.3,
+  });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x0ea5e9,
+    emissiveIntensity: 0.28,
+    transparent: true,
+    opacity: 0.58,
+    roughness: 0.14,
+    metalness: 0.25,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: 0xfacc15,
+    emissive: 0xd97706,
+    emissiveIntensity: 0.22,
+    roughness: 0.4,
+  });
+
+  const leftJamb = new THREE.Mesh(new THREE.BoxGeometry(0.18, 2.75, 0.28), frameMat);
+  leftJamb.position.set(-1.35, 1.375, 0);
+  const rightJamb = new THREE.Mesh(new THREE.BoxGeometry(0.18, 2.75, 0.28), frameMat);
+  rightJamb.position.set(1.35, 1.375, 0);
+  const transom = new THREE.Mesh(new THREE.BoxGeometry(2.96, 0.26, 0.34), frameMat);
+  transom.position.set(0, 2.72, 0);
+  const canopy = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.12, 0.9), trimMat);
+  canopy.position.set(0, 2.9, 0.35);
+  const leftLeaf = new THREE.Mesh(new THREE.BoxGeometry(1.18, 2.5, 0.08), glassMat);
+  leftLeaf.position.set(-0.63, 1.25, 0);
+  const rightLeaf = new THREE.Mesh(new THREE.BoxGeometry(1.18, 2.5, 0.08), glassMat);
+  rightLeaf.position.set(0.63, 1.25, 0);
+  const threshold = new THREE.Mesh(
+    new THREE.BoxGeometry(2.8, 0.03, 0.85),
+    new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.7 }),
+  );
+  threshold.position.set(0, 0.015, 0.2);
+
+  doorGroup.add(leftJamb, rightJamb, transom, canopy, leftLeaf, rightLeaf, threshold);
+  doorGroup.traverse((ch) => {
+    ch.userData.precinctDoors = true;
+  });
+  freezeStatic(doorGroup);
+  hierarchy.world.buildings.add(doorGroup);
+
   buildInstancedTrees(hierarchy, treePalette, map.trees, assets, textures);
-  buildInstancedStreetlights(hierarchy, map.streetlights, textures, assets);
+  buildBreakableStreetlights(hierarchy, map.streetlights, textures, obstacles, breakableProps, assets);
 
   return {
     obstacles,
+    breakableProps,
     roadMaterials: [roadMatV, roadMatH, interMat, plainRoadNodeMat],
     sidewalkMaterial: sidewalkMat,
     apronMaterial,
@@ -604,6 +731,7 @@ function buildRoadSigns(
   map: CustomMapAsset,
   signMeshesById: Map<string, THREE.Object3D>,
   obstacles: ObstacleAABB[],
+  breakableProps: BreakablePropRef[],
   assets?: LoadedJsonAssets,
   textures?: TextureRegistry,
 ): void {
@@ -718,13 +846,30 @@ function buildRoadSigns(
     backPlate.userData.mapSignId = sign.id;
     group.add(backPlate);
 
-    freezeStatic(group);
     hierarchy.world.buildings.add(group);
     signMeshesById.set(sign.id, group);
 
+    let obs: ObstacleAABB | undefined;
     if (sign.collidable !== false) {
-      obstacles.push(makeObstacleBox(sign.x, sign.z, 0.42, 0.42, 'prop', rotY));
+      obs = makeObstacleBox(sign.x, sign.z, 0.42, 0.42, 'prop', rotY);
+      obs.propId = sign.id;
+      obstacles.push(obs);
     }
+    breakableProps.push({
+      id: sign.id,
+      kind: 'sign',
+      x: sign.x,
+      y: baseY,
+      z: sign.z,
+      radius: 0.45,
+      minStrikeSpeed: 4.5,
+      obstacle: obs,
+      group,
+      broken: false,
+      fallAngle: 0,
+      fallVel: 0,
+      fallYaw: rotY,
+    });
   }
 }
 
@@ -814,10 +959,12 @@ function buildInstancedTrees(
   hierarchy.world.buildings.add(trunks, crowns);
 }
 
-function buildInstancedStreetlights(
+function buildBreakableStreetlights(
   hierarchy: SceneWorldHierarchy,
   streetlights: CustomMapAsset['streetlights'],
   textures: TextureRegistry,
+  obstacles: ObstacleAABB[],
+  breakableProps: BreakablePropRef[],
   assets?: LoadedJsonAssets,
 ): void {
   if (streetlights.length === 0) return;
@@ -851,14 +998,17 @@ function buildInstancedStreetlights(
     emissive: 0xfde68a,
     emissiveIntensity: 1.5,
   });
+  const brokenBulbMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.75,
+  });
 
   const poleSpec = extractPartGeoAndMat(builtLight, 'pole', fallbackPoleGeo, fallbackPoleMat);
   const bulbSpec = extractPartGeoAndMat(builtLight, 'bulb', fallbackBulbGeo, fallbackBulbMat);
 
-  const poles = new THREE.InstancedMesh(poleSpec.geo, poleSpec.mat, streetlights.length);
-  const bulbs = new THREE.InstancedMesh(bulbSpec.geo, bulbSpec.mat, streetlights.length);
-
-  const haloMat = new THREE.SpriteMaterial({
+  const baseHaloMat = new THREE.SpriteMaterial({
     map: textures.lightHalo,
     color: 0xfde68a,
     transparent: true,
@@ -868,27 +1018,88 @@ function buildInstancedStreetlights(
   });
 
   streetlights.forEach((s, i) => {
-    _dummy.position.set(s.x, s.y, s.z);
-    _dummy.rotation.set(0, 0, 0);
-    _dummy.scale.set(1, 1, 1);
-    _dummy.updateMatrix();
-    poles.setMatrixAt(i, _dummy.matrix);
-    bulbs.setMatrixAt(i, _dummy.matrix);
+    const id = `streetlight-${i}`;
+    const group = new THREE.Group();
+    group.position.set(s.x, s.y, s.z);
+    group.name = id;
 
+    const poleMesh = new THREE.Mesh(poleSpec.geo, poleSpec.mat);
+    poleMesh.castShadow = true;
+    poleMesh.receiveShadow = true;
+    group.add(poleMesh);
+
+    const bulbMesh = new THREE.Mesh(bulbSpec.geo, bulbSpec.mat);
+    group.add(bulbMesh);
+
+    let haloSprite: THREE.Sprite | undefined;
     if (s.hasHalo ?? i % 2 === 0) {
-      const sp = new THREE.Sprite(haloMat);
-      sp.position.set(s.x, s.y + 6.15, s.z);
-      sp.scale.set(2.8, 2.8, 1);
-      freezeStatic(sp);
-      hierarchy.world.buildings.add(sp);
+      haloSprite = new THREE.Sprite(baseHaloMat);
+      haloSprite.position.set(s.x, s.y + 6.15, s.z);
+      haloSprite.scale.set(2.8, 2.8, 1);
+      hierarchy.world.buildings.add(haloSprite);
     }
-  });
 
-  poles.instanceMatrix.needsUpdate = true;
-  bulbs.instanceMatrix.needsUpdate = true;
-  poles.computeBoundingSphere();
-  bulbs.computeBoundingSphere();
-  freezeStatic(poles);
-  freezeStatic(bulbs);
-  hierarchy.world.buildings.add(poles, bulbs);
+    hierarchy.world.buildings.add(group);
+
+    const obs = makeObstacleBox(s.x, s.z, 0.36, 0.36, 'prop', 0);
+    obs.propId = id;
+    obstacles.push(obs);
+
+    breakableProps.push({
+      id,
+      kind: 'streetlight',
+      x: s.x,
+      y: s.y,
+      z: s.z,
+      radius: 0.42,
+      minStrikeSpeed: 5.5,
+      obstacle: obs,
+      group,
+      haloSprite,
+      bulbMesh,
+      brokenBulbMat,
+      broken: false,
+      fallAngle: 0,
+      fallVel: 0,
+      fallYaw: 0,
+    });
+  });
+}
+
+export function triggerBreakablePropFall(
+  prop: BreakablePropRef,
+  impactDirX: number,
+  impactDirZ: number,
+  strikeSpeed: number,
+): void {
+  if (prop.broken) return;
+  prop.broken = true;
+  if (prop.obstacle) {
+    prop.obstacle.disabled = true;
+  }
+  prop.fallYaw = Math.atan2(impactDirX, impactDirZ);
+  prop.fallVel = Math.max(2.6, Math.min(7.5, strikeSpeed * 0.42));
+  if (prop.haloSprite) {
+    prop.haloSprite.visible = false;
+  }
+  if (prop.bulbMesh && prop.brokenBulbMat) {
+    prop.bulbMesh.material = prop.brokenBulbMat;
+  }
+}
+
+export function stepBreakableProps(props: BreakablePropRef[], dt: number): void {
+  const maxFall = Math.PI * 0.485;
+  for (let i = 0; i < props.length; i++) {
+    const p = props[i];
+    if (!p.broken || p.fallAngle >= maxFall) continue;
+    p.fallVel += 9.5 * dt;
+    p.fallAngle = Math.min(maxFall, p.fallAngle + p.fallVel * dt);
+    const dirX = Math.sin(p.fallYaw);
+    const dirZ = Math.cos(p.fallYaw);
+    p.group.rotation.order = 'YXZ';
+    p.group.rotation.set(dirZ * p.fallAngle, p.group.rotation.y, -dirX * p.fallAngle);
+    if (p.fallAngle >= maxFall) {
+      p.fallVel = 0;
+    }
+  }
 }

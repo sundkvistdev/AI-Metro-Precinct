@@ -14,6 +14,7 @@ import {
   updateImpatienceAndReverse,
 } from './drivingAvoidance';
 import { isPointNearArmedNailMat } from './nailMatSystem';
+import { applyRigidHumanoidPose } from './humanoidAnim';
 import { getSurfaceHeight, TownRoadGraph, WorldConfig } from './roadGraph';
 import { SceneWorldHierarchy } from './sceneHierarchy';
 import {
@@ -572,6 +573,11 @@ export function updatePedestrians(
       }
     }
 
+    if (ped.avoidSideTimer && ped.avoidSideTimer > 0) {
+      ped.avoidSideTimer = Math.max(0, ped.avoidSideTimer - dt);
+      if (ped.avoidSideTimer <= 0) ped.avoidSideSign = undefined;
+    }
+
     // Evaluate highest-priority active goal from asset-pack goals
     let chosenDirX = 0;
     let chosenDirZ = 0;
@@ -585,7 +591,14 @@ export function updatePedestrians(
       if (rule.id === 'RAGDOLL_INCAPACITATED') {
         if (ped.dead || ped.ragdoll.active) {
           ped.activeGoal = 'RAGDOLL_INCAPACITATED';
-          stepRagdollPhysics(ped.ragdoll, ped.pos, ped.rig, staticBvh, surfaceSource, dt);
+          if (ped.ragdoll.active) {
+            stepRagdollPhysics(ped.ragdoll, ped.pos, ped.rig, staticBvh, surfaceSource, dt);
+          } else if (ped.dead) {
+            ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surfaceSource) + 0.16;
+            ped.rig.root.position.copy(ped.pos);
+            ped.rig.root.rotation.set(Math.PI * 0.5, ped.yaw, 0);
+            applyRigidHumanoidPose(ped.rig, 'dead_flat', { snap: true });
+          }
           if (!ped.dead && ped.ragdoll.active) {
             ped.ragdoll.recoverTimer -= dt;
             if (ped.ragdoll.recoverTimer <= 0) {
@@ -594,10 +607,7 @@ export function updatePedestrians(
               ped.jumpVelY = 0;
               ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surfaceSource);
               ped.rig.root.rotation.set(0, ped.yaw, 0);
-              ped.rig.leftArm.rotation.set(0, 0, 0);
-              ped.rig.rightArm.rotation.set(0, 0, 0);
-              ped.rig.leftLeg.rotation.set(0, 0, 0);
-              ped.rig.rightLeg.rotation.set(0, 0, 0);
+              applyRigidHumanoidPose(ped.rig, 'idle', { snap: true });
             }
           }
           goalHandled = true;
@@ -801,12 +811,16 @@ export function updatePedestrians(
           ped.pos.z + chosenDirZ * lookahead,
         );
         if (!ray.clear) {
-          // Steer tangentially along wall normal + push slightly out
+          // Steer tangentially with persistent side hysteresis to avoid zig-zag snapping
           const tangX = -ray.normalZ;
           const tangZ = ray.normalX;
-          const sign = tangX * chosenDirX + tangZ * chosenDirZ >= 0 ? 1 : -1;
-          repelX += tangX * sign * 1.5 + ray.normalX * 0.7;
-          repelZ += tangZ * sign * 1.5 + ray.normalZ * 0.7;
+          if (!ped.avoidSideSign || (ped.avoidSideTimer ?? 0) <= 0) {
+            ped.avoidSideSign = tangX * chosenDirX + tangZ * chosenDirZ >= 0 ? 1 : -1;
+          }
+          ped.avoidSideTimer = 1.25;
+          const sign = ped.avoidSideSign;
+          repelX += tangX * sign * 1.55 + ray.normalX * 0.75;
+          repelZ += tangZ * sign * 1.55 + ray.normalZ * 0.75;
           if (ped.activeGoal === 'SIDEWALK_STROLL') {
             ped.activeGoal = 'AVOID_OBSTACLE';
           }
@@ -822,34 +836,39 @@ export function updatePedestrians(
       }
     }
 
-    if (chosenSpeed > 0.05 && (chosenDirX !== 0 || chosenDirZ !== 0)) {
-      ped.velX = chosenDirX * chosenSpeed;
-      ped.velZ = chosenDirZ * chosenSpeed;
-      ped.yaw = Math.atan2(chosenDirX, chosenDirZ);
+    const targetVx = chosenSpeed > 0.05 && (chosenDirX !== 0 || chosenDirZ !== 0) ? chosenDirX * chosenSpeed : 0;
+    const targetVz = chosenSpeed > 0.05 && (chosenDirX !== 0 || chosenDirZ !== 0) ? chosenDirZ * chosenSpeed : 0;
+
+    // Velocity & rotational inertia so pedestrians accelerate, corner, and settle naturally
+    const velLambda = ped.panicTimer > 0 ? 11.0 : 8.5;
+    ped.velX = THREE.MathUtils.damp(ped.velX, targetVx, velLambda, dt);
+    ped.velZ = THREE.MathUtils.damp(ped.velZ, targetVz, velLambda, dt);
+
+    const actualSpeed = Math.hypot(ped.velX, ped.velZ);
+    if (actualSpeed > 0.06) {
+      const targetYaw = Math.atan2(ped.velX, ped.velZ);
+      const yawDiff = normalizeAngle(targetYaw - ped.yaw);
+      const maxTurnRate = ped.panicTimer > 0 ? 8.2 : 5.6;
+      const maxStep = maxTurnRate * dt;
+      ped.yaw = normalizeAngle(
+        ped.yaw + THREE.MathUtils.clamp(yawDiff, -maxStep, maxStep),
+      );
       ped.pos.x += ped.velX * dt;
       ped.pos.z += ped.velZ * dt;
       staticBvh.resolveCircle(ped.pos, 0.42);
-      ped.walkPhase += dt * (chosenSpeed * 4.2);
+      ped.walkPhase += dt * (actualSpeed * 4.1);
 
-      if (ped.jumpY > 0.05) {
-        ped.rig.leftLeg.rotation.x = -0.65;
-        ped.rig.rightLeg.rotation.x = 0.55;
-        ped.rig.leftArm.rotation.x = -1.2;
-        ped.rig.rightArm.rotation.x = -1.2;
-      } else {
-        const swing = Math.sin(ped.walkPhase) * (ped.injured ? 0.3 : 0.48);
-        ped.rig.leftLeg.rotation.x = swing;
-        ped.rig.rightLeg.rotation.x = -swing;
-        ped.rig.leftArm.rotation.x = -swing * 0.75;
-        ped.rig.rightArm.rotation.x = swing * 0.75;
-      }
+      const poseMode =
+        ped.jumpY > 0.05 ? 'jump' : actualSpeed > 3.6 ? 'run' : 'walk';
+      applyRigidHumanoidPose(ped.rig, poseMode, { phase: ped.walkPhase, dt });
     } else {
       ped.velX = 0;
       ped.velZ = 0;
+      applyRigidHumanoidPose(ped.rig, 'idle', { dt });
     }
 
     ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surfaceSource) + ped.jumpY;
     ped.rig.root.position.copy(ped.pos);
-    ped.rig.root.rotation.y = ped.yaw;
+    ped.rig.root.rotation.set(0, ped.yaw, 0);
   }
 }

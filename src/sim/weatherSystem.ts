@@ -131,6 +131,12 @@ export class WeatherSystem {
     audio?.setRainIntensity(preset.rainIntensity);
   }
 
+  public setHighQualityLighting(highQuality: boolean): void {
+    this.sunLight.shadow.radius = highQuality ? 2.6 : 1.0;
+    this.sunLight.shadow.needsUpdate = true;
+    this.rimLight.intensity = Math.max(this.rimLight.intensity, highQuality ? 0.65 : 0.45);
+  }
+
   public update(dt: number, cameraPos: THREE.Vector3, camForward: THREE.Vector3): void {
     if (!this.rainLines || !this.rainPositions || this.currentWeather !== WeatherCondition.Rain) {
       return;

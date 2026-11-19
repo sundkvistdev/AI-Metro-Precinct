@@ -12,6 +12,12 @@
     "pos": [-148, 62, 54],
     "target": [-35, 0, -15]
   },
+  "precinctDoors": {
+    "x": -108.3,
+    "y": 0.18,
+    "z": -38,
+    "rotationY": 1.5707963
+  },
   "stationBays": [
     {
       "id": "unit-1",

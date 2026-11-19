@@ -18,9 +18,11 @@ import {
 } from 'lucide-react';
 import {
   CrashPartRole,
+  HingePartSpec,
   ModelCategory,
   ModelMaterialDef,
   ModelPartDef,
+  SeatPartSpec,
 } from '../../assets/assetTypes';
 import { DevEditorController, DevEditorState } from '../../sim/devEditorController';
 import { downloadJsonText, readFileAsText } from './editorFileUtils';
@@ -69,6 +71,7 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
   const model = state.modelAsset;
   const selP = state.selectedPart;
   const flags = model?.flags ?? {};
+  const exp = state.experimentalComplexMeshes;
 
   const toggleCollapse = (id: string) => {
     setCollapsedIds((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -282,6 +285,26 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                   </button>
                 ),
               )}
+              {(['extrude', 'lathe', 'mesh'] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  disabled={!exp}
+                  title={
+                    exp
+                      ? `Add ${k} complex mesh`
+                      : 'Experimental: enable Complex Meshes in Main Menu Settings pre-launch'
+                  }
+                  onClick={() => controller?.addPart(k)}
+                  className={`border px-1.5 py-0.5 text-[10px] rounded-none ${
+                    exp
+                      ? 'border-violet-500/70 bg-violet-700/40 text-violet-100 hover:bg-violet-600/60 cursor-pointer'
+                      : 'border-zinc-700 bg-zinc-800/50 text-zinc-500 opacity-45 cursor-not-allowed'
+                  }`}
+                >
+                  +{k.charAt(0).toUpperCase() + k.slice(1)}
+                </button>
+              ))}
             </div>
             <div className="flex gap-1">
               <button
@@ -618,6 +641,542 @@ export const ModelEditorTab: React.FC<ModelEditorTabProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* VEHICLE SEAT SLOT (ALWAYS ENABLED) */}
+              <div className="border-t border-zinc-700 pt-1.5 space-y-1">
+                <label className="flex items-center gap-1 text-[10px] text-zinc-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(selP.seat)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        controller?.updateSelectedPart({
+                          seat: {
+                            slotIndex: 0,
+                            role: 'driver',
+                            seatedPitch: 0,
+                            enterOffset: [1.35, 0, 0],
+                            exitOffset: [1.55, 0, 0],
+                          },
+                        });
+                      } else {
+                        controller?.updateSelectedPart({ seat: null });
+                      }
+                    }}
+                  />
+                  Vehicle Seat Slot
+                </label>
+
+                {selP.seat && (
+                  <div className="space-y-1 border border-zinc-700 bg-zinc-900/70 p-1.5 text-[10px]">
+                    <div className="grid grid-cols-3 gap-1">
+                      <label className="space-y-0.5">
+                        <span className="text-[9px] text-zinc-400">Slot #</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={selP.seat.slotIndex}
+                          onChange={(e) =>
+                            controller?.updateSelectedPart({
+                              seat: {
+                                ...selP.seat!,
+                                slotIndex: Math.max(0, Math.round(Number(e.target.value))),
+                              },
+                            })
+                          }
+                          className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                        />
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="text-[9px] text-zinc-400">Seat Role</span>
+                        <select
+                          value={selP.seat.role}
+                          onChange={(e) =>
+                            controller?.updateSelectedPart({
+                              seat: {
+                                ...selP.seat!,
+                                role: e.target.value as SeatPartSpec['role'],
+                              },
+                            })
+                          }
+                          className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                        >
+                          <option value="driver">driver</option>
+                          <option value="passenger">passenger</option>
+                          <option value="rear_left">rear_left</option>
+                          <option value="rear_right">rear_right</option>
+                          <option value="crew">crew</option>
+                        </select>
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="text-[9px] text-zinc-400">Pitch</span>
+                        <input
+                          type="number"
+                          step={0.05}
+                          value={selP.seat.seatedPitch ?? 0}
+                          onChange={(e) =>
+                            controller?.updateSelectedPart({
+                              seat: {
+                                ...selP.seat!,
+                                seatedPitch: Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                        />
+                      </label>
+                    </div>
+
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] text-zinc-400 shrink-0">
+                        Door Hinge Part
+                      </span>
+                      <select
+                        value={selP.seat.hingePartId ?? ''}
+                        onChange={(e) =>
+                          controller?.updateSelectedPart({
+                            seat: {
+                              ...selP.seat!,
+                              hingePartId: e.target.value || undefined,
+                            },
+                          })
+                        }
+                        className="flex-1 border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                      >
+                        <option value="">(none)</option>
+                        {state.partIds
+                          .filter((pid) => pid !== selP.id)
+                          .map((pid) => (
+                            <option key={pid} value={pid}>
+                              {pid}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-1">
+                      <div>
+                        <span className="text-[9px] text-zinc-400">
+                          Enter Offset (X/Y/Z)
+                        </span>
+                        <div className="grid grid-cols-3 gap-0.5 mt-0.5">
+                          {[0, 1, 2].map((axis) => (
+                            <input
+                              key={axis}
+                              type="number"
+                              step={0.1}
+                              value={selP.seat!.enterOffset?.[axis] ?? 0}
+                              onChange={(e) => {
+                                const next: [number, number, number] = [
+                                  selP.seat!.enterOffset?.[0] ?? 0,
+                                  selP.seat!.enterOffset?.[1] ?? 0,
+                                  selP.seat!.enterOffset?.[2] ?? 0,
+                                ];
+                                next[axis] = Number(e.target.value);
+                                controller?.updateSelectedPart({
+                                  seat: { ...selP.seat!, enterOffset: next },
+                                });
+                              }}
+                              className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-[9px] text-zinc-400">
+                          Exit Offset (X/Y/Z)
+                        </span>
+                        <div className="grid grid-cols-3 gap-0.5 mt-0.5">
+                          {[0, 1, 2].map((axis) => (
+                            <input
+                              key={axis}
+                              type="number"
+                              step={0.1}
+                              value={selP.seat!.exitOffset?.[axis] ?? 0}
+                              onChange={(e) => {
+                                const next: [number, number, number] = [
+                                  selP.seat!.exitOffset?.[0] ?? 0,
+                                  selP.seat!.exitOffset?.[1] ?? 0,
+                                  selP.seat!.exitOffset?.[2] ?? 0,
+                                ];
+                                next[axis] = Number(e.target.value);
+                                controller?.updateSelectedPart({
+                                  seat: { ...selP.seat!, exitOffset: next },
+                                });
+                              }}
+                              className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none"
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* EXPERIMENTAL SECTIONS (LOCKED IN-GAME UNLESS PRE-LAUNCH FLAG ENABLED) */}
+              {!exp && (
+                <div className="border border-zinc-700 bg-zinc-900/50 px-2 py-1 text-[10px] font-sans text-zinc-500">
+                  Complex meshes, UV transforms, and articulated hinges require enabling the Experimental flag pre-launch in Main Menu Settings.
+                </div>
+              )}
+
+              {/* ARTICULATED HINGE (EXPERIMENTAL) */}
+              <div
+                className={`border-t border-zinc-700 pt-1.5 space-y-1 ${
+                  !exp ? 'opacity-45' : ''
+                }`}
+              >
+                <label
+                  className={`flex items-center gap-1 text-[10px] ${
+                    exp
+                      ? 'text-violet-200 cursor-pointer'
+                      : 'text-zinc-500 cursor-not-allowed'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={!exp}
+                    checked={Boolean(selP.hinge)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        controller?.updateSelectedPart({
+                          hinge: {
+                            axis: 'y',
+                            role: 'driver_door',
+                            closedAngle: 0,
+                            openAngle: 1.1,
+                            speed: 5,
+                          },
+                        });
+                      } else {
+                        controller?.updateSelectedPart({ hinge: null });
+                      }
+                    }}
+                  />
+                  Articulated Hinge (Experimental)
+                </label>
+
+                {selP.hinge && (
+                  <div className="grid grid-cols-5 gap-1 text-[10px]">
+                    <select
+                      disabled={!exp}
+                      value={selP.hinge.axis}
+                      onChange={(e) =>
+                        controller?.updateSelectedPart({
+                          hinge: {
+                            ...selP.hinge!,
+                            axis: e.target.value as HingePartSpec['axis'],
+                          },
+                        })
+                      }
+                      className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                    >
+                      <option value="x">X</option>
+                      <option value="y">Y</option>
+                      <option value="z">Z</option>
+                    </select>
+                    <select
+                      disabled={!exp}
+                      value={selP.hinge.role ?? 'custom'}
+                      onChange={(e) =>
+                        controller?.updateSelectedPart({
+                          hinge: {
+                            ...selP.hinge!,
+                            role: e.target.value as HingePartSpec['role'],
+                          },
+                        })
+                      }
+                      className="col-span-2 border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                    >
+                      <option value="driver_door">driver_door</option>
+                      <option value="passenger_door">passenger_door</option>
+                      <option value="rear_left_door">rear_left_door</option>
+                      <option value="rear_right_door">rear_right_door</option>
+                      <option value="rear_door">rear_door</option>
+                      <option value="hood">hood</option>
+                      <option value="trunk">trunk</option>
+                      <option value="custom">custom</option>
+                    </select>
+                    <input
+                      type="number"
+                      step={0.1}
+                      disabled={!exp}
+                      title="Closed Angle (rad)"
+                      value={selP.hinge.closedAngle}
+                      onChange={(e) =>
+                        controller?.updateSelectedPart({
+                          hinge: {
+                            ...selP.hinge!,
+                            closedAngle: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                    />
+                    <input
+                      type="number"
+                      step={0.1}
+                      disabled={!exp}
+                      title="Open Angle (rad)"
+                      value={selP.hinge.openAngle}
+                      onChange={(e) =>
+                        controller?.updateSelectedPart({
+                          hinge: {
+                            ...selP.hinge!,
+                            openAngle: Number(e.target.value),
+                          },
+                        })
+                      }
+                      className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* UV TRANSFORM (EXPERIMENTAL) */}
+              {selP.kind !== 'group' && (
+                <div
+                  className={`border-t border-zinc-700 pt-1.5 space-y-1 ${
+                    !exp ? 'opacity-45' : ''
+                  }`}
+                >
+                  <label
+                    className={`flex items-center gap-1 text-[10px] ${
+                      exp
+                        ? 'text-violet-200 cursor-pointer'
+                        : 'text-zinc-500 cursor-not-allowed'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={!exp}
+                      checked={Boolean(selP.uv)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          controller?.updateSelectedPart({
+                            uv: {
+                              repeat: [1, 1],
+                              offset: [0, 0],
+                              rotation: 0,
+                            },
+                          });
+                        } else {
+                          controller?.updateSelectedPart({ uv: null });
+                        }
+                      }}
+                    />
+                    UV Transform (Experimental)
+                  </label>
+
+                  {selP.uv && (
+                    <div className="grid grid-cols-5 gap-1 text-[10px]">
+                      <input
+                        type="number"
+                        step={0.1}
+                        disabled={!exp}
+                        title="Repeat U"
+                        value={selP.uv.repeat?.[0] ?? 1}
+                        onChange={(e) =>
+                          controller?.updateSelectedPart({
+                            uv: {
+                              ...selP.uv!,
+                              repeat: [
+                                Number(e.target.value),
+                                selP.uv!.repeat?.[1] ?? 1,
+                              ],
+                            },
+                          })
+                        }
+                        className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                      />
+                      <input
+                        type="number"
+                        step={0.1}
+                        disabled={!exp}
+                        title="Repeat V"
+                        value={selP.uv.repeat?.[1] ?? 1}
+                        onChange={(e) =>
+                          controller?.updateSelectedPart({
+                            uv: {
+                              ...selP.uv!,
+                              repeat: [
+                                selP.uv!.repeat?.[0] ?? 1,
+                                Number(e.target.value),
+                              ],
+                            },
+                          })
+                        }
+                        className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                      />
+                      <input
+                        type="number"
+                        step={0.05}
+                        disabled={!exp}
+                        title="Offset U"
+                        value={selP.uv.offset?.[0] ?? 0}
+                        onChange={(e) =>
+                          controller?.updateSelectedPart({
+                            uv: {
+                              ...selP.uv!,
+                              offset: [
+                                Number(e.target.value),
+                                selP.uv!.offset?.[1] ?? 0,
+                              ],
+                            },
+                          })
+                        }
+                        className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                      />
+                      <input
+                        type="number"
+                        step={0.05}
+                        disabled={!exp}
+                        title="Offset V"
+                        value={selP.uv.offset?.[1] ?? 0}
+                        onChange={(e) =>
+                          controller?.updateSelectedPart({
+                            uv: {
+                              ...selP.uv!,
+                              offset: [
+                                selP.uv!.offset?.[0] ?? 0,
+                                Number(e.target.value),
+                              ],
+                            },
+                          })
+                        }
+                        className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                      />
+                      <input
+                        type="number"
+                        step={0.1}
+                        disabled={!exp}
+                        title="Rotation (rad)"
+                        value={selP.uv.rotation ?? 0}
+                        onChange={(e) =>
+                          controller?.updateSelectedPart({
+                            uv: {
+                              ...selP.uv!,
+                              rotation: Number(e.target.value),
+                            },
+                          })
+                        }
+                        className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* COMPLEX MESH PARAMS (EXPERIMENTAL) */}
+              {(selP.kind === 'extrude' ||
+                selP.kind === 'lathe' ||
+                selP.kind === 'mesh') && (
+                <div
+                  className={`border-t border-zinc-700 pt-1.5 space-y-1 text-[10px] ${
+                    !exp ? 'opacity-45' : ''
+                  }`}
+                >
+                  <div className="text-violet-200 font-medium">
+                    Complex Mesh ({selP.kind}) Params
+                  </div>
+                  {selP.kind === 'extrude' && selP.extrude && (
+                    <div className="grid grid-cols-3 gap-1 items-center">
+                      <label className="space-y-0.5">
+                        <span className="text-[9px] text-zinc-400">Depth</span>
+                        <input
+                          type="number"
+                          step={0.05}
+                          min={0.02}
+                          disabled={!exp}
+                          value={selP.extrude.depth}
+                          onChange={(e) =>
+                            controller?.updateSelectedPart({
+                              extrude: {
+                                ...selP.extrude!,
+                                depth: Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                        />
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="text-[9px] text-zinc-400">Bevel Size</span>
+                        <input
+                          type="number"
+                          step={0.01}
+                          min={0}
+                          disabled={!exp}
+                          value={selP.extrude.bevelSize ?? 0.02}
+                          onChange={(e) =>
+                            controller?.updateSelectedPart({
+                              extrude: {
+                                ...selP.extrude!,
+                                bevelSize: Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-full border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                        />
+                      </label>
+                      <label className="flex items-center gap-1 pt-3 text-zinc-300">
+                        <input
+                          type="checkbox"
+                          disabled={!exp}
+                          checked={Boolean(selP.extrude.bevelEnabled)}
+                          onChange={(e) =>
+                            controller?.updateSelectedPart({
+                              extrude: {
+                                ...selP.extrude!,
+                                bevelEnabled: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        Bevel ({selP.extrude.points.length} pts)
+                      </label>
+                    </div>
+                  )}
+                  {selP.kind === 'lathe' && selP.lathe && (
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-1.5">
+                        <span className="text-zinc-400">Segments</span>
+                        <input
+                          type="number"
+                          min={4}
+                          max={48}
+                          step={1}
+                          disabled={!exp}
+                          value={selP.lathe.segments ?? 16}
+                          onChange={(e) =>
+                            controller?.updateSelectedPart({
+                              lathe: {
+                                ...selP.lathe!,
+                                segments: Number(e.target.value),
+                              },
+                            })
+                          }
+                          className="w-20 border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-zinc-100 rounded-none disabled:cursor-not-allowed"
+                        />
+                      </label>
+                      <span className="text-zinc-400">
+                        {selP.lathe.points.length} profile points
+                      </span>
+                    </div>
+                  )}
+                  {selP.kind === 'mesh' && selP.customMesh && (
+                    <div className="text-zinc-400">
+                      Vertices: {Math.floor(selP.customMesh.positions.length / 3)} ·
+                      Tris:{' '}
+                      {selP.customMesh.indices
+                        ? Math.floor(selP.customMesh.indices.length / 3)
+                        : Math.floor(selP.customMesh.positions.length / 9)}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

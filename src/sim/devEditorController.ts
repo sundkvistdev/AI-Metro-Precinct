@@ -1,9 +1,17 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
+  AIGoalRuleDef,
   CrashPartSpec,
+  CustomBufferMeshSpec,
   CustomMapAsset,
+  EngineConfigAsset,
+  EventBindingDef,
+  ExtrudeMeshSpec,
+  HingePartSpec,
   ImportedMediaAsset,
+  KeybindActionId,
+  LatheMeshSpec,
   LightbarAssetDef,
   LoadedJsonAssets,
   MapBuildingDef,
@@ -15,10 +23,14 @@ import {
   ModelFlagsDef,
   ModelMaterialDef,
   ModelPartDef,
+  PhysicsConfigDef,
   ProceduralAudioAsset,
   ProceduralModelAsset,
   ProceduralTextureAsset,
   RoadSignStyle,
+  SeatPartSpec,
+  SimEventId,
+  UVTransformSpec,
 } from '../assets/assetTypes';
 import { PackValidationIssue, validateAssetPackLive } from '../assets/packValidator';
 import { simEventLog } from '../assets/simEventLog';
@@ -31,11 +43,17 @@ import {
   parseSingleTextureJson,
 } from '../assets/jsonAssetLoader';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
-import { buildJsonModel } from '../assets/jsonModelBuilder';
+import {
+  buildJsonModel,
+  isExperimentalComplexMeshesEnabled,
+} from '../assets/jsonModelBuilder';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { SimCameraController } from './cameraController';
+import { eventBindingStore } from './eventBindings';
+import { keybindStore } from './keybinds';
 import { getSurfaceHeight, sampleEdgeBezier } from './roadGraph';
 import { SceneWorldHierarchy } from './sceneHierarchy';
+import { getPrecinctDoorPos } from './townBuilder';
 import {
   AIDebugFlags,
   AIDebugStats,
@@ -105,6 +123,12 @@ export interface DevEditorState {
   signIds: string[];
   selectedSignId: string | null;
   selectedSign: MapRoadSignDef | null;
+  precinctDoors: {
+    x: number;
+    y: number;
+    z: number;
+    rotationY: number;
+  };
 
   // Model & Hierarchy Studio
   selectedModelId: string;
@@ -149,12 +173,22 @@ export interface DevEditorState {
   selectedLightbarId: string;
   selectedLightbar: LightbarAssetDef | null;
 
-  // Config template pools
+  // Config template pools & Pack V3 settings
   civilianVariants: string[];
   pedestrianModels: string[];
   chassisIds: string[];
   liveryIds: string[];
   bayCount: number;
+  experimentalComplexMeshes: boolean;
+  configKeybinds: Partial<Record<KeybindActionId, string>>;
+  configEventBindings: Partial<Record<SimEventId, EventBindingDef>>;
+  configAiGoals: {
+    police: AIGoalRuleDef[];
+    pedestrian: AIGoalRuleDef[];
+  };
+  configPhysics: PhysicsConfigDef;
+  worldBuildingModels: Record<string, string>;
+  worldPropModels: NonNullable<EngineConfigAsset['world']['propModels']>;
 
   dirtyMap: boolean;
   dirtyModel: boolean;
@@ -180,6 +214,10 @@ export interface DevEditorCallbacks {
       | 'police_suv'
       | 'police_van'
       | 'police_apc'
+      | 'officer_patrol'
+      | 'officer_swat'
+      | 'assailant_pistol'
+      | 'assailant_rifle'
       | 'civilian'
       | 'pedestrian'
       | 'crime'
@@ -195,6 +233,8 @@ export interface DevEditorCallbacks {
       | 'toggle_lights'
       | 'toggle_siren'
       | 'toggle_mount'
+      | 'board_nearest_unit'
+      | 'eject_seat'
       | 'clear_impatience'
       | 'set_transform',
     transform?: { x?: number; y?: number; z?: number; yaw?: number },
@@ -345,6 +385,12 @@ function clonePartDef(
     rotation: part.rotation ? [...part.rotation] : undefined,
     dimensions: part.dimensions ? [...part.dimensions] : undefined,
     crashPart: part.crashPart ? { ...part.crashPart } : undefined,
+    hinge: part.hinge ? { ...part.hinge } : undefined,
+    seat: part.seat ? deepClone(part.seat) : undefined,
+    uv: part.uv ? deepClone(part.uv) : undefined,
+    extrude: part.extrude ? deepClone(part.extrude) : undefined,
+    lathe: part.lathe ? deepClone(part.lathe) : undefined,
+    customMesh: part.customMesh ? deepClone(part.customMesh) : undefined,
     children: part.children?.map((c) => clonePartDef(c, suffix, rootParts)),
   };
 }
@@ -739,6 +785,7 @@ export class DevEditorController {
       signIds: map?.signs ? map.signs.map((s) => s.id) : [],
       selectedSignId: selectedSign?.id ?? null,
       selectedSign: selectedSign ? deepClone(selectedSign) : null,
+      precinctDoors: getPrecinctDoorPos(map, config),
 
       selectedModelId: this.selectedModelId,
       modelIds: this.assets ? Object.keys(this.assets.models) : [],
@@ -777,6 +824,24 @@ export class DevEditorController {
       chassisIds: config ? Object.keys(config.vehicles.chassis) : [],
       liveryIds: config ? Object.keys(config.vehicles.liveries) : [],
       bayCount: config ? config.vehicles.stationBays.length : 0,
+      experimentalComplexMeshes: isExperimentalComplexMeshesEnabled(),
+      configKeybinds: config?.keybinds ? { ...config.keybinds } : {},
+      configEventBindings: config?.eventBindings ? deepClone(config.eventBindings) : {},
+      configAiGoals: {
+        police: config?.aiGoals?.police ? deepClone(config.aiGoals.police) : [],
+        pedestrian: config?.aiGoals?.pedestrian ? deepClone(config.aiGoals.pedestrian) : [],
+      },
+      configPhysics: config?.physics
+        ? deepClone(config.physics)
+        : {
+            defaultMaxPhysicsParts: 48,
+            debrisRestitution: 0.35,
+            debrisHumanImpactSpeed: 5.5,
+          },
+      worldBuildingModels: config?.world.buildingModels
+        ? { ...config.world.buildingModels }
+        : {},
+      worldPropModels: config?.world.propModels ? { ...config.world.propModels } : {},
 
       dirtyMap: this.dirtyMap,
       dirtyModel: this.dirtyModel,
@@ -887,6 +952,10 @@ export class DevEditorController {
       | 'police_suv'
       | 'police_van'
       | 'police_apc'
+      | 'officer_patrol'
+      | 'officer_swat'
+      | 'assailant_pistol'
+      | 'assailant_rifle'
       | 'civilian'
       | 'pedestrian'
       | 'crime'
@@ -924,6 +993,8 @@ export class DevEditorController {
       | 'toggle_lights'
       | 'toggle_siren'
       | 'toggle_mount'
+      | 'board_nearest_unit'
+      | 'eject_seat'
       | 'clear_impatience',
   ): void {
     const parsed = parseWorldUid(this.selectedWorldEntityUid);
@@ -1016,8 +1087,10 @@ export class DevEditorController {
       (patch.width !== undefined && patch.width !== b.width) ||
       (patch.height !== undefined && patch.height !== b.height) ||
       (patch.depth !== undefined && patch.depth !== b.depth) ||
-      (patch.facadeStyle !== undefined && patch.facadeStyle !== b.facadeStyle);
+      (patch.facadeStyle !== undefined && patch.facadeStyle !== b.facadeStyle) ||
+      (patch.modelRef !== undefined && patch.modelRef !== b.modelRef);
     Object.assign(b, patch);
+    if (patch.modelRef === '') delete b.modelRef;
     b.width = Math.max(1, b.width);
     b.depth = Math.max(1, b.depth);
     b.height = Math.max(1, b.height);
@@ -1043,14 +1116,15 @@ export class DevEditorController {
     this.emitState();
   }
 
-  public addObject(modelRef: string): void {
+  public addObject(modelRef: string, opts?: { parkingBay?: boolean }): void {
     const map = this.assets?.map;
     if (!map) return;
     if (!map.objects) map.objects = [];
     const target = this.cameraController.controls.target;
     const x = round2(THREE.MathUtils.clamp(target.x, -map.bounds.halfSize, map.bounds.halfSize));
     const z = round2(THREE.MathUtils.clamp(target.z, -map.bounds.halfSize, map.bounds.halfSize));
-    const id = `obj_${Date.now().toString(36).slice(-5)}`;
+    const isBay = Boolean(opts?.parkingBay) || modelRef === 'parking_bay';
+    const id = `${isBay ? 'bay' : 'obj'}_${Date.now().toString(36).slice(-5)}`;
     const modelDef = this.assets?.models[modelRef];
     const obj: MapDynamicObjectDef = {
       id,
@@ -1059,8 +1133,9 @@ export class DevEditorController {
       z,
       rotationY: 0,
       scale: 1,
-      collidable: modelDef?.flags?.collidable ?? true,
-      label: modelRef,
+      collidable: isBay ? false : (modelDef?.flags?.collidable ?? true),
+      label: isBay ? 'Parking Bay' : modelRef,
+      flags: isBay ? { parkingBay: true, driveable: true } : undefined,
     };
     map.objects.push(obj);
     this.clearMapSelections();
@@ -1358,6 +1433,36 @@ export class DevEditorController {
     this.emitState();
   }
 
+  public updatePrecinctDoors(patch: {
+    x?: number;
+    y?: number;
+    z?: number;
+    rotationY?: number;
+  }): void {
+    const map = this.assets?.map;
+    if (!map) return;
+    const cur = getPrecinctDoorPos(map, this.assets?.config);
+    const next = {
+      x: patch.x !== undefined && Number.isFinite(patch.x) ? round2(patch.x) : cur.x,
+      y: patch.y !== undefined && Number.isFinite(patch.y) ? round2(patch.y) : cur.y,
+      z: patch.z !== undefined && Number.isFinite(patch.z) ? round2(patch.z) : cur.z,
+      rotationY:
+        patch.rotationY !== undefined && Number.isFinite(patch.rotationY)
+          ? round3(patch.rotationY)
+          : cur.rotationY,
+    };
+    map.precinctDoors = next;
+    for (const child of this.hierarchy.world.buildings.children) {
+      if (child.userData.precinctDoors) {
+        child.position.set(next.x, next.y, next.z);
+        child.rotation.y = next.rotationY;
+      }
+    }
+    this.dirtyMap = true;
+    this.lastSavedStatus = 'Updated precinctDoors portal';
+    this.emitState();
+  }
+
   public applyMapRebuild(): void {
     this.callbacks.onRebuildMap();
     this.refreshVisuals();
@@ -1588,11 +1693,15 @@ export class DevEditorController {
   }
 
   public addPart(
-    kind: 'group' | 'box' | 'cylinder' | 'sphere' | 'plane',
+    kind: 'group' | 'box' | 'cylinder' | 'sphere' | 'plane' | 'extrude' | 'lathe' | 'mesh',
     targetParentId?: string | null,
   ): void {
     const model = this.assets?.models[this.selectedModelId];
     if (!model) return;
+    const isComplex = kind === 'extrude' || kind === 'lathe' || kind === 'mesh';
+    if (isComplex && !isExperimentalComplexMeshesEnabled()) {
+      return;
+    }
     const matKeys = Object.keys(model.materials);
     const baseId = `${kind}_${Date.now().toString(36).slice(-4)}`;
     const id = ensureUniquePartId(model.parts, baseId);
@@ -1616,13 +1725,65 @@ export class DevEditorController {
                 ? [0.25, 0.25, 0.5]
                 : kind === 'plane'
                 ? [0.8, 0.8, 1]
-                : [0.3, 12, 10],
+                : kind === 'sphere'
+                ? [0.3, 12, 10]
+                : [0.8, 0.6, 0.8],
             position: [0, 1.0, 0],
             rotation: [0, 0, 0],
             materialRef: matKeys[0],
             castShadow: true,
             receiveShadow: true,
             visible: true,
+            ...(kind === 'extrude'
+              ? {
+                  extrude: {
+                    points: [
+                      [-0.35, -0.25],
+                      [0.35, -0.25],
+                      [0.45, 0.15],
+                      [0, 0.35],
+                      [-0.45, 0.15],
+                    ],
+                    depth: 0.4,
+                    bevelEnabled: true,
+                    bevelSize: 0.03,
+                  },
+                }
+              : {}),
+            ...(kind === 'lathe'
+              ? {
+                  lathe: {
+                    points: [
+                      [0.02, 0],
+                      [0.26, 0.05],
+                      [0.22, 0.32],
+                      [0.14, 0.56],
+                      [0.01, 0.62],
+                    ],
+                    segments: 16,
+                  },
+                }
+              : {}),
+            ...(kind === 'mesh'
+              ? {
+                  customMesh: {
+                    positions: [
+                      -0.4, 0, -0.4,
+                      0.4, 0, -0.4,
+                      0.4, 0, 0.4,
+                      -0.4, 0, 0.4,
+                      0, 0.65, 0,
+                    ],
+                    indices: [
+                      0, 2, 1, 0, 3, 2,
+                      0, 1, 4,
+                      1, 2, 4,
+                      2, 3, 4,
+                      3, 0, 4,
+                    ],
+                  },
+                }
+              : {}),
           };
 
     let inserted = false;
@@ -1729,12 +1890,19 @@ export class DevEditorController {
     radiusSegments?: number;
     materialRef?: string;
     crashPart?: CrashPartSpec | null;
+    hinge?: HingePartSpec | null;
+    seat?: SeatPartSpec | null;
+    uv?: UVTransformSpec | null;
+    extrude?: ExtrudeMeshSpec | null;
+    lathe?: LatheMeshSpec | null;
+    customMesh?: CustomBufferMeshSpec | null;
   }): void {
     const model = this.assets?.models[this.selectedModelId];
     if (!model || !this.selectedPartId) return;
     const found = findPartInTree(model.parts, this.selectedPartId);
     if (!found) return;
     const p = found.part;
+    const expEnabled = isExperimentalComplexMeshesEnabled();
 
     if (patch.id !== undefined) {
       const cleanId = patch.id.trim();
@@ -1769,6 +1937,26 @@ export class DevEditorController {
     if (patch.materialRef !== undefined) p.materialRef = patch.materialRef || undefined;
     if (patch.crashPart === null) delete p.crashPart;
     else if (patch.crashPart !== undefined) p.crashPart = { ...patch.crashPart };
+
+    if (patch.seat === null) delete p.seat;
+    else if (patch.seat !== undefined) p.seat = deepClone(patch.seat);
+
+    if (expEnabled) {
+      if (patch.hinge === null) delete p.hinge;
+      else if (patch.hinge !== undefined) p.hinge = { ...patch.hinge };
+
+      if (patch.uv === null) delete p.uv;
+      else if (patch.uv !== undefined) p.uv = deepClone(patch.uv);
+
+      if (patch.extrude === null) delete p.extrude;
+      else if (patch.extrude !== undefined) p.extrude = deepClone(patch.extrude);
+
+      if (patch.lathe === null) delete p.lathe;
+      else if (patch.lathe !== undefined) p.lathe = deepClone(patch.lathe);
+
+      if (patch.customMesh === null) delete p.customMesh;
+      else if (patch.customMesh !== undefined) p.customMesh = deepClone(patch.customMesh);
+    }
 
     this.dirtyModel = true;
     this.refreshModelPreview();
@@ -2567,6 +2755,75 @@ export class DevEditorController {
     return finalId;
   }
 
+  // --- Pack Config V3 Editors (Keybinds, Event Bindings, AI Goals, Physics, Model Maps) ---
+
+  public updateConfigKeybinds(keybinds: Partial<Record<KeybindActionId, string>>): void {
+    if (!this.assets) return;
+    this.assets.config.keybinds = { ...(this.assets.config.keybinds ?? {}), ...keybinds };
+    keybindStore.applyPackDefaults(this.assets.config.keybinds);
+    this.lastSavedStatus = 'Updated pack keybind defaults';
+    this.emitState();
+  }
+
+  public updateConfigEventBindings(
+    bindings: Partial<Record<SimEventId, EventBindingDef>>,
+  ): void {
+    if (!this.assets) return;
+    this.assets.config.eventBindings = {
+      ...(this.assets.config.eventBindings ?? {}),
+      ...deepClone(bindings),
+    };
+    eventBindingStore.applyPackDefaults(this.assets.config.eventBindings);
+    this.lastSavedStatus = 'Updated pack event-to-audio bindings';
+    this.emitState();
+  }
+
+  public updateConfigAiGoals(
+    scope: 'police' | 'pedestrian',
+    goals: AIGoalRuleDef[],
+  ): void {
+    if (!this.assets) return;
+    if (!this.assets.config.aiGoals) {
+      this.assets.config.aiGoals = { police: [], pedestrian: [] };
+    }
+    this.assets.config.aiGoals[scope] = deepClone(goals);
+    this.lastSavedStatus = `Updated pack ${scope} AI goal priorities`;
+    this.emitState();
+  }
+
+  public updateConfigPhysics(patch: Partial<PhysicsConfigDef>): void {
+    if (!this.assets) return;
+    const prev = this.assets.config.physics ?? { defaultMaxPhysicsParts: 48 };
+    this.assets.config.physics = { ...prev, ...patch };
+    this.lastSavedStatus = 'Updated pack physics configuration';
+    this.emitState();
+  }
+
+  public updateWorldModelMappings(patch: {
+    buildingModels?: Record<string, string>;
+    propModels?: NonNullable<EngineConfigAsset['world']['propModels']>;
+  }): void {
+    if (!this.assets) return;
+    if (patch.buildingModels) {
+      this.assets.config.world.buildingModels = { ...patch.buildingModels };
+    }
+    if (patch.propModels) {
+      this.assets.config.world.propModels = { ...patch.propModels };
+    }
+    this.callbacks.onRebuildMap();
+    this.refreshVisuals();
+    this.lastSavedStatus = 'Updated world building/prop model mappings';
+    this.emitState();
+  }
+
+  public exportConfigJson(): { filename: string; content: string } | null {
+    if (!this.assets?.config) return null;
+    return {
+      filename: 'engine_config.json',
+      content: JSON.stringify(this.assets.config, null, 2),
+    };
+  }
+
   // --- Visual Sync & Gizmo Attachment ---
 
   public refreshVisuals(): void {
@@ -2855,6 +3112,10 @@ export class DevEditorController {
       this.textures.magentaFallback,
       undefined,
       this.assets.materials,
+      {
+        experimentalEnabled: isExperimentalComplexMeshesEnabled(),
+        showSeatMarkers: true,
+      },
     );
     this.modelPreviewHolder.add(built.root);
     this.studioGroup.updateMatrixWorld(true);

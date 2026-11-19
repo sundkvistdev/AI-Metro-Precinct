@@ -4,6 +4,7 @@ import { JsonAudioSynth } from '../assets/jsonAudioSynth';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { StaticObstacleBVH } from './bvh';
 import { playBoundAudioEvent } from './eventBindings';
+import { applyRigidHumanoidPose } from './humanoidAnim';
 import { getSurfaceHeight, WorldConfig } from './roadGraph';
 import { HumanoidRig } from './vehicleModels';
 
@@ -59,10 +60,13 @@ export function stepRagdollPhysics(
   bvh.resolveCircle(pos, 0.45);
 
   const groundY = getSurfaceHeight(pos.x, pos.z, surfaceSource) + 0.16;
+  const velSq = rag.vel.x * rag.vel.x + rag.vel.z * rag.vel.z;
+  const isDeadOrTerminal = rag.recoverTimer > 100;
+
   if (pos.y <= groundY) {
     pos.y = groundY;
     if (rag.vel.y < -1.8) {
-      rag.vel.y = -rag.vel.y * 0.32;
+      rag.vel.y = -rag.vel.y * 0.28;
     } else {
       rag.vel.y = 0;
     }
@@ -71,8 +75,25 @@ export function stepRagdollPhysics(
     rag.vel.z *= damp;
     rag.angVel.multiplyScalar(Math.exp(-8.5 * dt));
 
-    rag.pitch = THREE.MathUtils.damp(rag.pitch, Math.PI * 0.48, 8, dt);
-    rag.roll = THREE.MathUtils.damp(rag.roll, Math.sign(rag.roll || 1) * 0.35, 6, dt);
+    if (isDeadOrTerminal && velSq < 0.09) {
+      rag.vel.set(0, 0, 0);
+      rag.angVel.set(0, 0, 0);
+      rag.pitch = THREE.MathUtils.damp(rag.pitch, Math.PI * 0.5, 11, dt);
+      rag.roll = THREE.MathUtils.damp(rag.roll, 0, 11, dt);
+      rig.root.position.copy(pos);
+      rig.root.rotation.x = rag.pitch;
+      rig.root.rotation.z = rag.roll;
+      applyRigidHumanoidPose(rig, 'dead_flat', { snap: true });
+      return;
+    }
+
+    rag.pitch = THREE.MathUtils.damp(rag.pitch, Math.PI * 0.49, 8, dt);
+    rag.roll = THREE.MathUtils.damp(
+      rag.roll,
+      isDeadOrTerminal ? 0 : Math.sign(rag.roll || 1) * 0.25,
+      6,
+      dt,
+    );
   } else {
     rag.pitch += rag.angVel.x * dt;
     rag.roll += rag.angVel.z * dt;
@@ -81,12 +102,12 @@ export function stepRagdollPhysics(
   rig.root.position.copy(pos);
   rig.root.rotation.x = rag.pitch;
   rig.root.rotation.z = rag.roll;
-  rig.leftArm.rotation.x = -0.9 * rag.splay;
-  rig.leftArm.rotation.z = 0.65 * rag.splay;
-  rig.rightArm.rotation.x = -0.75 * rag.splay;
-  rig.rightArm.rotation.z = -0.65 * rag.splay;
-  rig.leftLeg.rotation.x = 0.35 * rag.splay;
-  rig.rightLeg.rotation.x = -0.35 * rag.splay;
+  rig.leftArm.rotation.x = -0.75 * rag.splay;
+  rig.leftArm.rotation.z = 0.52 * rag.splay;
+  rig.rightArm.rotation.x = -0.65 * rag.splay;
+  rig.rightArm.rotation.z = -0.52 * rag.splay;
+  rig.leftLeg.rotation.x = 0.22 * rag.splay;
+  rig.rightLeg.rotation.x = -0.22 * rag.splay;
 }
 
 interface ImpactSpark {

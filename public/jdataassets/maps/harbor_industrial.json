@@ -25,6 +25,12 @@
   "stationExit": {
     "apronPoint": [-82.5, -36]
   },
+  "precinctDoors": {
+    "x": -98.8,
+    "y": 0.18,
+    "z": -38,
+    "rotationY": 1.5707963
+  },
   "stationBays": [
     {
       "id": "unit-1",

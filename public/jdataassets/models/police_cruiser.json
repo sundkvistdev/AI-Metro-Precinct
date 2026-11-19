@@ -48,8 +48,8 @@
             { "id": "door_right", "kind": "plane", "dimensions": [1.46, 0.34, 1], "position": [-0.025, 0.0, -0.73], "rotation": [0, -1.5707963, 0], "materialRef": "door_decal" }
           ]
         },
-        { "id": "seat_driver", "kind": "box", "dimensions": [0.36, 0.14, 0.36], "position": [0.4, 0.62, 0.02], "materialRef": "trim", "seat": { "slotIndex": 0, "role": "driver", "hingePartId": "door_hinge_fl", "enterOffset": [1.55, 0, 0.0], "exitOffset": [1.48, 0, -0.15], "seatedPitch": 0.1 } },
-        { "id": "seat_passenger", "kind": "box", "dimensions": [0.36, 0.14, 0.36], "position": [-0.4, 0.62, 0.02], "materialRef": "trim", "seat": { "slotIndex": 1, "role": "passenger", "hingePartId": "door_hinge_fr", "enterOffset": [-1.55, 0, 0.0], "exitOffset": [-1.48, 0, -0.15], "seatedPitch": 0.1 } },
+        { "id": "seat_driver", "kind": "box", "dimensions": [0.36, 0.14, 0.36], "position": [0.4, 0.62, 0.02], "materialRef": "trim", "seat": { "slotIndex": 0, "role": "driver", "hingePartId": "door_hinge_fl", "enterOffset": [1.55, 0, 0.0], "exitOffset": [1.48, 0, -0.15], "seatedPitch": -1.48 } },
+        { "id": "seat_passenger", "kind": "box", "dimensions": [0.36, 0.14, 0.36], "position": [-0.4, 0.62, 0.02], "materialRef": "trim", "seat": { "slotIndex": 1, "role": "passenger", "hingePartId": "door_hinge_fr", "enterOffset": [-1.55, 0, 0.0], "exitOffset": [-1.48, 0, -0.15], "seatedPitch": -1.48 } },
         { "id": "rear_clip", "kind": "box", "dimensions": [1.96, 0.5, 1.38], "position": [0, 0.78, -1.66], "materialRef": "black_paint", "castShadow": true },
         { "id": "cabin_glass", "kind": "box", "dimensions": [1.68, 0.48, 2.02], "position": [0, 1.22, -0.18], "materialRef": "glass" },
         { "id": "roof", "kind": "box", "dimensions": [1.66, 0.08, 1.88], "position": [0, 1.49, -0.2], "materialRef": "white_paint", "castShadow": true },

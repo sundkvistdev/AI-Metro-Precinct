@@ -11,6 +11,7 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
+import { formatKeyCode, useKeybinds } from '../sim/keybinds';
 import { CameraMode, SimSnapshot } from '../sim/types';
 import { HudEditableFrame } from './HudEditableFrame';
 
@@ -24,11 +25,15 @@ export interface BottomControlBarProps {
   onTriggerPursuit: () => void;
 }
 
-const CAMERA_BUTTONS: Array<{ mode: CameraMode; label: string; keyHint: string }> = [
-  { mode: CameraMode.Overview, label: 'Overview', keyHint: '1' },
-  { mode: CameraMode.FreeFly, label: 'Free Fly', keyHint: '2' },
-  { mode: CameraMode.FollowUnit, label: 'Follow', keyHint: '3' },
-  { mode: CameraMode.RearLightbar, label: 'Lightbar', keyHint: '4' },
+const CAMERA_BUTTONS: Array<{
+  mode: CameraMode;
+  label: string;
+  bindKey: 'cameraOverview' | 'cameraFreeFly' | 'cameraFollow' | 'cameraLightbar';
+}> = [
+  { mode: CameraMode.Overview, label: 'Overview', bindKey: 'cameraOverview' },
+  { mode: CameraMode.FreeFly, label: 'Free Fly', bindKey: 'cameraFreeFly' },
+  { mode: CameraMode.FollowUnit, label: 'Follow', bindKey: 'cameraFollow' },
+  { mode: CameraMode.RearLightbar, label: 'Lightbar', bindKey: 'cameraLightbar' },
 ];
 
 export const BottomControlBar: React.FC<BottomControlBarProps> = ({
@@ -42,6 +47,7 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
 }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const keybinds = useKeybinds();
 
   return (
     <HudEditableFrame
@@ -53,7 +59,7 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
     >
       <div className="pointer-events-none flex flex-col items-center gap-1">
         {helpOpen && !collapsed && (
-          <div className="pointer-events-auto ui-panel px-3 py-2 text-[11px] text-zinc-200 shadow-xl w-[min(460px,92vw)]">
+          <div className="pointer-events-auto ui-panel px-3 py-2 text-[11px] text-zinc-200 shadow-xl w-[min(480px,92vw)]">
             <div className="flex items-center justify-between border-b border-zinc-600 pb-1 mb-1.5">
               <span className="font-display text-[11px] font-semibold uppercase tracking-wider text-zinc-100">
                 Viewport & Simulation Controls
@@ -67,14 +73,38 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
               </button>
             </div>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono-tabular text-[10px] text-zinc-300">
-              <span>WASD / Arrows: Pan / Move</span>
-              <span>Q / E: Orbit / Rotate Yaw</span>
-              <span>R / F: Raise / Lower Altitude</span>
-              <span>Z / X / Wheel: Zoom</span>
-              <span>1 / 2 / 3 / 4: Camera Modes</span>
-              <span>0: Reset Overview Camera</span>
-              <span>Space: Trigger Crime Call</span>
-              <span>H: Toggle Sidebar Panels</span>
+              <span>
+                {formatKeyCode(keybinds.camForward)}/
+                {formatKeyCode(keybinds.camLeft)}/
+                {formatKeyCode(keybinds.camBackward)}/
+                {formatKeyCode(keybinds.camRight)}: Pan / Move
+              </span>
+              <span>
+                {formatKeyCode(keybinds.camOrbitLeft)} /{' '}
+                {formatKeyCode(keybinds.camOrbitRight)}: Orbit / Yaw
+              </span>
+              <span>
+                {formatKeyCode(keybinds.camUp)} / {formatKeyCode(keybinds.camDown)}:
+                Altitude
+              </span>
+              <span>
+                {formatKeyCode(keybinds.camZoomIn)} /{' '}
+                {formatKeyCode(keybinds.camZoomOut)} / Wheel: Zoom
+              </span>
+              <span>
+                {formatKeyCode(keybinds.cameraOverview)}/
+                {formatKeyCode(keybinds.cameraFreeFly)}/
+                {formatKeyCode(keybinds.cameraFollow)}/
+                {formatKeyCode(keybinds.cameraLightbar)}: Cameras
+              </span>
+              <span>
+                {formatKeyCode(keybinds.cameraReset)}: Reset Camera
+              </span>
+              <span>
+                {formatKeyCode(keybinds.spawnCrime)} /{' '}
+                {formatKeyCode(keybinds.spawnPursuit)}: Crime / Pursuit
+              </span>
+              <span>{formatKeyCode(keybinds.toggleHud)}: Toggle Sidebar</span>
             </div>
           </div>
         )}
@@ -94,12 +124,13 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
               <Camera className="h-3.5 w-3.5 text-zinc-400 mr-0.5 shrink-0" />
               {CAMERA_BUTTONS.map((item) => {
                 const active = snapshot.cameraMode === item.mode;
+                const keyHint = formatKeyCode(keybinds[item.bindKey]);
                 return (
                   <button
                     key={item.mode}
                     type="button"
                     onClick={() => onSetCameraMode(item.mode)}
-                    title={`${item.label} (${item.keyHint})`}
+                    title={`${item.label} (${keyHint})`}
                     className={`border px-2 py-1 text-[11px] font-medium whitespace-nowrap shrink-0 cursor-pointer rounded-none transition-colors ${
                       active
                         ? 'border-sky-400 bg-sky-600 text-white'
@@ -108,7 +139,7 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
                   >
                     {item.label}
                     <span className="ml-1 font-mono-tabular text-[9px] opacity-75">
-                      {item.keyHint}
+                      {keyHint}
                     </span>
                   </button>
                 );
@@ -116,7 +147,7 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
               <button
                 type="button"
                 onClick={onResetCamera}
-                title="Reset Camera (0)"
+                title={`Reset Camera (${formatKeyCode(keybinds.cameraReset)})`}
                 className="flex items-center gap-1 border border-zinc-600 bg-zinc-700/80 px-1.5 py-1 text-[11px] text-zinc-200 hover:bg-zinc-600 cursor-pointer whitespace-nowrap shrink-0 rounded-none"
               >
                 <RotateCcw className="h-3 w-3" />
@@ -162,7 +193,7 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
               <button
                 type="button"
                 onClick={onTriggerCrime}
-                title="Dispatch Foot Crime (Space)"
+                title={`Dispatch Foot Crime (${formatKeyCode(keybinds.spawnCrime)})`}
                 className="flex items-center gap-1 border border-red-400/70 bg-red-600/85 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-500 cursor-pointer whitespace-nowrap shrink-0 rounded-none"
               >
                 <Crosshair className="h-3.5 w-3.5" />
@@ -171,7 +202,7 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
               <button
                 type="button"
                 onClick={onTriggerPursuit}
-                title="Dispatch Vehicle Pursuit"
+                title={`Dispatch Vehicle Pursuit (${formatKeyCode(keybinds.spawnPursuit)})`}
                 className="flex items-center gap-1 border border-orange-400/70 bg-orange-600/85 px-2 py-1 text-[11px] font-semibold text-white hover:bg-orange-500 cursor-pointer whitespace-nowrap shrink-0 rounded-none"
               >
                 <Car className="h-3.5 w-3.5" />

@@ -1,16 +1,24 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Eye,
+  FlaskConical,
   FolderArchive,
+  Keyboard,
   LayoutGrid,
   MapPin,
   RefreshCw,
   RotateCcw,
 } from 'lucide-react';
-import { AssetLoadResult } from '../assets/assetTypes';
+import { AssetLoadResult, KeybindActionId } from '../assets/assetTypes';
 import { AudioVoiceQuality } from '../assets/jsonAudioSynth';
 import { hudLayoutStore, HudWidgetId, useHudLayout } from '../sim/hudLayout';
+import {
+  formatKeyCode,
+  KEYBIND_ACTIONS,
+  keybindStore,
+  useKeybinds,
+} from '../sim/keybinds';
 import { assetIdToLightbarMode } from '../sim/lightbarSystem';
 import {
   BackupMode,
@@ -40,9 +48,19 @@ export interface MainMenuSettings {
   debrisObstacles: boolean;
   renderScale: 0.75 | 1 | 1.5;
   crashIntensity: number;
+  maxPhysicsParts: number;
+  experimentalComplexMeshes: boolean;
 }
 
-type SettingsTabId = 'pack' | 'simulation' | 'tactical' | 'audio' | 'graphics' | 'hud';
+type SettingsTabId =
+  | 'pack'
+  | 'simulation'
+  | 'tactical'
+  | 'audio'
+  | 'graphics'
+  | 'keybinds'
+  | 'hud'
+  | 'experimental';
 
 const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
   { id: 'pack', label: 'Maps & Pack' },
@@ -50,7 +68,9 @@ const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
   { id: 'tactical', label: 'Tactical' },
   { id: 'audio', label: 'Audio' },
   { id: 'graphics', label: 'Graphics' },
-  { id: 'hud', label: 'HUD Layout' },
+  { id: 'keybinds', label: 'Keybinds' },
+  { id: 'hud', label: 'HUD' },
+  { id: 'experimental', label: 'Experimental' },
 ];
 
 export interface MainMenuProps {
@@ -78,8 +98,24 @@ export const MainMenu: React.FC<MainMenuProps> = ({
 }) => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTabId>('pack');
+  const [capturingKeyFor, setCapturingKeyFor] = useState<KeybindActionId | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const hud = useHudLayout();
+  const keybinds = useKeybinds();
+
+  useEffect(() => {
+    if (!capturingKeyFor) return;
+    const onCapture = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.code !== 'Escape') {
+        keybindStore.setUserOverride(capturingKeyFor, e.code);
+      }
+      setCapturingKeyFor(null);
+    };
+    window.addEventListener('keydown', onCapture, true);
+    return () => window.removeEventListener('keydown', onCapture, true);
+  }, [capturingKeyFor]);
 
   const availableMaps = useMemo(() => {
     const maps = assetResult?.assets?.maps;
@@ -721,28 +757,116 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                     </div>
                   </div>
 
-                  <label className="block space-y-1">
-                    <div className="flex justify-between text-[11px]">
-                      <span className="text-zinc-300">Crash Detachment Intensity</span>
-                      <span className="font-mono-tabular text-zinc-100">
-                        {Math.round(settings.crashIntensity * 100)}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={50}
-                      max={150}
-                      step={10}
-                      value={Math.round(settings.crashIntensity * 100)}
-                      onChange={(e) =>
-                        onChangeSettings({
-                          ...settings,
-                          crashIntensity: Number(e.target.value) / 100,
-                        })
-                      }
-                      className="sharp-slider w-full"
-                    />
-                  </label>
+                    <label className="block space-y-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-zinc-300">Crash Detachment Intensity</span>
+                        <span className="font-mono-tabular text-zinc-100">
+                          {Math.round(settings.crashIntensity * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={50}
+                        max={150}
+                        step={10}
+                        value={Math.round(settings.crashIntensity * 100)}
+                        onChange={(e) =>
+                          onChangeSettings({
+                            ...settings,
+                            crashIntensity: Number(e.target.value) / 100,
+                          })
+                        }
+                        className="sharp-slider w-full"
+                      />
+                    </label>
+
+                    <label className="block space-y-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-zinc-300">Max Active Physics Parts</span>
+                        <span className="font-mono-tabular text-zinc-100">
+                          {settings.maxPhysicsParts} parts
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={8}
+                        max={250}
+                        step={4}
+                        value={settings.maxPhysicsParts}
+                        onChange={(e) =>
+                          onChangeSettings({
+                            ...settings,
+                            maxPhysicsParts: Number(e.target.value),
+                          })
+                        }
+                        className="sharp-slider w-full"
+                      />
+                    </label>
+                  </div>
+                )}
+
+              {/* TAB: KEYBINDS */}
+              {settingsTab === 'keybinds' && (
+                <div className="border border-zinc-600 bg-zinc-900/45 p-3 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
+                      <Keyboard className="h-3.5 w-3.5 text-sky-400" />
+                      Global Keybindings
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => keybindStore.resetAllToDefaults()}
+                      className="flex items-center gap-1 border border-zinc-500 bg-zinc-700 px-2 py-0.5 text-[10px] text-zinc-100 hover:bg-zinc-600 cursor-pointer rounded-none"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      Reset All
+                    </button>
+                  </div>
+
+                  {(['Simulation', 'Camera Mode', 'Camera Movement'] as const).map(
+                    (category) => (
+                      <div key={category} className="space-y-1">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                          {category}
+                        </div>
+                        <div className="space-y-1">
+                          {KEYBIND_ACTIONS.filter((a) => a.category === category).map(
+                            (action) => {
+                              const isCapturing = capturingKeyFor === action.id;
+                              const code = keybinds[action.id];
+                              return (
+                                <div
+                                  key={action.id}
+                                  className="flex items-center justify-between border border-zinc-700 bg-zinc-800/70 px-2 py-1 text-[11px]"
+                                >
+                                  <span className="text-zinc-200">{action.label}</span>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setCapturingKeyFor(
+                                          isCapturing ? null : action.id,
+                                        )
+                                      }
+                                      className={`border px-2 py-0.5 font-mono-tabular text-[10px] cursor-pointer rounded-none ${
+                                        isCapturing
+                                          ? 'border-amber-400 bg-amber-600 text-white'
+                                          : 'border-zinc-500 bg-zinc-900 text-zinc-100 hover:bg-zinc-700'
+                                      }`}
+                                    >
+                                      {isCapturing
+                                        ? 'Press Key (Esc=Cancel)'
+                                        : formatKeyCode(code)}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            },
+                          )}
+                        </div>
+                      </div>
+                    ),
+                  )}
                 </div>
               )}
 
@@ -810,6 +934,43 @@ export const MainMenu: React.FC<MainMenuProps> = ({
                         hudLayoutStore.setHudOpacity(Number(e.target.value) / 100)
                       }
                       className="sharp-slider w-full"
+                    />
+                  </label>
+                </div>
+              )}
+
+              {/* TAB: EXPERIMENTAL (PRE-LAUNCH ONLY) */}
+              {settingsTab === 'experimental' && (
+                <div className="border border-amber-500/50 bg-zinc-900/60 p-3 space-y-2.5">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+                    <FlaskConical className="h-3.5 w-3.5" />
+                    Pre-Launch Experimental Capabilities
+                  </div>
+                  <p className="text-[11px] text-zinc-300 leading-relaxed">
+                    Experimental geometry and articulation pipelines are locked at
+                    session launch and cannot be changed while a simulation is running.
+                  </p>
+                  <label className="flex items-start justify-between gap-3 border border-zinc-600 bg-zinc-800/80 p-2.5 cursor-pointer">
+                    <div className="space-y-0.5">
+                      <div className="font-semibold text-zinc-100">
+                        Complex Meshes, UV Transforms &amp; Articulated Hinges
+                      </div>
+                      <div className="text-[10px] text-zinc-400">
+                        Enables extrude/lathe/custom buffer meshes, per-part UV
+                        repeat/offset/rotation, and swinging vehicle doors/hoods/trunks
+                        when officers enter or exit cruisers.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={settings.experimentalComplexMeshes}
+                      onChange={(e) =>
+                        onChangeSettings({
+                          ...settings,
+                          experimentalComplexMeshes: e.target.checked,
+                        })
+                      }
+                      className="mt-1 shrink-0"
                     />
                   </label>
                 </div>

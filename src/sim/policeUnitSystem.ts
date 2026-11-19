@@ -8,6 +8,7 @@ import {
   SeatPartSpec,
 } from '../assets/assetTypes';
 import { JsonAudioSynth } from '../assets/jsonAudioSynth';
+import { isExperimentalComplexMeshesEnabled } from '../assets/jsonModelBuilder';
 import { simEventLog } from '../assets/simEventLog';
 import { TextureRegistry } from '../assets/textureRegistry';
 import { StaticObstacleBVH } from './bvh';
@@ -19,6 +20,7 @@ import {
   updateImpatienceAndReverse,
 } from './drivingAvoidance';
 import { playBoundAudioEvent } from './eventBindings';
+import { applyRigidHumanoidPose } from './humanoidAnim';
 import { lightbarModeToAssetId, updateLightbarVisuals } from './lightbarSystem';
 import {
   getSurfaceHeight,
@@ -38,6 +40,7 @@ import {
   resolveCrimePrimaryAssailant,
   resolveUnitOfficers,
 } from './simActors';
+import { getPrecinctDoorPos } from './townBuilder';
 import {
   DrivingMode,
   LightbarMode,
@@ -58,14 +61,24 @@ const _tmpDoorPos = new THREE.Vector3();
 
 let officerIdSeq = 1;
 
+function getSeatedTorsoScaleY(vehicleKind: string): number {
+  switch (vehicleKind) {
+    case 'sedan':
+      return 0.76;
+    case 'suv':
+      return 0.86;
+    case 'van':
+      return 0.92;
+    case 'apc':
+      return 0.9;
+    default:
+      return 0.82;
+  }
+}
+
 export function resetOfficerPose(off: OfficerActor, yaw: number): void {
   off.rig.root.rotation.set(0, yaw, 0);
-  off.rig.torso.position.y = off.rig.torsoBaseY;
-  off.rig.head.rotation.set(0, 0, 0);
-  off.rig.leftArm.rotation.set(0, 0, 0);
-  off.rig.rightArm.rotation.set(0, 0, 0);
-  off.rig.leftLeg.rotation.set(0, 0, 0);
-  off.rig.rightLeg.rotation.set(0, 0, 0);
+  applyRigidHumanoidPose(off.rig, 'idle', { snap: true });
   if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
 }
 
@@ -80,25 +93,27 @@ export function applyOfficerSeatedPose(
   const ly = seat.localOffset.y;
   const lz = seat.localOffset.z;
 
-  // Vehicle local (+Z forward, +X left/right depending on yaw) rotation about Y
+  // World position mirrors seat transform for AI/distance queries while scene-graph rig stays parented under unit.rig.root
   const wx = unit.pos.x + lx * cos + lz * sin;
   const wz = unit.pos.z - lx * sin + lz * cos;
-  const wy = unit.pos.y + ly - 0.14;
+  const wy = unit.pos.y;
 
   off.pos.set(wx, wy, wz);
   off.yaw = unit.yaw;
+  off.locationState = 'field';
 
+  if (off.rig.root.parent !== unit.rig.root) {
+    unit.rig.root.add(off.rig.root);
+  }
   off.rig.root.visible = true;
-  off.rig.root.position.set(wx, wy, wz);
-  off.rig.root.rotation.set(0, unit.yaw, 0);
-  off.rig.torso.position.y = off.rig.torsoBaseY - 0.32;
-  off.rig.head.rotation.set(0, 0, 0);
-  off.rig.leftLeg.rotation.set(seat.seatedPitch, 0, 0);
-  off.rig.rightLeg.rotation.set(seat.seatedPitch, 0, 0);
-  const isDriver = seat.role === 'driver';
-  off.rig.leftArm.rotation.set(isDriver ? -0.78 : -0.45, 0, isDriver ? -0.18 : 0);
-  off.rig.rightArm.rotation.set(isDriver ? -0.78 : -0.45, 0, isDriver ? 0.18 : 0);
-  if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
+  off.rig.root.position.set(lx, 0, lz);
+  applyRigidHumanoidPose(off.rig, 'seated', {
+    isDriver: seat.role === 'driver',
+    seatedPitch: seat.seatedPitch,
+    torsoScaleY: getSeatedTorsoScaleY(unit.vehicleKind),
+    hipY: Math.max(0.44, ly - 0.06),
+    snap: true,
+  });
 }
 
 export function seatOffsetToWorld(
@@ -116,6 +131,7 @@ export function seatOffsetToWorld(
 }
 
 export function updateVehicleHinges(unit: PoliceUnit, dt: number): void {
+  if (!isExperimentalComplexMeshesEnabled()) return;
   const openHinges = new Set<string>();
   for (const seat of unit.seats) {
     if (seat.doorOpenTimer > 0) {
@@ -179,6 +195,7 @@ export function ejectOfficerFromSeat(
   unit: PoliceUnit,
   staticBvh: StaticObstacleBVH,
   surfaceSource: CustomMapAsset | WorldConfig,
+  hierarchy?: SceneWorldHierarchy,
 ): boolean {
   if (off.occupiedUnitId !== unit.id || off.occupiedSeatIndex === null) return false;
   const seat = unit.seats[off.occupiedSeatIndex];
@@ -191,6 +208,12 @@ export function ejectOfficerFromSeat(
   }
   staticBvh.resolveCircle(off.pos, 0.45);
   off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, surfaceSource);
+
+  if (hierarchy) {
+    hierarchy.addEntity(off.rig.root);
+  } else if (off.rig.root.parent === unit.rig.root) {
+    unit.rig.root.parent?.add(off.rig.root);
+  }
 
   off.occupiedUnitId = null;
   off.occupiedSeatIndex = null;
@@ -216,7 +239,7 @@ function buildSeatStatesFromRig(rigSeats: PoliceUnit['rig']['seats'], hinges: Po
       exitOffset: new THREE.Vector3(...(s.spec.exitOffset ?? [s.localOffset.x >= 0 ? 1.45 : -1.45, 0, s.localOffset.z])),
       hingePartId: s.spec.hingePartId,
       hingeRef: s.spec.hingePartId ? hinges[s.spec.hingePartId] : undefined,
-      seatedPitch: s.spec.seatedPitch ?? -1.38,
+      seatedPitch: s.spec.seatedPitch ?? -1.48,
       occupantOfficerId: null,
       doorOpenTimer: 0,
     }));
@@ -225,12 +248,12 @@ function buildSeatStatesFromRig(rigSeats: PoliceUnit['rig']['seats'], hinges: Po
   // Fallback front driver/passenger seats if custom model omitted explicit seat parts
   const fallbackSpecs: Array<{ spec: SeatPartSpec; local: [number, number, number]; exit: [number, number, number] }> = [
     {
-      spec: { role: 'driver', enterOffset: [1.35, 0, 0.25], exitOffset: [1.45, 0, 0.25], seatedPitch: -1.38 },
+      spec: { slotIndex: 0, role: 'driver', enterOffset: [1.35, 0, 0.25], exitOffset: [1.45, 0, 0.25], seatedPitch: -1.48 },
       local: [0.42, 0.62, 0.22],
       exit: [1.45, 0, 0.25],
     },
     {
-      spec: { role: 'passenger', enterOffset: [-1.35, 0, 0.25], exitOffset: [-1.45, 0, 0.25], seatedPitch: -1.38 },
+      spec: { slotIndex: 1, role: 'passenger', enterOffset: [-1.35, 0, 0.25], exitOffset: [-1.45, 0, 0.25], seatedPitch: -1.48 },
       local: [-0.42, 0.62, 0.22],
       exit: [-1.45, 0, 0.25],
     },
@@ -242,7 +265,7 @@ function buildSeatStatesFromRig(rigSeats: PoliceUnit['rig']['seats'], hinges: Po
     localOffset: new THREE.Vector3(...f.local),
     enterOffset: new THREE.Vector3(...(f.spec.enterOffset ?? f.exit)),
     exitOffset: new THREE.Vector3(...f.exit),
-    seatedPitch: f.spec.seatedPitch ?? -1.38,
+    seatedPitch: f.spec.seatedPitch ?? -1.48,
     occupantOfficerId: null,
     doorOpenTimer: 0,
   }));
@@ -359,6 +382,10 @@ export function spawnPoliceUnits(
       stallCount: 0,
       towRequested: false,
       beingTowed: false,
+      patrolTimer: 0,
+      patrolTargetNodeId: null,
+      stalledGoalTimer: 0,
+      bayApproachTimer: 0,
     };
 
     const crewCount = Math.min(Math.max(2, seats.length >= 2 ? 2 : seats.length), 2);
@@ -410,6 +437,7 @@ export function spawnPoliceUnits(
         roamPauseTimer: 0,
         mountPhase: 'walk',
         boardTimer: 0,
+        locationState: 'field',
       };
       if (seat) {
         seat.occupantOfficerId = officer.id;
@@ -482,6 +510,14 @@ export function routeUnitToStation(
   pruneLeadingWaypoints(unit.pos, unit.yaw, wps, staticBvh);
   wps.push(new THREE.Vector3(exitRoadX - laneOffset, roadSurfaceY, bay.parkPos[2]));
   wps.push(new THREE.Vector3(apronExitX, apronSurfaceY, bay.parkPos[2]));
+  const approachDist = 4.2;
+  wps.push(
+    new THREE.Vector3(
+      bay.parkPos[0] + Math.sin(bay.parkYaw) * approachDist,
+      apronSurfaceY,
+      bay.parkPos[2] + Math.cos(bay.parkYaw) * approachDist,
+    ),
+  );
   wps.push(new THREE.Vector3(...bay.parkPos));
   unit.waypoints = wps;
   unit.waypointIndex = 0;
@@ -534,17 +570,79 @@ export function dispatchNearestUnit(
   const available = mountedAvailable.length > 0 ? mountedAvailable : footRoamAvailable;
   if (available.length === 0) return false;
 
+  const doorSpec = map ? getPrecinctDoorPos(map, config) : { x: apronThresholdX - 18, y: apronSurfaceY, z: -38 };
+  const unitDispatchCostSq = (u: PoliceUnit): number => {
+    const crew = resolveUnitOfficers(u, officersById);
+    const hasInPrecinctCrew = !u.mounted && crew.some((o) => o.hp > 0 && o.locationState === 'in_precinct');
+    if (hasInPrecinctCrew) {
+      const dDoor = Math.hypot(u.pos.x - doorSpec.x, u.pos.z - doorSpec.z);
+      const dCrime = Math.hypot(u.pos.x - crime.pos.x, u.pos.z - crime.pos.z);
+      const total = dDoor * 3.5 + dCrime;
+      return total * total;
+    }
+    return u.pos.distanceToSquared(crime.pos);
+  };
+
   let best = specificUnitId
     ? available.find((u) => u.id === specificUnitId) ?? available[0]
     : available[0];
-  let bestDist = best.pos.distanceToSquared(crime.pos);
+  let bestDist = unitDispatchCostSq(best);
   if (!specificUnitId || best.id !== specificUnitId) {
     for (const u of available) {
-      const d = u.pos.distanceToSquared(crime.pos);
+      const d = unitDispatchCostSq(u);
       if (d < bestDist) {
         bestDist = d;
         best = u;
       }
+    }
+  }
+
+  // If dispatched station unit has crew inside precinct, verify closest unoccupied compatible station vehicle to precinctDoors
+  const bestCrew = resolveUnitOfficers(best, officersById);
+  if (
+    !specificUnitId &&
+    best.status === UnitStatus.AtStation &&
+    !best.mounted &&
+    bestCrew.some((o) => o.hp > 0 && o.locationState === 'in_precinct')
+  ) {
+    let closestStationVeh = best;
+    let minDoorSq =
+      (best.pos.x - doorSpec.x) ** 2 + (best.pos.z - doorSpec.z) ** 2;
+    for (const candidate of units) {
+      if (candidate.id === best.id) continue;
+      if (
+        candidate.status !== UnitStatus.AtStation ||
+        candidate.mounted ||
+        candidate.immobilized ||
+        candidate.targetCrimeId ||
+        candidate.isHeavyUnit !== best.isHeavyUnit ||
+        !candidate.seats.every((s) => s.occupantOfficerId === null)
+      ) {
+        continue;
+      }
+      const candDoorSq =
+        (candidate.pos.x - doorSpec.x) ** 2 + (candidate.pos.z - doorSpec.z) ** 2;
+      if (candDoorSq < minDoorSq) {
+        minDoorSq = candDoorSq;
+        closestStationVeh = candidate;
+      }
+    }
+    if (closestStationVeh !== best) {
+      // Swap crew refs cleanly so dispatched officers board the closest available vehicle
+      const otherCrew = resolveUnitOfficers(closestStationVeh, officersById);
+      best.officerRefs = otherCrew.map((o) => o.id);
+      closestStationVeh.officerRefs = bestCrew.map((o) => o.id);
+      for (const o of bestCrew) {
+        o.unitId = closestStationVeh.id;
+        o.targetUnitId = closestStationVeh.id;
+        o.rig.root.userData.unitId = closestStationVeh.id;
+      }
+      for (const o of otherCrew) {
+        o.unitId = best.id;
+        o.targetUnitId = best.id;
+        o.rig.root.userData.unitId = best.id;
+      }
+      best = closestStationVeh;
     }
   }
 
@@ -563,8 +661,48 @@ export function dispatchNearestUnit(
     crime.assignedUnitIds.push(best.id);
   }
 
+  const crewAfterAssign = resolveUnitOfficers(best, officersById);
+  const anyLivingInPrecinct = crewAfterAssign.some(
+    (o) => o.hp > 0 && o.locationState === 'in_precinct',
+  );
+  if (anyLivingInPrecinct && !best.mounted) {
+    // Exit precinct doors and sprint to closest assigned vehicle
+    crewAfterAssign.forEach((o, sIdx) => {
+      if (o.hp <= 0) return;
+      if (o.locationState === 'in_precinct' || o.locationState === 'entering_precinct') {
+        o.locationState = 'exiting_precinct';
+        o.boardingState = 'dismounted';
+        o.mountPhase = 'walk';
+        o.boardTimer = 0;
+        o.pos.set(
+          doorSpec.x + 0.4 + sIdx * 0.45,
+          apronSurfaceY,
+          doorSpec.z + (sIdx % 2 === 0 ? -0.45 : 0.45),
+        );
+        o.yaw = Math.atan2(best.pos.x - o.pos.x, best.pos.z - o.pos.z);
+        o.rig.root.position.copy(o.pos);
+        o.rig.root.visible = true;
+        resetOfficerPose(o, o.yaw);
+      }
+    });
+    best.freeRoam = false;
+    best.status = UnitStatus.Mounting;
+    best.activeGoal = 'MOUNT_CREW';
+    best.goalReason = `Crew exiting precinct to ${best.callsign} (Case #${crime.caseNumber})`;
+    best.mountTimer = 0;
+    best.lightsActive = true;
+    best.sirensActive = false;
+    playBoundAudioEvent(audio, config, 'dispatch_chirp');
+    simEventLog.info(
+      'dispatch',
+      `${best.callsign} crew scrambling from precinct to Case #${crime.caseNumber}`,
+      `${crime.type} • ${crime.district} • Urgency ${crime.urgency}`,
+    );
+    return true;
+  }
+
   if (!best.mounted) {
-    if (!crime.inVehiclePursuit && bestDist < 42 * 42) {
+    if (!crime.inVehiclePursuit && best.pos.distanceToSquared(crime.pos) < 42 * 42) {
       best.freeRoam = false;
       best.status = UnitStatus.Engaging;
       best.activeGoal = 'ENGAGE_ON_FOOT';
@@ -574,12 +712,13 @@ export function dispatchNearestUnit(
     }
     if (best.immobilized) return false;
     best.freeRoam = false;
-    best.mounted = true;
+    best.status = UnitStatus.Mounting;
+    best.activeGoal = 'MOUNT_CREW';
+    best.goalReason = `Crew mounting ${best.callsign} for Case #${crime.caseNumber}`;
     best.mountTimer = 0;
-    const crew = resolveUnitOfficers(best, officersById);
-    crew.forEach((o, sIdx) => {
-      assignOfficerToUnitSeat(o, best, sIdx < best.seats.length ? sIdx : undefined);
-    });
+    best.lightsActive = true;
+    playBoundAudioEvent(audio, config, 'dispatch_chirp');
+    return true;
   }
 
   const urgencyNorm = THREE.MathUtils.clamp(crime.urgency / 100, 0, 1);
@@ -652,6 +791,13 @@ export function dispatchNearestUnit(
       }
       wps.push(wp);
     }
+  } else if (
+    staticBvh &&
+    bestDist < 95 * 95 &&
+    staticBvh.raycastSegment(best.pos.x, best.pos.z, pullSpot.x, pullSpot.z).clear
+  ) {
+    // Off-road / alley direct corridor shortcut when unobstructed
+    wps.push(pullSpot.clone());
   } else {
     const entry = roadGraph.findNearestRoadEntryPoint(best.pos.x, best.pos.z, staticBvh);
     if (best.pos.distanceToSquared(entry.point) > 9) {
@@ -699,6 +845,7 @@ export function dismountUnit(
   rng: () => number,
   freeRoam = false,
   map?: CustomMapAsset,
+  hierarchy?: SceneWorldHierarchy,
 ): void {
   if (!unit.mounted) return;
   const surface = map ?? config.world;
@@ -726,6 +873,9 @@ export function dismountUnit(
 
   const crew = resolveUnitOfficers(unit, officersById);
   crew.forEach((off, idx) => {
+    // Do not revive or eject already dead officers into combat stride
+    if (off.hp <= 0) return;
+
     const seat = off.occupiedSeatIndex !== null ? unit.seats[off.occupiedSeatIndex] : unit.seats[idx];
     if (seat) {
       if (seat.occupantOfficerId === off.id) seat.occupantOfficerId = null;
@@ -742,11 +892,17 @@ export function dismountUnit(
     staticBvh.resolveCircle(off.pos, 0.45);
     off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, surface);
 
+    if (hierarchy) {
+      hierarchy.addEntity(off.rig.root);
+    } else if (off.rig.root.parent === unit.rig.root) {
+      unit.rig.root.parent?.add(off.rig.root);
+    }
+
     off.occupiedUnitId = null;
     off.occupiedSeatIndex = null;
     off.boardingState = 'dismounted';
+    off.locationState = 'field';
     off.yaw = idx % 2 === 0 ? unit.yaw + Math.PI * 0.45 : unit.yaw - Math.PI * 0.45;
-    if (off.hp <= 0) off.hp = off.maxHp;
     if (off.armor <= 0) off.armor = off.maxArmor;
     off.ammo = config.weapons[off.weaponKind].magSize;
     off.reloadTimer = 0;
@@ -763,7 +919,6 @@ export function dismountUnit(
       : Math.max(45, 100 - cowardiceLevel * 40 * fearScale - rng() * 10 * fearScale);
     off.cowardiceState = off.morale < 50 && !off.isHeavy ? 'suppressed' : 'steady';
     resetOfficerPose(off, off.yaw);
-    off.rig.torso.position.y = off.rig.torsoBaseY - 0.32;
     off.rig.root.position.copy(off.pos);
     off.rig.root.visible = true;
     off.fireCooldown = 0.2 + idx * 0.14;
@@ -806,13 +961,13 @@ export function buildAllVehicleProxies(
 ): AvoidanceVehicleProxy[] {
   const proxies: AvoidanceVehicleProxy[] = [];
   for (const u of units) {
-    if (u.status === UnitStatus.AtStation) continue;
+    // Include parked/station vehicles so crookedly parked cars create real avoidance obstacles
     proxies.push({
       id: u.id,
       x: u.pos.x,
       z: u.pos.z,
       yaw: u.yaw,
-      speed: Math.max(0, u.speed),
+      speed: u.status === UnitStatus.AtStation ? 0 : Math.max(0, u.speed),
       halfW: u.halfW,
       halfL: u.halfL,
     });
@@ -885,7 +1040,19 @@ function evaluateUnitGoal(
   }
 
   const anyFleeing = crew.some((o) => o.hp > 0 && o.cowardiceState === 'fleeing');
-  const allDead = crew.length > 0 && crew.every((o) => o.hp <= 0);
+  const livingCrew = crew.filter((o) => o.hp > 0);
+  const allDead = crew.length > 0 && livingCrew.length === 0;
+  const anyUnseatedLiving = livingCrew.some(
+    (o) => o.locationState !== 'in_precinct' && o.boardingState !== 'seated',
+  );
+  const anyExitingPrecinct = livingCrew.some((o) => o.locationState === 'exiting_precinct');
+
+  if (allDead && !unit.mounted) {
+    return {
+      goal: 'IMMOBILIZED_HOLD',
+      reason: 'Crew incapacitated — unit out of service',
+    };
+  }
 
   // Ordered goal rules matching pack configuration
   const orderedIds =
@@ -899,6 +1066,7 @@ function evaluateUnitGoal(
           'RESPOND_TO_CALL',
           'MANUAL_FOOT_PATROL',
           'BOARD_CRUISER',
+          'PATROL_STREETS',
           'RETURN_TO_PRECINCT',
           'PARKED_STANDBY',
         ];
@@ -908,13 +1076,17 @@ function evaluateUnitGoal(
 
     if (
       gid === 'RETREAT_TO_PRECINCT' &&
-      (unit.status === UnitStatus.Retreating || anyFleeing || (!unit.mounted && allDead))
+      (unit.status === UnitStatus.Retreating || anyFleeing)
     ) {
+      if (!unit.mounted || anyUnseatedLiving) {
+        return {
+          goal: 'MOUNT_CREW',
+          reason: 'Squad retreating — waiting for officers to board',
+        };
+      }
       return {
         goal: 'RETREAT_TO_STATION',
-        reason: allDead
-          ? 'Crew incapacitated — emergency return'
-          : 'Squad morale broken — retreating to station',
+        reason: 'Squad morale broken — retreating to station',
       };
     }
 
@@ -933,13 +1105,14 @@ function evaluateUnitGoal(
     }
 
     if (gid === 'DISMOUNT_COMBAT' && crime && suspectAlive && !crime.inVehiclePursuit) {
-      if (!unit.mounted || unit.status === UnitStatus.Dismounting) {
+      if (!unit.mounted && !anyExitingPrecinct && unit.status !== UnitStatus.Mounting && !livingCrew.some((o) => o.locationState === 'in_precinct')) {
         return {
           goal: 'ENGAGE_ON_FOOT',
           reason: `Engaging suspect on foot (Case #${crime.caseNumber})`,
         };
       }
       if (
+        unit.mounted &&
         unit.status === UnitStatus.Pursuing &&
         primarySuspect &&
         unit.pos.distanceToSquared(primarySuspect.pos) < dismountDist * dismountDist
@@ -952,10 +1125,12 @@ function evaluateUnitGoal(
     }
 
     if (gid === 'PURSUE_INTERCEPT' && crime && suspectAlive && crime.inVehiclePursuit) {
-      if (!unit.mounted) {
+      if (!unit.mounted || anyUnseatedLiving) {
         return {
           goal: 'MOUNT_CREW',
-          reason: `Mounting crew for pursuit (Case #${crime.caseNumber})`,
+          reason: anyExitingPrecinct
+            ? `Waiting for crew from precinct (Case #${crime.caseNumber})`
+            : `Mounting crew for pursuit (Case #${crime.caseNumber})`,
         };
       }
       return {
@@ -965,10 +1140,12 @@ function evaluateUnitGoal(
     }
 
     if (gid === 'RESPOND_TO_CALL' && crime && suspectAlive) {
-      if (!unit.mounted) {
+      if (!unit.mounted || anyUnseatedLiving) {
         return {
           goal: 'MOUNT_CREW',
-          reason: `Mounting crew to respond (Case #${crime.caseNumber})`,
+          reason: anyExitingPrecinct
+            ? `Waiting for crew from precinct (Case #${crime.caseNumber})`
+            : `Mounting crew to respond (Case #${crime.caseNumber})`,
         };
       }
       return {
@@ -984,10 +1161,29 @@ function evaluateUnitGoal(
       };
     }
 
-    if (gid === 'BOARD_CRUISER' && !unit.mounted) {
+    if (
+      gid === 'BOARD_CRUISER' &&
+      (!unit.mounted || anyUnseatedLiving) &&
+      unit.status !== UnitStatus.AtStation
+    ) {
       return {
         goal: 'MOUNT_CREW',
         reason: 'Scene clear — remounting cruiser',
+      };
+    }
+
+    if (
+      gid === 'PATROL_STREETS' &&
+      unit.mounted &&
+      !anyUnseatedLiving &&
+      unit.status !== UnitStatus.AtStation &&
+      unit.status !== UnitStatus.Returning &&
+      unit.status !== UnitStatus.Retreating &&
+      (unit.patrolTimer ?? 0) > 0
+    ) {
+      return {
+        goal: 'PATROL_STREETS',
+        reason: 'Aimless street patrol',
       };
     }
 
@@ -995,10 +1191,16 @@ function evaluateUnitGoal(
       const atBay =
         bayParkPos !== undefined &&
         Math.hypot(unit.pos.x - bayParkPos[0], unit.pos.z - bayParkPos[2]) < 3.6;
-      if (!atBay && unit.status !== UnitStatus.AtStation) {
+      if (!atBay && unit.status !== UnitStatus.AtStation && unit.mounted && !anyUnseatedLiving) {
         return {
           goal: 'RETURN_TO_STATION',
           reason: 'Code 4 — returning to precinct bay',
+        };
+      }
+      if (unit.status !== UnitStatus.AtStation && (!unit.mounted || anyUnseatedLiving)) {
+        return {
+          goal: 'MOUNT_CREW',
+          reason: 'Remounting before return to precinct',
         };
       }
     }
@@ -1016,6 +1218,7 @@ function beginMounting(unit: PoliceUnit, crew: OfficerActor[]): void {
   unit.mountTimer = 0;
   unit.freeRoam = false;
   crew.forEach((o) => {
+    if (o.hp <= 0) return;
     o.mountPhase = 'walk';
     o.boardTimer = 0;
   });
@@ -1058,6 +1261,11 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
   const haloBoost =
     weather === WeatherCondition.Rain || weather === WeatherCondition.HeavyFog ? 1.35 : 1.0;
   const globalLbAsset = lightbars?.[lightbarModeToAssetId(lightbarMode)];
+  const doorSpec = map ? getPrecinctDoorPos(map, config) : { x: apronThresholdX - 18, y: world.surfaceHeights.apron, z: -38 };
+  const patrolGoalDef = config.aiGoals?.police?.find((g) => g.id === 'PATROL_STREETS');
+  const patrolEnabled = patrolGoalDef ? patrolGoalDef.enabled !== false : true;
+  const defaultPatrolSec = patrolGoalDef?.params?.patrolDuration ?? 16.0;
+  const defaultPatrolSpeed = patrolGoalDef?.params?.cruiseSpeed ?? 10.5;
 
   for (const unit of units) {
     const crew = resolveUnitOfficers(unit, officersById);
@@ -1100,6 +1308,25 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       unit.assignedRole = null;
       crime = undefined;
       primarySuspect = undefined;
+      // Start an aimless patrol window when finishing an active call in the field
+      if (patrolEnabled && unit.pos.x > apronThresholdX && (unit.patrolTimer ?? 0) <= 0) {
+        unit.patrolTimer = defaultPatrolSec;
+        unit.patrolTargetNodeId = null;
+      }
+    }
+
+    // Also keep updating any dead crew members outside vehicles so they settle cleanly to dead_flat
+    for (const off of crew) {
+      if (off.hp <= 0 && off.boardingState !== 'seated' && off.locationState !== 'in_precinct') {
+        if (off.ragdoll.active) {
+          stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
+        } else {
+          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world) + 0.16;
+          off.rig.root.position.copy(off.pos);
+          off.rig.root.rotation.set(Math.PI * 0.5, off.yaw, 0);
+          applyRigidHumanoidPose(off.rig, 'dead_flat', { snap: true });
+        }
+      }
     }
 
     // Evaluate highest-priority goal cleanly every frame
@@ -1252,18 +1479,9 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           off.yaw =
             unit.yaw + sideSign * THREE.MathUtils.lerp(Math.PI * 0.48, 0.25, ease);
           off.walkPhase += dt * 9.5;
-          const swing = Math.sin(off.walkPhase) * 0.45 * (1 - Math.max(0, p - 0.75) * 4);
-          off.rig.leftLeg.rotation.x = swing;
-          off.rig.rightLeg.rotation.x = -swing;
-          off.rig.torso.position.y = THREE.MathUtils.lerp(
-            off.rig.torsoBaseY - 0.32,
-            off.rig.torsoBaseY,
-            ease,
-          );
-          off.rig.rightArm.rotation.x = THREE.MathUtils.lerp(-0.1, -0.58, ease);
-          off.rig.leftArm.rotation.x = THREE.MathUtils.lerp(-0.1, -0.5, ease);
+          applyRigidHumanoidPose(off.rig, 'walk', { phase: off.walkPhase, dt });
           off.rig.root.position.copy(off.pos);
-          off.rig.root.rotation.y = off.yaw;
+          off.rig.root.rotation.set(0, off.yaw, 0);
         });
 
         if (p >= 1) {
@@ -1348,32 +1566,24 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       continue;
     }
 
-    // --- Goal 2 (if dismounted) & Goal 8: MOUNT_CREW ---
-    if (!unit.mounted && (goal === 'MOUNT_CREW' || goal === 'RETREAT_TO_STATION')) {
+    // --- Goal 2 (if dismounted / driver waiting for passengers) & Goal 8: MOUNT_CREW ---
+    if (goal === 'MOUNT_CREW') {
       beginMounting(unit, crew);
+      // Driver holds vehicle stationary while passengers sprint & board
+      unit.speed = 0;
+      unit.dyn.vx = 0;
+      unit.dyn.vz = 0;
+      unit.mounted = false;
       unit.mountTimer += dt;
       let allBack = true;
       let boardingRollPulse = 0;
-      const isPanicRetreat = goal === 'RETREAT_TO_STATION';
-      // Hard timeout guarantees SWAT/officers NEVER stall indefinitely
-      const forceBoard = unit.mountTimer > 4.4;
+      const isPanicRetreat = unit.status === UnitStatus.Retreating || crew.some((o) => o.hp > 0 && o.cowardiceState === 'fleeing');
+      // Safety fallback only for stuck *living* officers (never resurrects dead cops)
+      const forceBoard = unit.mountTimer > 8.5;
 
       crew.forEach((off, idx) => {
+        if (off.hp <= 0 || off.locationState === 'in_precinct') return;
         if (off.boardingState === 'seated') return;
-
-        if (off.hp <= 0) {
-          if (off.ragdoll.active) {
-            stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
-          }
-          if (!forceBoard && unit.mountTimer < 2.2) {
-            allBack = false;
-            return;
-          }
-          off.hp = off.maxHp;
-          off.armor = off.maxArmor;
-          assignOfficerToUnitSeat(off, unit, idx < unit.seats.length ? idx : undefined);
-          return;
-        }
 
         if (off.ragdoll.active) {
           stepRagdollPhysics(off.ragdoll, off.pos, off.rig, staticBvh, world, dt);
@@ -1410,7 +1620,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         if (off.mountPhase === 'boarding') {
           allBack = false;
           off.boardingState = 'entering';
-          if (seat) seat.doorOpenTimer = Math.max(seat.doorOpenTimer, 0.45);
+          if (seat) seat.doorOpenTimer = Math.max(seat.doorOpenTimer, 0.55);
           off.boardTimer += dt;
           const b = THREE.MathUtils.clamp(off.boardTimer / 0.4, 0, 1);
           const ease = b * b * (3 - 2 * b);
@@ -1426,17 +1636,14 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           off.pos.z = THREE.MathUtils.lerp(off.pos.z, cabinPos.z, Math.min(1, dt * 8));
           off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
           off.yaw = unit.yaw;
+          applyRigidHumanoidPose(off.rig, 'walk', { phase: off.walkPhase, dt });
           off.rig.torso.position.y = THREE.MathUtils.lerp(
             off.rig.torsoBaseY,
-            off.rig.torsoBaseY - 0.34,
+            Math.max(0.44, (seat?.localOffset.y ?? 0.62) - 0.06),
             ease,
           );
-          off.rig.leftLeg.rotation.x = THREE.MathUtils.lerp(0, -1.2, ease);
-          off.rig.rightLeg.rotation.x = THREE.MathUtils.lerp(0, -1.1, ease);
-          off.rig.rightArm.rotation.x = THREE.MathUtils.damp(off.rig.rightArm.rotation.x, -0.45, 12, dt);
-          off.rig.leftArm.rotation.x = THREE.MathUtils.damp(off.rig.leftArm.rotation.x, -0.45, 12, dt);
           off.rig.root.position.copy(off.pos);
-          off.rig.root.rotation.y = off.yaw;
+          off.rig.root.rotation.set(0, off.yaw, 0);
 
           boardingRollPulse += Math.sin(b * Math.PI) * 0.03 * sideSign;
 
@@ -1444,6 +1651,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             off.ammo = config.weapons[off.weaponKind].magSize;
             off.reloadTimer = 0;
             off.roamTarget = null;
+            off.locationState = 'field';
             assignOfficerToUnitSeat(off, unit, idx < unit.seats.length ? idx : undefined);
           }
           return;
@@ -1454,22 +1662,12 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         const dz = targetZ - off.pos.z;
         const dist = Math.hypot(dx, dz);
 
-        off.rig.torso.position.y = THREE.MathUtils.damp(
-          off.rig.torso.position.y,
-          off.rig.torsoBaseY,
-          10,
-          dt,
-        );
-        off.rig.head.rotation.y = THREE.MathUtils.damp(off.rig.head.rotation.y, 0, 10, dt);
-        off.rig.rightArm.rotation.x = THREE.MathUtils.damp(off.rig.rightArm.rotation.x, 0, 10, dt);
-        off.rig.rightArm.rotation.z = THREE.MathUtils.damp(off.rig.rightArm.rotation.z, 0, 10, dt);
-        off.rig.leftArm.rotation.x = THREE.MathUtils.damp(off.rig.leftArm.rotation.x, 0, 10, dt);
-        off.rig.leftArm.rotation.z = THREE.MathUtils.damp(off.rig.leftArm.rotation.z, 0, 10, dt);
         if (off.rig.muzzleFlash) off.rig.muzzleFlash.visible = false;
 
         if (!forceBoard && dist > 0.85 && distToCar > 1.85) {
           allBack = false;
-          const spd = isPanicRetreat ? 6.6 : 5.2;
+          const isSprinting = isPanicRetreat || off.locationState === 'exiting_precinct';
+          const spd = isSprinting ? 6.4 : 5.2;
           const ux = dx / (dist || 1);
           const uz = dz / (dist || 1);
           const prevX = off.pos.x;
@@ -1495,25 +1693,23 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
               ? Math.atan2(stepDx, stepDz)
               : Math.atan2(dx, dz);
 
-          off.walkPhase += dt * (isPanicRetreat ? 15 : 10);
-          const swing = Math.sin(off.walkPhase) * (isPanicRetreat ? 0.7 : 0.55);
-          off.rig.leftLeg.rotation.x = swing;
-          off.rig.rightLeg.rotation.x = -swing;
-          if (isPanicRetreat) {
-            off.rig.leftArm.rotation.x = -swing * 0.9;
-            off.rig.rightArm.rotation.x = swing * 0.9;
-          }
+          off.walkPhase += dt * (isSprinting ? 14 : 10);
+          applyRigidHumanoidPose(off.rig, isSprinting ? 'run' : 'walk', {
+            phase: off.walkPhase,
+            dt,
+          });
           off.rig.root.position.copy(off.pos);
-          off.rig.root.rotation.y = off.yaw;
+          off.rig.root.rotation.set(0, off.yaw, 0);
         } else if (!forceBoard) {
           allBack = false;
           off.mountPhase = 'boarding';
           off.boardTimer = 0;
-          if (seat) seat.doorOpenTimer = 0.7;
+          if (seat) seat.doorOpenTimer = 0.75;
         } else {
           off.ammo = config.weapons[off.weaponKind].magSize;
           off.reloadTimer = 0;
           off.roamTarget = null;
+          off.locationState = 'field';
           assignOfficerToUnitSeat(off, unit, idx < unit.seats.length ? idx : undefined);
         }
       });
@@ -1530,11 +1726,12 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         unit.freeRoam = false;
         unit.mountTimer = 0;
         crew.forEach((off, idx) => {
+          if (off.hp <= 0) return;
           off.ragdoll.active = false;
-          if (off.hp <= 0) off.hp = off.maxHp;
           off.ammo = config.weapons[off.weaponKind].magSize;
           off.reloadTimer = 0;
           off.roamTarget = null;
+          off.locationState = 'field';
           if (off.boardingState !== 'seated') {
             assignOfficerToUnitSeat(off, unit, idx < unit.seats.length ? idx : undefined);
           }
@@ -1587,7 +1784,16 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             );
           }
           if (!reassigned) {
-            routeUnitToStation(unit, false, roadGraph, config, staticBvh, map);
+            if (patrolEnabled && unit.pos.x > apronThresholdX) {
+              unit.patrolTimer = defaultPatrolSec;
+              unit.patrolTargetNodeId = null;
+              unit.lightsActive = false;
+              unit.sirensActive = false;
+              unit.waypoints = [];
+              unit.waypointIndex = 0;
+            } else {
+              routeUnitToStation(unit, false, roadGraph, config, staticBvh, map);
+            }
           }
         }
       }
@@ -1600,10 +1806,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
 
     // --- Goal 10: STATION_STANDBY ---
     if (goal === 'STATION_STANDBY') {
-      if (unit.status !== UnitStatus.AtStation && bay) {
-        unit.pos.set(...bay.parkPos);
-        unit.yaw = bay.parkYaw;
-      }
+      // Natural free parking: preserve current parked position & angle without snapping!
       unit.status = UnitStatus.AtStation;
       unit.speed = 0;
       unit.dyn.vx = 0;
@@ -1611,40 +1814,137 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       unit.dyn.omega = 0;
       unit.lightsActive = false;
       unit.sirensActive = false;
+
+      // Walk any dismounted entering_precinct crew inside precinctDoors
+      crew.forEach((off, idx) => {
+        if (off.hp <= 0 || off.boardingState !== 'dismounted') return;
+        if (off.locationState === 'in_precinct') {
+          off.rig.root.visible = false;
+          return;
+        }
+        if (off.locationState === 'field') {
+          off.locationState = 'entering_precinct';
+          off.boardTimer = 0;
+        }
+        if (off.locationState === 'entering_precinct') {
+          off.boardTimer += dt;
+          const targetX = doorSpec.x + 0.35;
+          const targetZ = doorSpec.z + (idx % 2 === 0 ? -0.35 : 0.35);
+          const dx = targetX - off.pos.x;
+          const dz = targetZ - off.pos.z;
+          const dist = Math.hypot(dx, dz);
+          if (dist < 1.35 || off.boardTimer > 12.0) {
+            off.locationState = 'in_precinct';
+            off.rig.root.visible = false;
+            off.hp = off.maxHp;
+            off.armor = off.maxArmor;
+            off.ammo = config.weapons[off.weaponKind].magSize;
+            off.morale = 100;
+            off.cowardiceState = 'steady';
+            off.ragdoll.active = false;
+            off.mountPhase = 'walk';
+            off.boardTimer = 0;
+            unit.mounted = false;
+            return;
+          }
+          const spd = 2.6;
+          const ux = dx / dist;
+          const uz = dz / dist;
+          const prevX = off.pos.x;
+          const prevZ = off.pos.z;
+          off.pos.x += ux * spd * dt;
+          off.pos.z += uz * spd * dt;
+          staticBvh.resolveCircle(off.pos, 0.42);
+          if (Math.hypot(off.pos.x - prevX, off.pos.z - prevZ) < spd * dt * 0.25) {
+            const sideSign = idx % 2 === 0 ? 1 : -1;
+            off.pos.x += -uz * sideSign * spd * dt;
+            off.pos.z += ux * sideSign * spd * dt;
+            staticBvh.resolveCircle(off.pos, 0.42);
+          }
+          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
+          const stepDx = off.pos.x - prevX;
+          const stepDz = off.pos.z - prevZ;
+          off.yaw =
+            stepDx * stepDx + stepDz * stepDz > 1e-6
+              ? Math.atan2(stepDx, stepDz)
+              : Math.atan2(ux, uz);
+          off.walkPhase += dt * 7.5;
+          applyRigidHumanoidPose(off.rig, 'walk', { phase: off.walkPhase, dt });
+          off.rig.root.position.copy(off.pos);
+          off.rig.root.rotation.set(0, off.yaw, 0);
+          off.rig.root.visible = true;
+        }
+      });
+
       unit.rig.root.position.copy(unit.pos);
       unit.rig.root.rotation.y = unit.yaw;
       syncMountedSeats();
       continue;
     }
 
-    // --- Driving Goals: RETREAT_TO_STATION | PURSUE_VEHICLE | RESPOND_TO_CALL | RETURN_TO_STATION | DEPLOY_SPIKES (mounted) ---
+    // --- Driving Goals: RETREAT_TO_STATION | PURSUE_VEHICLE | RESPOND_TO_CALL | PATROL_STREETS | RETURN_TO_STATION | DEPLOY_SPIKES (mounted) ---
     if (goal === 'RETREAT_TO_STATION' && unit.status !== UnitStatus.Retreating) {
+      unit.bayApproachTimer = 0;
       routeUnitToStation(unit, true, roadGraph, config, staticBvh, map);
       simEventLog.warn('dispatch', `${unit.callsign} retreating to station`, reason);
     } else if (
       goal === 'RETURN_TO_STATION' &&
       (unit.status !== UnitStatus.Returning || prevGoal !== 'RETURN_TO_STATION')
     ) {
+      unit.bayApproachTimer = 0;
       routeUnitToStation(unit, false, roadGraph, config, staticBvh, map);
     } else if (goal === 'PURSUE_VEHICLE') {
       unit.status = UnitStatus.Pursuing;
     } else if (goal === 'RESPOND_TO_CALL' && unit.status !== UnitStatus.Responding) {
       unit.status = UnitStatus.Responding;
       unit.repathTimer = 0;
+    } else if (goal === 'PATROL_STREETS') {
+      unit.status = UnitStatus.Returning;
+      unit.lightsActive = false;
+      unit.sirensActive = false;
+      unit.patrolTimer = Math.max(0, (unit.patrolTimer ?? defaultPatrolSec) - dt);
+      if (
+        (unit.waypointIndex >= unit.waypoints.length || unit.waypoints.length === 0) &&
+        roadGraph.nodes.length > 0
+      ) {
+        const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z, staticBvh);
+        const candidates = roadGraph.nodes.filter(
+          (n) =>
+            n.id !== entry.nearestNode.id &&
+            Math.hypot(n.x - unit.pos.x, n.z - unit.pos.z) > 28,
+        );
+        const pick =
+          candidates.length > 0
+            ? candidates[Math.floor(rng() * candidates.length)]
+            : roadGraph.nodes[Math.floor(rng() * roadGraph.nodes.length)];
+        if (pick) {
+          unit.patrolTargetNodeId = pick.id;
+          const nodePath = roadGraph.findNodePath(entry.nearestNode.id, pick.id);
+          const wps: THREE.Vector3[] = [];
+          if (unit.pos.distanceToSquared(entry.point) > 9) {
+            wps.push(entry.point);
+          }
+          wps.push(...roadGraph.buildLaneWaypoints(nodePath, undefined, false));
+          pruneLeadingWaypoints(unit.pos, unit.yaw, wps, staticBvh);
+          unit.waypoints = wps;
+          unit.waypointIndex = 0;
+        }
+      }
     }
 
     const isPursuit = goal === 'PURSUE_VEHICLE';
     const isSpikeIntercept = goal === 'DEPLOY_SPIKES';
     const isRetreat = goal === 'RETREAT_TO_STATION';
+    const isPatrol = goal === 'PATROL_STREETS';
 
-    const rawUrgency = crime ? crime.urgency / 100 : isRetreat ? 0.75 : 0.42;
+    const rawUrgency = crime ? crime.urgency / 100 : isRetreat ? 0.75 : isPatrol ? 0.25 : 0.42;
     const urgencyNorm = THREE.MathUtils.clamp(
       isAggro && crime ? Math.max(rawUrgency, 0.78) + 0.14 : rawUrgency,
       0.24,
       1.0,
     );
     const recklessness = THREE.MathUtils.clamp(
-      isPursuit || isAggro ? Math.max(0.75, urgencyNorm) : (urgencyNorm - 0.34) / 0.66,
+      isPursuit || isAggro ? Math.max(0.75, urgencyNorm) : isPatrol ? 0 : (urgencyNorm - 0.34) / 0.66,
       0,
       1,
     );
@@ -1683,13 +1983,29 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           const leadZ = crime.vehiclePos.z + Math.cos(crime.vehicleYaw) * leadDist;
           unit.waypoints = [new THREE.Vector3(leadX, roadGraph.roadSurfaceY, leadZ)];
           unit.waypointIndex = 0;
-        } else if (unit.pos.x > apronThresholdX - 5) {
+        } else if (
+          dSq < 90 * 90 &&
+          unit.pos.x > apronThresholdX - 2 &&
+          staticBvh.raycastSegment(unit.pos.x, unit.pos.z, targetPos.x, targetPos.z).clear
+        ) {
+          // Allow direct off-road/alley traversal if unobstructed
+          unit.waypoints = [targetPos.clone()];
+          unit.waypointIndex = 0;
+        } else {
+          // Handles both road-network repath and apron-exit repath cleanly without getting stuck
+          const wps: THREE.Vector3[] = [];
+          const [apronExitX] = roadGraph.stationExitPoint;
+          if (unit.pos.x <= apronThresholdX - 2) {
+            const exitZ = bay ? bay.parkPos[2] : unit.pos.z;
+            wps.push(
+              new THREE.Vector3(apronExitX, world.surfaceHeights.apron, exitZ),
+            );
+          }
           const entry = roadGraph.findNearestRoadEntryPoint(
-            unit.pos.x,
+            unit.pos.x <= apronThresholdX - 2 ? apronExitX + 4 : unit.pos.x,
             unit.pos.z,
             staticBvh,
           );
-          const wps: THREE.Vector3[] = [];
           if (unit.pos.distanceToSquared(entry.point) > 9) {
             wps.push(entry.point);
           }
@@ -1719,7 +2035,9 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
     }
 
     const chassis = config.vehicles.chassis[unit.vehicleKind] ?? config.vehicles.chassis['sedan'];
-    const urgencyCruise = THREE.MathUtils.lerp(11.5, 24.6, urgencyNorm);
+    const urgencyCruise = isPatrol
+      ? defaultPatrolSpeed
+      : THREE.MathUtils.lerp(11.5, 24.6, urgencyNorm);
     const baseCruise = (isRetreat ? 17.5 : urgencyCruise) * chassis.chassisScale;
     const maxCruise =
       isPursuit || isSpikeIntercept
@@ -1739,7 +2057,78 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         Math.max(urgencyNorm, isPursuit || isSpikeIntercept ? 0.74 : 0),
       ) * chassis.maxSteerScale;
 
-    if (unit.waypointIndex >= unit.waypoints.length) {
+    const finishStationArrival = () => {
+      // Natural free parking: preserve current parked pos, yaw, body tilt & part damage
+      unit.speed = 0;
+      unit.dyn.vx = 0;
+      unit.dyn.vz = 0;
+      unit.dyn.omega = 0;
+      unit.lateralOffset = 0;
+      unit.avoidanceSteer = 0;
+      unit.stuckTimer = 0;
+      unit.impatience = 0;
+      unit.reverseTimer = 0;
+      unit.stallCount = 0;
+      unit.bayApproachTimer = 0;
+      unit.status = UnitStatus.AtStation;
+      unit.activeGoal = 'STATION_STANDBY';
+      unit.goalReason = 'Parked at precinct bay — crew entering station';
+      unit.assignedCaseNumber = null;
+      unit.assignedRole = null;
+      unit.pursuitRole = 'direct';
+      unit.lightsActive = false;
+      unit.sirensActive = false;
+      unit.freeRoam = false;
+      unit.mountTimer = 0;
+      unit.dismountTimer = 0;
+
+      // Eject living crew at real parked doors and send them inside precinctDoors
+      let anyLiving = false;
+      crew.forEach((off, idx) => {
+        if (off.hp <= 0) return;
+        anyLiving = true;
+        if (off.occupiedUnitId === unit.id && off.occupiedSeatIndex !== null) {
+          const seat = unit.seats[off.occupiedSeatIndex];
+          if (seat) {
+            if (seat.occupantOfficerId === off.id) seat.occupantOfficerId = null;
+            seat.doorOpenTimer = 1.1;
+            seatOffsetToWorld(unit, seat.exitOffset, off.pos);
+          } else {
+            off.pos.set(unit.pos.x + (idx % 2 === 0 ? 1.35 : -1.35), unit.pos.y, unit.pos.z);
+          }
+          staticBvh.resolveCircle(off.pos, 0.45);
+          off.pos.y = getSurfaceHeight(off.pos.x, off.pos.z, world);
+          unit.rig.root.parent?.add(off.rig.root);
+          off.occupiedUnitId = null;
+          off.occupiedSeatIndex = null;
+          off.boardingState = 'dismounted';
+          off.rig.root.visible = true;
+        }
+        off.locationState = 'entering_precinct';
+        off.mountPhase = 'walk';
+        off.boardTimer = 0;
+        off.ragdoll.active = false;
+        resetOfficerPose(off, off.yaw);
+        off.rig.root.position.copy(off.pos);
+      });
+      if (anyLiving) {
+        unit.mounted = false;
+      }
+    };
+
+    const distToBay = bay ? Math.hypot(unit.pos.x - bay.parkPos[0], unit.pos.z - bay.parkPos[2]) : 99;
+    const isReturningGoal = goal === 'RETURN_TO_STATION' || goal === 'RETREAT_TO_STATION';
+    if (isReturningGoal && distToBay < 9.5) {
+      unit.bayApproachTimer = (unit.bayApproachTimer ?? 0) + dt;
+    }
+
+    if (
+      isReturningGoal &&
+      ((distToBay < 3.4 && Math.abs(unit.speed) < 1.35 && unit.waypointIndex >= Math.max(0, unit.waypoints.length - 1)) ||
+        (unit.bayApproachTimer ?? 0) > 6.5)
+    ) {
+      finishStationArrival();
+    } else if (unit.waypointIndex >= unit.waypoints.length) {
       if (goal === 'RESPOND_TO_CALL') {
         const canPanicBeforeStop =
           !unit.isHeavyUnit && cowardiceLevel > 0.74 && rng() < (cowardiceLevel - 0.65) * 0.75;
@@ -1753,61 +2142,18 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         }
       } else if (goal === 'PURSUE_VEHICLE') {
         unit.repathTimer = 0;
+      } else if (goal === 'PATROL_STREETS') {
+        unit.repathTimer = 0;
       } else if (goal === 'DEPLOY_SPIKES') {
         unit.speed = 0;
         unit.dyn.vx = 0;
         unit.dyn.vz = 0;
-      } else {
-        if (bay) {
-          unit.pos.set(...bay.parkPos);
-          unit.yaw = bay.parkYaw;
+      } else if (isReturningGoal) {
+        if (distToBay > 12) {
+          routeUnitToStation(unit, isRetreat, roadGraph, config, staticBvh, map);
+        } else {
+          finishStationArrival();
         }
-        unit.speed = 0;
-        unit.dyn.vx = 0;
-        unit.dyn.vz = 0;
-        unit.dyn.omega = 0;
-        unit.dyn.bodyPitch = 0;
-        unit.dyn.bodyRoll = 0;
-        unit.lateralOffset = 0;
-        unit.avoidanceSteer = 0;
-        unit.stuckTimer = 0;
-        unit.impatience = 0;
-        unit.reverseTimer = 0;
-        unit.stallCount = 0;
-        unit.immobilized = false;
-        unit.immobilizeTilt = 0;
-        unit.status = UnitStatus.AtStation;
-        unit.activeGoal = 'STATION_STANDBY';
-        unit.goalReason = 'Parked & ready at station bay';
-        unit.assignedCaseNumber = null;
-        unit.assignedRole = null;
-        unit.pursuitRole = 'direct';
-        unit.lightsActive = false;
-        unit.sirensActive = false;
-        unit.freeRoam = false;
-        unit.mountTimer = 0;
-        unit.dismountTimer = 0;
-        unit.damageSmokeTimer = 0;
-        unit.rig.bodyGroup.rotation.set(0, 0, 0);
-        unit.rig.lightbar.detached = false;
-        unit.rig.lightbar.headlightLeftDetached = false;
-        unit.rig.lightbar.headlightRightDetached = false;
-        unit.rig.lightbar.taillightLeftDetached = false;
-        unit.rig.lightbar.taillightRightDetached = false;
-        unit.rig.wheels.forEach((w) => {
-          w.userData.bentAmount = 0;
-          w.rotation.z = 0;
-        });
-        crew.forEach((o) => {
-          o.hp = o.maxHp;
-          o.armor = o.maxArmor;
-          o.ammo = config.weapons[o.weaponKind].magSize;
-          o.morale = 100;
-          o.cowardiceState = 'steady';
-          o.ragdoll.active = false;
-          o.mountPhase = 'walk';
-          o.boardTimer = 0;
-        });
       }
     } else {
       const wp = unit.waypoints[unit.waypointIndex];

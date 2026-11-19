@@ -51,11 +51,13 @@ const ASSET_TABS: Array<{ id: DevAssetTab; label: string; icon: React.ReactNode 
   { id: 'materials', label: 'Mat', icon: <Palette className="h-3 w-3" /> },
   { id: 'texture', label: 'Tex', icon: <Image className="h-3 w-3" /> },
   { id: 'audio', label: 'Audio', icon: <Volume2 className="h-3 w-3" /> },
-  { id: 'prefabs', label: 'Vehicle', icon: <Car className="h-3 w-3" /> },
+  { id: 'prefabs', label: 'Pack', icon: <Car className="h-3 w-3" /> },
 ];
 
 const WORLD_GROUPS: Array<{ kind: WorldEntityKind; label: string }> = [
   { kind: 'police', label: 'Police Units' },
+  { kind: 'officer', label: 'Police Officers' },
+  { kind: 'assailant', label: 'Assailants' },
   { kind: 'crime', label: 'Incidents' },
   { kind: 'traffic', label: 'Traffic Cars' },
   { kind: 'ped', label: 'Pedestrians' },
@@ -74,6 +76,8 @@ export const DevToolsPane: React.FC<DevToolsPaneProps> = ({
     Record<WorldEntityKind, boolean>
   >({
     police: true,
+    officer: true,
+    assailant: true,
     crime: true,
     traffic: false,
     ped: false,
@@ -83,6 +87,8 @@ export const DevToolsPane: React.FC<DevToolsPaneProps> = ({
   const groupedWorldEntities = useMemo(() => {
     const map: Record<WorldEntityKind, NonNullable<DevEditorState['worldEntities']>> = {
       police: [],
+      officer: [],
+      assailant: [],
       crime: [],
       traffic: [],
       ped: [],

@@ -64,6 +64,7 @@ export type PoliceUnitGoalId =
   | 'RESPOND_TO_CALL'
   | 'MANUAL_FOOT_PATROL'
   | 'MOUNT_CREW'
+  | 'PATROL_STREETS'
   | 'RETURN_TO_STATION'
   | 'STATION_STANDBY';
 

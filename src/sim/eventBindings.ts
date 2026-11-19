@@ -33,36 +33,8 @@ export const DEFAULT_EVENT_BINDINGS: Record<SimEventId, EventBindingDef> =
     return acc;
   }, {} as Record<SimEventId, EventBindingDef>);
 
-const STORAGE_KEY = 'metro_precinct_event_bindings_v1';
-
-function loadUserOverrides(): Partial<Record<SimEventId, EventBindingDef>> {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object') return {};
-    const out: Partial<Record<SimEventId, EventBindingDef>> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (k in DEFAULT_EVENT_BINDINGS && v && typeof v === 'object') {
-        const rec = v as Record<string, unknown>;
-        if (typeof rec.audioId === 'string') {
-          out[k as SimEventId] = {
-            audioId: rec.audioId,
-            gainScale: typeof rec.gainScale === 'number' ? rec.gainScale : 1,
-            enabled: typeof rec.enabled === 'boolean' ? rec.enabled : true,
-          };
-        }
-      }
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 class EventBindingStore {
   private packDefaults: Partial<Record<SimEventId, EventBindingDef>> = {};
-  private userOverrides: Partial<Record<SimEventId, EventBindingDef>> = loadUserOverrides();
   private cache: Record<SimEventId, EventBindingDef> = { ...DEFAULT_EVENT_BINDINGS };
   private listeners = new Set<() => void>();
 
@@ -75,11 +47,10 @@ class EventBindingStore {
     for (const id of Object.keys(DEFAULT_EVENT_BINDINGS) as SimEventId[]) {
       const base = DEFAULT_EVENT_BINDINGS[id];
       const pack = this.packDefaults[id];
-      const user = this.userOverrides[id];
       next[id] = {
-        audioId: user?.audioId ?? pack?.audioId ?? base.audioId,
-        gainScale: user?.gainScale ?? pack?.gainScale ?? base.gainScale ?? 1,
-        enabled: user?.enabled ?? pack?.enabled ?? base.enabled ?? true,
+        audioId: pack?.audioId ?? base.audioId,
+        gainScale: pack?.gainScale ?? base.gainScale ?? 1,
+        enabled: pack?.enabled ?? base.enabled ?? true,
       };
     }
     this.cache = next;
@@ -98,30 +69,6 @@ class EventBindingStore {
   public getAll = (): Record<SimEventId, EventBindingDef> => {
     return this.cache;
   };
-
-  public getUserOverrides(): Partial<Record<SimEventId, EventBindingDef>> {
-    return { ...this.userOverrides };
-  }
-
-  public setUserOverride(eventId: SimEventId, binding: EventBindingDef): void {
-    this.userOverrides[eventId] = { ...binding };
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(this.userOverrides));
-    } catch {
-      // ignore storage errors
-    }
-    this.emit();
-  }
-
-  public resetAll(): void {
-    this.userOverrides = {};
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore storage errors
-    }
-    this.emit();
-  }
 
   public subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -143,14 +90,12 @@ export function resolveEventAudio(
   eventId: SimEventId,
   config?: EngineConfigAsset | null,
 ): EventBindingDef {
-  const userOverrides = eventBindingStore.getUserOverrides();
-  const user = userOverrides[eventId];
   const pack = config?.eventBindings?.[eventId];
   const def = DEFAULT_EVENT_BINDINGS[eventId];
   return {
-    audioId: user?.audioId ?? pack?.audioId ?? def.audioId,
-    gainScale: user?.gainScale ?? pack?.gainScale ?? def.gainScale ?? 1,
-    enabled: user?.enabled ?? pack?.enabled ?? def.enabled ?? true,
+    audioId: pack?.audioId ?? def.audioId,
+    gainScale: pack?.gainScale ?? def.gainScale ?? 1,
+    enabled: pack?.enabled ?? def.enabled ?? true,
   };
 }
 
