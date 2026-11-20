@@ -129,7 +129,12 @@ export default function App() {
   const [loadingAssets, setLoadingAssets] = useState(true);
   const [snapshot, setSnapshot] = useState<SimSnapshot>(INITIAL_SNAPSHOT);
   const [devState, setDevState] = useState<DevEditorState | null>(null);
-  const [activePane, setActivePane] = useState<SidebarPaneId | null>('units');
+  const [openPanes, setOpenPanes] = useState<SidebarPaneId[]>(['units']);
+  const [minimizedPanes, setMinimizedPanes] = useState<
+    Partial<Record<SidebarPaneId, boolean>>
+  >({});
+  const openPanesRef = useRef<SidebarPaneId[]>(['units']);
+  openPanesRef.current = openPanes;
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [eventLogOpen, setEventLogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);
@@ -217,7 +222,7 @@ export default function App() {
       (nextDev) => setDevState(nextDev),
     );
     engineRef.current = engine;
-    engine.getDevEditor()?.setActive(activePane === 'devtools');
+    engine.getDevEditor()?.setActive(openPanesRef.current.includes('devtools'));
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (
@@ -228,9 +233,10 @@ export default function App() {
         return;
       }
       if (keybindStore.matchesEvent(e, 'toggleHud')) {
-        setActivePane((prev) => {
-          engine.getDevEditor()?.setActive(false);
-          return prev ? null : 'units';
+        setOpenPanes((prev) => {
+          const next: SidebarPaneId[] = prev.length > 0 ? [] : ['units'];
+          engine.getDevEditor()?.setActive(next.includes('devtools'));
+          return next;
         });
       } else if (keybindStore.matchesEvent(e, 'spawnCrime')) {
         e.preventDefault();
@@ -287,11 +293,48 @@ export default function App() {
     simEventLog.info('asset', `Exported Pack V3 ZIP`, `${a.download}`);
   }, [preflightResult]);
 
-  const handleTogglePane = useCallback((pane: SidebarPaneId) => {
-    setActivePane((prev) => {
-      const next = prev === pane ? null : pane;
-      engineRef.current?.getDevEditor()?.setActive(next === 'devtools');
+  const handleTogglePane = useCallback(
+    (pane: SidebarPaneId) => {
+      const isOpen = openPanes.includes(pane);
+      const isMinimized = Boolean(minimizedPanes[pane]);
+
+      if (!isOpen) {
+        setOpenPanes((prev) => {
+          const next = [...prev, pane];
+          engineRef.current?.getDevEditor()?.setActive(next.includes('devtools'));
+          return next;
+        });
+        setMinimizedPanes((m) => ({ ...m, [pane]: false }));
+      } else if (isMinimized) {
+        setMinimizedPanes((m) => ({ ...m, [pane]: false }));
+        setOpenPanes((prev) => [...prev.filter((id) => id !== pane), pane]);
+      } else {
+        setOpenPanes((prev) => {
+          const next = prev.filter((id) => id !== pane);
+          engineRef.current?.getDevEditor()?.setActive(next.includes('devtools'));
+          return next;
+        });
+      }
+    },
+    [openPanes, minimizedPanes],
+  );
+
+  const handleClosePane = useCallback((pane: SidebarPaneId) => {
+    setOpenPanes((prev) => {
+      const next = prev.filter((id) => id !== pane);
+      engineRef.current?.getDevEditor()?.setActive(next.includes('devtools'));
       return next;
+    });
+  }, []);
+
+  const handleToggleMinimizePane = useCallback((pane: SidebarPaneId) => {
+    setMinimizedPanes((prev) => ({ ...prev, [pane]: !prev[pane] }));
+  }, []);
+
+  const handleFocusPane = useCallback((pane: SidebarPaneId) => {
+    setOpenPanes((prev) => {
+      if (prev[prev.length - 1] === pane) return prev;
+      return [...prev.filter((id) => id !== pane), pane];
     });
   }, []);
 
@@ -392,7 +435,8 @@ export default function App() {
   }, []);
 
   const handleJumpToValidationIssue = useCallback((issue: ValidationIssue) => {
-    setActivePane('devtools');
+    setOpenPanes((prev) => [...prev.filter((id) => id !== 'devtools'), 'devtools']);
+    setMinimizedPanes((m) => ({ ...m, devtools: false }));
     const dev = engineRef.current?.getDevEditor();
     if (!dev) return;
     dev.setActive(true);
@@ -522,10 +566,14 @@ export default function App() {
 
           <SidebarPanel
             snapshot={snapshot}
-            activePane={activePane}
+            openPanes={openPanes}
+            minimizedPanes={minimizedPanes}
             loadedAssets={currentAssets}
             assetBusy={loadingAssets}
             onTogglePane={handleTogglePane}
+            onClosePane={handleClosePane}
+            onToggleMinimizePane={handleToggleMinimizePane}
+            onFocusPane={handleFocusPane}
             onSelectUnit={handleSelectUnit}
             onSetUnitBaseColor={handleSetUnitBaseColor}
             onSetLightbarById={handleSetLightbarById}

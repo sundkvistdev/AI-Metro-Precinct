@@ -94,7 +94,7 @@ export const AssetHierarchyPanel: React.FC<AssetHierarchyPanelProps> = ({
         className="w-full border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-100 placeholder:text-zinc-500 rounded-none shrink-0"
       />
 
-      <div className="flex-1 min-h-0 max-h-[520px] overflow-y-auto border border-zinc-600 bg-zinc-900">
+      <div className="flex-1 min-h-0 overflow-y-auto border border-zinc-600 bg-zinc-900">
         {/* Maps */}
         {renderGroupHeader('maps', 'Maps', maps.length, <Building2 className="h-3 w-3 text-sky-300 shrink-0" />)}
         {openSections.maps &&

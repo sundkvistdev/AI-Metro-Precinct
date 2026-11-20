@@ -138,9 +138,9 @@ export const DevToolsPane: React.FC<DevToolsPaneProps> = ({
   ).length;
 
   return (
-    <div className="space-y-2 text-xs">
+    <div className="flex flex-col h-full min-h-0 gap-2 text-xs">
       {/* Top 2-Mode Switcher + Pack Actions Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-1.5 border border-zinc-600 bg-zinc-900/70 p-1">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 border border-zinc-600 bg-zinc-900/70 p-1 shrink-0">
         <div className="grid grid-cols-2 gap-1 w-64 shrink-0">
           <button
             type="button"
@@ -226,10 +226,10 @@ export const DevToolsPane: React.FC<DevToolsPaneProps> = ({
       </div>
 
       {/* Persistent 2-Column Workspace: Left = Full Hierarchy, Right = Relevant Controls */}
-      <div className="grid grid-cols-[220px_1fr] gap-2 items-start">
+      <div className="flex-1 min-h-0 grid grid-cols-[230px_1fr] gap-2 items-stretch">
         {/* LEFT COLUMN: FULL SCENE / PACK HIERARCHY */}
-        <div className="border border-zinc-600 bg-zinc-900/60 p-1.5 space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-zinc-300 border-b border-zinc-700 pb-1">
+        <div className="flex flex-col h-full min-h-0 border border-zinc-600 bg-zinc-900/60 p-1.5 gap-1.5">
+          <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-zinc-300 border-b border-zinc-700 pb-1 shrink-0">
             <span>
               {state.devMode === 'world' ? 'World Hierarchy' : 'Pack V3 Hierarchy'}
             </span>
@@ -241,15 +241,15 @@ export const DevToolsPane: React.FC<DevToolsPaneProps> = ({
           </div>
 
           {state.devMode === 'world' ? (
-            <div className="space-y-1.5">
+            <div className="flex-1 min-h-0 flex flex-col gap-1.5">
               <input
                 type="text"
                 value={worldSearch}
                 onChange={(e) => setWorldSearch(e.target.value)}
                 placeholder="Filter live objects..."
-                className="w-full border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-100 placeholder:text-zinc-500 rounded-none"
+                className="w-full border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-100 placeholder:text-zinc-500 rounded-none shrink-0"
               />
-              <div className="max-h-[480px] overflow-y-auto border border-zinc-700 bg-zinc-900">
+              <div className="flex-1 min-h-0 overflow-y-auto border border-zinc-700 bg-zinc-900">
                 {WORLD_GROUPS.map((grp) => {
                   const list = groupedWorldEntities[grp.kind];
                   const isOpen = openWorldGroups[grp.kind];
@@ -326,15 +326,17 @@ export const DevToolsPane: React.FC<DevToolsPaneProps> = ({
               </div>
             </div>
           ) : (
-            <AssetHierarchyPanel controller={controller} state={state} />
+            <div className="flex-1 min-h-0 flex flex-col">
+              <AssetHierarchyPanel controller={controller} state={state} />
+            </div>
           )}
         </div>
 
         {/* RIGHT COLUMN: RELEVANT EDITOR & DEBUG CONTROLS */}
-        <div className="min-w-0 space-y-2">
+        <div className="flex flex-col h-full min-w-0 min-h-0 gap-2">
           {/* Asset Editor Tabs Strip */}
           {state.devMode === 'asset' && (
-            <div className="grid grid-cols-7 gap-0.5 border border-zinc-600 bg-zinc-900/50 p-0.5">
+            <div className="grid grid-cols-7 gap-0.5 border border-zinc-600 bg-zinc-900/50 p-0.5 shrink-0">
               {ASSET_TABS.map((t) => {
                 const active = state.assetTab === t.id;
                 const dirtyDot =
@@ -431,36 +433,38 @@ export const DevToolsPane: React.FC<DevToolsPaneProps> = ({
           )}
 
           {/* Active Editor / World Controls */}
-          {state.devMode === 'world' && (
-            <WorldInstanceEditorTab controller={controller} state={state} />
-          )}
-
-          {state.devMode === 'asset' &&
-            (state.assetTab === 'map' || state.assetTab === 'hierarchy') && (
-              <MapWorldEditorTab controller={controller} state={state} />
+          <div className="flex-1 min-h-0 overflow-y-auto pr-0.5 space-y-2">
+            {state.devMode === 'world' && (
+              <WorldInstanceEditorTab controller={controller} state={state} />
             )}
-          {state.devMode === 'asset' && state.assetTab === 'model' && (
-            <ModelEditorTab controller={controller} state={state} />
-          )}
-          {state.devMode === 'asset' && state.assetTab === 'lightbars' && (
-            <LightbarEditorTab
-              controller={controller}
-              state={state}
-              onApplyToFleet={onApplyLightbarToFleet}
-            />
-          )}
-          {state.devMode === 'asset' && state.assetTab === 'materials' && (
-            <MaterialsEditorTab controller={controller} state={state} />
-          )}
-          {state.devMode === 'asset' && state.assetTab === 'texture' && (
-            <TextureEditorTab controller={controller} state={state} />
-          )}
-          {state.devMode === 'asset' && state.assetTab === 'audio' && (
-            <AudioEditorTab controller={controller} state={state} />
-          )}
-          {state.devMode === 'asset' && state.assetTab === 'prefabs' && (
-            <TemplatesTab controller={controller} state={state} />
-          )}
+
+            {state.devMode === 'asset' &&
+              (state.assetTab === 'map' || state.assetTab === 'hierarchy') && (
+                <MapWorldEditorTab controller={controller} state={state} />
+              )}
+            {state.devMode === 'asset' && state.assetTab === 'model' && (
+              <ModelEditorTab controller={controller} state={state} />
+            )}
+            {state.devMode === 'asset' && state.assetTab === 'lightbars' && (
+              <LightbarEditorTab
+                controller={controller}
+                state={state}
+                onApplyToFleet={onApplyLightbarToFleet}
+              />
+            )}
+            {state.devMode === 'asset' && state.assetTab === 'materials' && (
+              <MaterialsEditorTab controller={controller} state={state} />
+            )}
+            {state.devMode === 'asset' && state.assetTab === 'texture' && (
+              <TextureEditorTab controller={controller} state={state} />
+            )}
+            {state.devMode === 'asset' && state.assetTab === 'audio' && (
+              <AudioEditorTab controller={controller} state={state} />
+            )}
+            {state.devMode === 'asset' && state.assetTab === 'prefabs' && (
+              <TemplatesTab controller={controller} state={state} />
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -21,7 +21,6 @@ import {
   Volume2,
   VolumeX,
   Wrench,
-  X,
 } from 'lucide-react';
 import { KeybindActionId, LoadedJsonAssets } from '../assets/assetTypes';
 import { hudLayoutStore, HudWidgetId, useHudLayout } from '../sim/hudLayout';
@@ -32,6 +31,7 @@ import {
   useKeybinds,
 } from '../sim/keybinds';
 import { HudEditableFrame } from './HudEditableFrame';
+import { DraggableResizableWindow } from './DraggableResizableWindow';
 import {
   BackupMode,
   CameraMode,
@@ -54,10 +54,14 @@ export type SidebarPaneId =
 
 export interface SidebarPanelProps {
   snapshot: SimSnapshot;
-  activePane: SidebarPaneId | null;
+  openPanes: SidebarPaneId[];
+  minimizedPanes: Partial<Record<SidebarPaneId, boolean>>;
   loadedAssets: LoadedJsonAssets | null;
   assetBusy: boolean;
   onTogglePane: (pane: SidebarPaneId) => void;
+  onClosePane: (pane: SidebarPaneId) => void;
+  onToggleMinimizePane: (pane: SidebarPaneId) => void;
+  onFocusPane: (pane: SidebarPaneId) => void;
   onSelectUnit: (id: string) => void;
   onSetUnitBaseColor: (unitId: string, colorHex: number) => void;
   onSetLightbarById: (lightbarId: string) => void;
@@ -101,13 +105,61 @@ const STATUS_LABELS: Record<UnitStatus, string> = {
   [UnitStatus.Returning]: 'Returning',
 };
 
-const PANE_META: Record<SidebarPaneId, { title: string; icon: React.ReactNode }> = {
-  units: { title: 'Patrol Units', icon: <Car className="h-4 w-4" /> },
-  dispatch: { title: 'Dispatch & Tactics', icon: <ShieldAlert className="h-4 w-4" /> },
-  world: { title: 'Maps & Lightbars', icon: <MapPin className="h-4 w-4" /> },
-  settings: { title: 'Settings & Controls', icon: <Settings className="h-4 w-4" /> },
-  assets: { title: 'Asset Pack V3', icon: <FolderArchive className="h-4 w-4" /> },
-  devtools: { title: 'World & Asset Studio', icon: <Wrench className="h-4 w-4" /> },
+const PANE_META: Record<
+  SidebarPaneId,
+  {
+    title: string;
+    icon: React.ReactNode;
+    defaultPos: { x: number; y: number };
+    defaultSize: { w: number; h: number };
+    minSize: { w: number; h: number };
+  }
+> = {
+  units: {
+    title: 'Patrol Units',
+    icon: <Car className="h-4 w-4" />,
+    defaultPos: { x: 56, y: 54 },
+    defaultSize: { w: 325, h: 470 },
+    minSize: { w: 270, h: 240 },
+  },
+  dispatch: {
+    title: 'Dispatch & Tactics',
+    icon: <ShieldAlert className="h-4 w-4" />,
+    defaultPos: { x: 96, y: 74 },
+    defaultSize: { w: 340, h: 520 },
+    minSize: { w: 280, h: 280 },
+  },
+  world: {
+    title: 'Maps & Lightbars',
+    icon: <MapPin className="h-4 w-4" />,
+    defaultPos: { x: 136, y: 94 },
+    defaultSize: { w: 340, h: 500 },
+    minSize: { w: 280, h: 260 },
+  },
+  settings: {
+    title: 'Settings & Controls',
+    icon: <Settings className="h-4 w-4" />,
+    defaultPos: { x: 176, y: 114 },
+    defaultSize: { w: 340, h: 430 },
+    minSize: { w: 280, h: 260 },
+  },
+  assets: {
+    title: 'Asset Pack V3',
+    icon: <FolderArchive className="h-4 w-4" />,
+    defaultPos: { x: 216, y: 134 },
+    defaultSize: { w: 350, h: 460 },
+    minSize: { w: 290, h: 260 },
+  },
+  devtools: {
+    title: 'World & Asset Studio',
+    icon: <Wrench className="h-4 w-4" />,
+    defaultPos: { x: 56, y: 54 },
+    defaultSize: {
+      w: typeof window !== 'undefined' ? Math.min(920, window.innerWidth - 80) : 920,
+      h: typeof window !== 'undefined' ? Math.min(640, window.innerHeight - 120) : 640,
+    },
+    minSize: { w: 540, h: 360 },
+  },
 };
 
 type IngameSettingsTab = 'sim' | 'audio' | 'graphics' | 'keybinds' | 'hud';
@@ -115,10 +167,14 @@ type IngameSettingsTab = 'sim' | 'audio' | 'graphics' | 'keybinds' | 'hud';
 export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
   const {
     snapshot,
-    activePane,
+    openPanes,
+    minimizedPanes,
     loadedAssets,
     assetBusy,
     onTogglePane,
+    onClosePane,
+    onToggleMinimizePane,
+    onFocusPane,
     onSelectUnit,
     onSetUnitBaseColor,
     onSetLightbarById,
@@ -209,77 +265,12 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
       devTools.state?.dirtyAudio,
   );
 
-  return (
-    <HudEditableFrame
-      widgetId="sidebarDock"
-      label="Sidebar Dock"
-      allowWidthResize={false}
-      allowHeightResize={false}
-      zIndex={20}
-    >
-      <div className="pointer-events-none flex items-start gap-1">
-        {/* Vertical Categorized Icon Rail */}
-        <nav
-          aria-label="Simulation control panes"
-          className="pointer-events-auto ui-panel flex flex-col divide-y divide-zinc-600 shadow-lg shrink-0"
-        >
-          {(Object.keys(PANE_META) as SidebarPaneId[]).map((id) => {
-            const isOpen = activePane === id;
-            const badge = id === 'assets' && snapshot.assetIssues.length > 0;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onTogglePane(id)}
-                title={PANE_META[id].title}
-                aria-label={PANE_META[id].title}
-                aria-expanded={isOpen}
-                className={`relative flex h-9 w-9 items-center justify-center transition-colors cursor-pointer rounded-none ${
-                  isOpen
-                    ? 'bg-zinc-200 text-zinc-900'
-                    : 'bg-zinc-800/90 text-zinc-200 hover:bg-zinc-700 hover:text-white'
-                }`}
-              >
-                {PANE_META[id].icon}
-                {badge && (
-                  <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 bg-amber-400" />
-                )}
-                {id === 'devtools' && devDirty && (
-                  <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 bg-sky-400" />
-                )}
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Collapsible Active Pane */}
-        {activePane && (
-          <aside
-            className={`pointer-events-auto ui-panel max-h-[calc(100vh-112px)] flex flex-col shadow-xl ${
-              activePane === 'devtools'
-                ? 'w-[min(740px,calc(100vw-60px))]'
-                : 'w-[310px]'
-            }`}
-          >
-            <div className="flex items-center justify-between border-b border-zinc-600 bg-zinc-700/75 px-2.5 py-1.5 shrink-0">
-              <span className="font-display text-xs font-semibold tracking-wider uppercase text-zinc-100">
-                {PANE_META[activePane].title}
-              </span>
-              <button
-                type="button"
-                onClick={() => onTogglePane(activePane)}
-                aria-label="Collapse pane"
-                className="border border-zinc-500 bg-zinc-700 p-0.5 text-zinc-200 hover:bg-zinc-600 cursor-pointer rounded-none"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-            <div className="overflow-y-auto p-2 space-y-2.5">
-              {/* UNITS */}
-              {activePane === 'units' && (
-                <>
-                  <div className="space-y-1">
+  const renderPaneBody = (paneId: SidebarPaneId): React.ReactNode => {
+    switch (paneId) {
+      case 'units':
+        return (
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2.5">
+            <div className="space-y-1">
                     {snapshot.units.map((unit) => {
                       const selected = unit.id === snapshot.selectedUnitId;
                       const statusText =
@@ -458,11 +449,12 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                       )}
                     </div>
                   )}
-                </>
-              )}
+          </div>
+        );
 
-              {/* DISPATCH & TACTICS */}
-              {activePane === 'dispatch' && (
+      case 'dispatch':
+        return (
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2.5">
                 <div className="space-y-2 text-xs">
                   <div className="grid grid-cols-2 gap-1">
                     <button
@@ -733,10 +725,12 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                     </label>
                   </div>
                 </div>
-              )}
+          </div>
+        );
 
-              {/* WORLD, MULTI-MAP SWITCHER & PACK LIGHTBARS */}
-              {activePane === 'world' && (
+      case 'world':
+        return (
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2.5">
                 <div className="space-y-2 text-xs">
                   {/* Live Map Switcher */}
                   <div className="ui-subpanel p-2 space-y-1.5">
@@ -902,10 +896,12 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                     </div>
                   </div>
                 </div>
-              )}
+          </div>
+        );
 
-              {/* TABBED IN-GAME SETTINGS & HUD CONFIGURATOR */}
-              {activePane === 'settings' && (
+      case 'settings':
+        return (
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2.5">
                 <div className="space-y-2 text-xs">
                   <div className="grid grid-cols-5 gap-0.5 border border-zinc-600 bg-zinc-900/60 p-0.5">
                     {(
@@ -1213,10 +1209,12 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                     </div>
                   )}
                 </div>
-              )}
+          </div>
+        );
 
-              {/* ASSET PACK V3 MANAGER */}
-              {activePane === 'assets' && (
+      case 'assets':
+        return (
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2.5">
                 <AssetManagerPane
                   snapshot={snapshot}
                   loadedAssets={loadedAssets}
@@ -1226,21 +1224,113 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                   onReloadDefaultPack={onReloadDefaultPack}
                   onOpenErrorDialog={onOpenErrorDialog}
                 />
-              )}
+          </div>
+        );
 
-              {/* DEV & ASSET STUDIO */}
-              {activePane === 'devtools' && (
+      case 'devtools':
+        return (
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden p-2">
                 <DevToolsPane
                   {...devTools}
                   onExportZipPack={onExportZipPack}
                   onOpenValidator={onOpenValidator}
                   onApplyLightbarToFleet={onSetLightbarById}
                 />
-              )}
-            </div>
-          </aside>
-        )}
-      </div>
-    </HudEditableFrame>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <>
+      <HudEditableFrame
+        widgetId="sidebarDock"
+        label="Sidebar Dock"
+        allowWidthResize={false}
+        allowHeightResize={false}
+        zIndex={20}
+      >
+        <nav
+          aria-label="Simulation control panes"
+          className="pointer-events-auto ui-panel flex flex-col divide-y divide-zinc-600 shadow-lg shrink-0"
+        >
+          {(Object.keys(PANE_META) as SidebarPaneId[]).map((id) => {
+            const isOpen = openPanes.includes(id);
+            const isCollapsed = Boolean(isOpen && minimizedPanes[id]);
+            const badge = id === 'assets' && snapshot.assetIssues.length > 0;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onTogglePane(id)}
+                title={
+                  isCollapsed
+                    ? `${PANE_META[id].title} (Collapsed — click to restore)`
+                    : isOpen
+                    ? `${PANE_META[id].title} (Open — click to close)`
+                    : `${PANE_META[id].title} (Click to open dialog)`
+                }
+                aria-label={PANE_META[id].title}
+                aria-expanded={isOpen && !isCollapsed}
+                className={`relative flex h-9 w-9 items-center justify-center transition-colors cursor-pointer rounded-none ${
+                  isCollapsed
+                    ? 'bg-zinc-700 text-sky-300 ring-1 ring-inset ring-sky-400/70 hover:bg-zinc-600'
+                    : isOpen
+                    ? 'bg-zinc-200 text-zinc-900'
+                    : 'bg-zinc-800/90 text-zinc-200 hover:bg-zinc-700 hover:text-white'
+                }`}
+              >
+                {PANE_META[id].icon}
+                {badge && (
+                  <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 bg-amber-400" />
+                )}
+                {id === 'devtools' && devDirty && (
+                  <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 bg-sky-400" />
+                )}
+                {isCollapsed && (
+                  <span className="absolute left-0.5 bottom-0.5 h-1 w-2 bg-sky-400" />
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      </HudEditableFrame>
+
+      {/* Movable, Resizable, Collapsible & Closeable Floating Dialogs */}
+      {openPanes.map((paneId, idx) => {
+        const meta = PANE_META[paneId];
+        const subtitle =
+          paneId === 'devtools' && devTools.state
+            ? devTools.state.devMode === 'world'
+              ? 'World Instance Mode'
+              : `Asset Editor · ${devTools.state.assetTab.toUpperCase()}`
+            : paneId === 'units'
+            ? `${snapshot.units.length} units`
+            : paneId === 'dispatch'
+            ? `${snapshot.activeCrimes.length} active`
+            : paneId === 'world'
+            ? snapshot.mapName
+            : undefined;
+
+        return (
+          <DraggableResizableWindow
+            key={paneId}
+            title={meta.title}
+            subtitle={subtitle}
+            icon={meta.icon}
+            defaultPos={meta.defaultPos}
+            defaultSize={meta.defaultSize}
+            minSize={meta.minSize}
+            minimized={Boolean(minimizedPanes[paneId])}
+            onToggleMinimize={() => onToggleMinimizePane(paneId)}
+            onFocus={() => onFocusPane(paneId)}
+            onClose={() => onClosePane(paneId)}
+            zIndex={30 + idx}
+          >
+            {renderPaneBody(paneId)}
+          </DraggableResizableWindow>
+        );
+      })}
+    </>
   );
 };
