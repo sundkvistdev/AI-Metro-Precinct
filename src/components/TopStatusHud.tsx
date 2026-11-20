@@ -5,6 +5,7 @@ import {
   Info,
   LayoutGrid,
   LogOut,
+  Map as MapIcon,
   ScrollText,
   ShieldCheck,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ export interface TopStatusHudProps {
   onOpenErrorDialog: () => void;
   onOpenEventLog: () => void;
   onOpenValidator: () => void;
+  onOpenMapDialog?: () => void;
   onReturnToMenu: () => void;
 }
 
@@ -28,6 +30,7 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
   onOpenErrorDialog,
   onOpenEventLog,
   onOpenValidator,
+  onOpenMapDialog,
   onReturnToMenu,
 }) => {
   const [infoOpen, setInfoOpen] = useState(false);
@@ -126,8 +129,10 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
                   <div className="text-zinc-100 font-semibold">{snapshot.pedestrianCount}</div>
                 </div>
                 <div className="ui-subpanel px-2 py-1">
-                  <div className="text-[10px] text-zinc-400">Debris</div>
-                  <div className="text-zinc-100 font-semibold">{snapshot.debrisCount}</div>
+                  <div className="text-[10px] text-zinc-400">Debris / Wrecks</div>
+                  <div className="text-zinc-100 font-semibold">
+                    {snapshot.debrisCount} / {snapshot.persistentWreckCount + snapshot.persistentBodyCount}
+                  </div>
                 </div>
               </div>
 
@@ -186,7 +191,12 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
                             </span>
                           </span>
                           <span className="shrink-0 text-zinc-300">
-                            {statusLabel} ·{' '}
+                            {crime.sightStatus === 'visual'
+                              ? 'VIS'
+                              : crime.showQuestionMark
+                              ? '? LOST'
+                              : 'PRED'}{' '}
+                            · {statusLabel} ·{' '}
                             {!crime.suspectAlive
                               ? 'Down'
                               : crime.inVehiclePursuit
@@ -210,6 +220,17 @@ export const TopStatusHud: React.FC<TopStatusHudProps> = ({
 
         {/* Top-Right Actions */}
         <div className="flex items-start gap-1">
+          {onOpenMapDialog && (
+            <button
+              type="button"
+              onClick={onOpenMapDialog}
+              title="Open Interactive Sector Map"
+              className="pointer-events-auto flex items-center gap-1 border border-zinc-500 bg-zinc-700/95 px-2 py-1 text-xs font-medium text-zinc-200 hover:bg-zinc-600 cursor-pointer whitespace-nowrap shrink-0 rounded-none"
+            >
+              <MapIcon className="h-3.5 w-3.5 text-sky-400" />
+              Map
+            </button>
+          )}
           <button
             type="button"
             onClick={() => hudLayoutStore.setEditMode(!hud.editMode)}

@@ -43,7 +43,7 @@
       { "id": "RESPOND_TO_CALL", "label": "Code-3 Respond to Scene", "enabled": true, "priority": 65, "params": { "approachDist": 16.0 } },
       { "id": "BOARD_CRUISER", "label": "Board Vehicle After Scene", "enabled": true, "priority": 50 },
       { "id": "MANUAL_FOOT_PATROL", "label": "Free-Roam Patrol / Combat", "enabled": true, "priority": 40 },
-      { "id": "PATROL_STREETS", "label": "Aimless Street Patrol", "enabled": true, "priority": 25, "params": { "patrolDuration": 16.0, "cruiseSpeed": 10.5 } },
+      { "id": "PATROL_STREETS", "label": "Aimless Street Patrol", "enabled": true, "priority": 25, "params": { "patrolDuration": 36.0, "cruiseSpeed": 10.5, "maxRadiusFromPrecinct": 125.0, "maxPatrolCars": 2 } },
       { "id": "RETURN_TO_PRECINCT", "label": "RTB & Park in Station Bay", "enabled": true, "priority": 20 },
       { "id": "PARKED_STANDBY", "label": "Standby at Precinct", "enabled": true, "priority": 10 }
     ],
@@ -156,7 +156,7 @@
     ]
   },
   "simulation": {
-    "initialCrimeDelaySec": 1.4,
+    "initialCrimeDelaySec": 8.5,
     "crimeCheckIntervalSec": 5.0,
     "maxActiveCrimes": 4,
     "autoCrimeMaxConcurrent": 2,
@@ -381,6 +381,7 @@
         "liveryId": "classic_bw",
         "weaponKind": "pistol",
         "isHeavyUnit": false,
+        "vehicleClass": 0,
         "parkPos": [-92, 0.18, -58],
         "parkYaw": 1.5707963,
         "exitRoadNodeId": 6
@@ -392,6 +393,7 @@
         "liveryId": "navy_silver",
         "weaponKind": "rifle",
         "isHeavyUnit": false,
+        "vehicleClass": 0,
         "parkPos": [-92, 0.18, -50],
         "parkYaw": 1.5707963,
         "exitRoadNodeId": 6
@@ -403,6 +405,7 @@
         "liveryId": "forest_cream",
         "weaponKind": "pistol",
         "isHeavyUnit": false,
+        "vehicleClass": 0,
         "parkPos": [-92, 0.18, -42],
         "parkYaw": 1.5707963,
         "exitRoadNodeId": 7
@@ -414,6 +417,7 @@
         "liveryId": "slate_cobalt",
         "weaponKind": "rifle",
         "isHeavyUnit": false,
+        "vehicleClass": 0,
         "parkPos": [-92, 0.18, -34],
         "parkYaw": 1.5707963,
         "exitRoadNodeId": 7
@@ -425,6 +429,7 @@
         "liveryId": "transport_blue",
         "weaponKind": "pistol",
         "isHeavyUnit": false,
+        "vehicleClass": 0,
         "parkPos": [-92, 0.18, -26],
         "parkYaw": 1.5707963,
         "exitRoadNodeId": 7
@@ -436,6 +441,7 @@
         "liveryId": "tactical_swat",
         "weaponKind": "rifle",
         "isHeavyUnit": true,
+        "vehicleClass": 1,
         "parkPos": [-92, 0.18, -18],
         "parkYaw": 1.5707963,
         "exitRoadNodeId": 7
@@ -447,6 +453,7 @@
         "liveryId": "tactical_swat",
         "weaponKind": "rifle",
         "isHeavyUnit": true,
+        "vehicleClass": 1,
         "parkPos": [-92, 0.18, -10],
         "parkYaw": 1.5707963,
         "exitRoadNodeId": 7

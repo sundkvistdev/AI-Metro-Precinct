@@ -257,12 +257,16 @@ export function pruneLeadingWaypoints(
     const shouldDrop = dist < 4.8 || (dist < 18 && dot < 1.2);
     if (!shouldDrop) break;
 
-    if (
-      staticBvh &&
-      nextWp &&
-      !staticBvh.raycastSegment(pos.x, pos.z, nextWp.x, nextWp.z).clear
-    ) {
-      break;
+    if (staticBvh && nextWp) {
+      const ndx = nextWp.x - pos.x;
+      const ndz = nextWp.z - pos.z;
+      const nlen = Math.hypot(ndx, ndz);
+      if (
+        nlen > 0.1 &&
+        !staticBvh.sweepCorridor(pos.x, pos.z, ndx / nlen, ndz / nlen, nlen, 1.35).clear
+      ) {
+        break;
+      }
     }
     waypoints.shift();
   }

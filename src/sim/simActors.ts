@@ -52,6 +52,7 @@ export interface OfficerActor {
   maxArmor: number;
   weaponKind: WeaponKind;
   isHeavy: boolean;
+  officerClass: 0 | 1;
   morale: number;
   cowardiceState: CowardiceState;
   ragdoll: RagdollState;
@@ -107,6 +108,7 @@ export interface PoliceUnit {
   lightbarId: string;
   baseColorHex: number;
   isHeavyUnit: boolean;
+  vehicleClass: 0 | 1;
   weaponKind: WeaponKind;
   wheelRadius: number;
   halfW: number;
@@ -233,6 +235,35 @@ export interface ActiveCrime {
   cleanupTimer: number;
   elapsedSec: number;
   engagedSec: number;
+  reportedPos: THREE.Vector3;
+  lastKnownPos: THREE.Vector3;
+  lastKnownVel: THREE.Vector3;
+  predictedPos: THREE.Vector3;
+  lastSeenSimTime: number;
+  everSpotted: boolean;
+  hasLineOfSight: boolean;
+  sightLostSec: number;
+  convertedFromCivId?: string;
+  convertedFromPedId?: string;
+}
+
+export interface PersistentWreck {
+  id: string;
+  kind: 'suspect_vehicle';
+  object: THREE.Object3D;
+  x: number;
+  z: number;
+  yaw: number;
+  createdAt: number;
+}
+
+export interface PersistentCorpse {
+  id: string;
+  kind: 'suspect';
+  object: THREE.Object3D;
+  x: number;
+  z: number;
+  createdAt: number;
 }
 
 export interface CivilianVehicle {

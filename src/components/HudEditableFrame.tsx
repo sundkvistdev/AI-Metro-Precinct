@@ -81,7 +81,7 @@ export const HudEditableFrame: React.FC<HudEditableFrameProps> = ({
         left: widget.x,
         top: widget.y,
         width: hud.editMode || allowWidthResize ? widget.w : 'auto',
-        height: allowHeightResize && hud.editMode ? widget.h : 'auto',
+        height: allowHeightResize ? widget.h : 'auto',
         zIndex,
         opacity: hud.hudOpacity,
       }}

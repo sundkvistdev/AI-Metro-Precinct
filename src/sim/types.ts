@@ -165,6 +165,76 @@ export interface CrimeSummary {
   apcDeployed: boolean;
   nailMatDeployed: boolean;
   elapsedSec: number;
+  sightStatus: 'visual' | 'predicted' | 'lost';
+  showQuestionMark: boolean;
+  hasLineOfSight: boolean;
+}
+
+export interface RadarStaticMapData {
+  halfSize: number;
+  roadWidth: number;
+  roadPolylines: Array<Array<[number, number]>>;
+  extraStrips: Array<{ x1: number; z1: number; x2: number; z2: number }>;
+  buildings: Array<{
+    x: number;
+    z: number;
+    w: number;
+    d: number;
+    rotY: number;
+    isStation?: boolean;
+  }>;
+  zones: Array<{
+    kind: string;
+    cx: number;
+    cz: number;
+    w: number;
+    d: number;
+    rotY: number;
+  }>;
+}
+
+export interface RadarCopBlip {
+  id: string;
+  callsign: string;
+  x: number;
+  z: number;
+  yaw: number;
+  immobilized: boolean;
+  followed: boolean;
+  isHeavyUnit: boolean;
+}
+
+export interface RadarOfficerBlip {
+  id: string;
+  unitId: string | null;
+  x: number;
+  z: number;
+  yaw: number;
+  dead: boolean;
+  incapacitated: boolean;
+  followedCrew: boolean;
+}
+
+export interface RadarIncidentBlip {
+  id: string;
+  caseNumber: number;
+  x: number;
+  z: number;
+  yaw?: number;
+  isVehicle: boolean;
+  hasLineOfSight: boolean;
+  showQuestionMark: boolean;
+  alive: boolean;
+}
+
+export interface RadarLiveSnapshot {
+  cops: RadarCopBlip[];
+  officers: RadarOfficerBlip[];
+  incidents: RadarIncidentBlip[];
+  deadSuspects: Array<{ id: string; x: number; z: number }>;
+  wreckedSuspectVehicles: Array<{ id: string; x: number; z: number; yaw: number }>;
+  followedUnitId: string;
+  followedCrewDismounted: boolean;
 }
 
 export interface SimSnapshot {
@@ -173,6 +243,8 @@ export interface SimSnapshot {
   neutralizedCount: number;
   casualtyCount: number;
   debrisCount: number;
+  persistentWreckCount: number;
+  persistentBodyCount: number;
   civilianCarCount: number;
   pedestrianCount: number;
   activeNailMats: number;
@@ -217,6 +289,8 @@ export interface SimSnapshot {
   assetsLoaded: boolean;
   assetIssues: AssetIssue[];
   fatalError: string | null;
+  radarMap: RadarStaticMapData | null;
+  radar: RadarLiveSnapshot;
 }
 
 export type DevEditorMode = 'world' | 'asset';

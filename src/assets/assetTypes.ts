@@ -132,6 +132,7 @@ export interface VehicleAssetDef {
   defaultLightbarId?: string;
   weaponKind?: 'pistol' | 'rifle';
   isHeavyUnit?: boolean;
+  vehicleClass?: 0 | 1;
   maxHp?: number;
   maxArmor?: number;
   chassis: VehicleChassisDef;
@@ -145,6 +146,7 @@ export interface StationBayDef {
   lightbarId?: string;
   weaponKind: 'pistol' | 'rifle';
   isHeavyUnit: boolean;
+  vehicleClass?: 0 | 1;
   parkPos: [number, number, number];
   parkYaw: number;
   exitRoadNodeId: number;

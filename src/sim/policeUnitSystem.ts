@@ -152,11 +152,19 @@ export function updateVehicleHinges(unit: PoliceUnit, dt: number): void {
   }
 }
 
+export function canOfficerOperateVehicle(
+  officer: Pick<OfficerActor, 'officerClass'>,
+  unit: Pick<PoliceUnit, 'vehicleClass'>,
+): boolean {
+  return officer.officerClass >= unit.vehicleClass;
+}
+
 export function assignOfficerToUnitSeat(
   off: OfficerActor,
   unit: PoliceUnit,
   preferredSeatIndex?: number,
 ): boolean {
+  if (!canOfficerOperateVehicle(off, unit)) return false;
   let seatIdx = -1;
   if (
     preferredSeatIndex !== undefined &&
@@ -287,12 +295,22 @@ export function spawnPoliceUnits(
   const palette = config.vehicles.paintPalette;
   const stationBays = map?.stationBays?.length ? map.stationBays : config.vehicles.stationBays;
 
+  const doorSpec = map
+    ? getPrecinctDoorPos(map, config)
+    : {
+        x: config.world.apronBounds.maxX - 17,
+        y: config.world.surfaceHeights.apron,
+        z: -38,
+      };
+
   stationBays.forEach((bay, idx) => {
     const baseSwatch = palette[Math.floor(rng() * palette.length)] ?? palette[0];
     const baseColorHex = parseInt(baseSwatch.color.replace('#', ''), 16);
     const parkPos = new THREE.Vector3(...bay.parkPos);
     const vehDef = assets.vehicleDefs?.[bay.vehicleKind];
     const resolvedLightbarId = bay.lightbarId ?? vehDef?.defaultLightbarId ?? 'led_array';
+    const vehicleClass: 0 | 1 =
+      bay.vehicleClass ?? vehDef?.vehicleClass ?? (bay.isHeavyUnit ? 1 : 0);
 
     const rig = createPoliceCruiser(
       idx + 1,
@@ -337,6 +355,7 @@ export function spawnPoliceUnits(
       lightbarId: resolvedLightbarId,
       baseColorHex,
       isHeavyUnit: bay.isHeavyUnit,
+      vehicleClass,
       weaponKind: bay.weaponKind,
       wheelRadius: chassis.wheelRadius,
       halfW: chassis.halfW,
@@ -350,8 +369,8 @@ export function spawnPoliceUnits(
       lateralOffset: 0,
       status: UnitStatus.AtStation,
       activeGoal: 'STATION_STANDBY',
-      goalReason: 'Parked at precinct bay',
-      mounted: true,
+      goalReason: 'Parked empty at precinct bay (crew on standby inside)',
+      mounted: false,
       freeRoam: false,
       dismountTimer: 0,
       mountTimer: 0,
@@ -388,11 +407,11 @@ export function spawnPoliceUnits(
       bayApproachTimer: 0,
     };
 
+    const officerClass: 0 | 1 = bay.isHeavyUnit || vehicleClass === 1 ? 1 : 0;
     const crewCount = Math.min(Math.max(2, seats.length >= 2 ? 2 : seats.length), 2);
     for (let sIdx = 0; sIdx < crewCount; sIdx++) {
-      const seat = seats[sIdx];
       const oRig = createHumanoid(
-        bay.isHeavyUnit ? 'heavy_officer' : 'officer',
+        officerClass === 1 ? 'heavy_officer' : 'officer',
         assets,
         textures,
         undefined,
@@ -401,19 +420,26 @@ export function spawnPoliceUnits(
       const oid = `officer-${officerIdSeq++}`;
       oRig.root.userData.unitId = bay.id;
       oRig.root.userData.officerId = oid;
+      const doorSpawn = new THREE.Vector3(
+        doorSpec.x + 0.35,
+        doorSpec.y,
+        doorSpec.z + (sIdx % 2 === 0 ? -0.45 : 0.45),
+      );
+      oRig.root.position.copy(doorSpawn);
+      oRig.root.visible = false; // Officers start inside the precinct until dispatched
       hierarchy.addEntity(oRig.root);
 
       const officer: OfficerActor = {
         id: oid,
         unitId: bay.id,
-        occupiedUnitId: bay.id,
-        occupiedSeatIndex: sIdx,
-        boardingState: 'seated',
+        occupiedUnitId: null,
+        occupiedSeatIndex: null,
+        boardingState: 'dismounted',
         targetUnitId: bay.id,
         targetSeatIndex: sIdx,
         assignedCrimeId: null,
         rig: oRig,
-        pos: parkPos.clone(),
+        pos: doorSpawn,
         yaw: bay.parkYaw,
         hp: maxHp,
         maxHp,
@@ -421,6 +447,7 @@ export function spawnPoliceUnits(
         maxArmor,
         weaponKind: bay.weaponKind,
         isHeavy: bay.isHeavyUnit,
+        officerClass,
         morale: 100,
         cowardiceState: 'steady',
         ragdoll: createRagdollState(),
@@ -437,12 +464,8 @@ export function spawnPoliceUnits(
         roamPauseTimer: 0,
         mountPhase: 'walk',
         boardTimer: 0,
-        locationState: 'field',
+        locationState: 'in_precinct',
       };
-      if (seat) {
-        seat.occupantOfficerId = officer.id;
-        applyOfficerSeatedPose(officer, unit, seat);
-      }
       unit.officerRefs.push(officer.id);
       officers.push(officer);
     }
@@ -477,6 +500,8 @@ export function routeUnitToStation(
   unit.assignedCaseNumber = null;
   unit.assignedRole = null;
   unit.pursuitRole = 'direct';
+  unit.patrolTimer = 0;
+  unit.patrolTargetNodeId = null;
   unit.lightsActive = retreatMode;
   unit.sirensActive = retreatMode;
   unit.status = retreatMode ? UnitStatus.Retreating : UnitStatus.Returning;
@@ -488,6 +513,30 @@ export function routeUnitToStation(
   unit.stallCount = 0;
 
   if (!bay) return;
+
+  const primaryApron = roadGraph.stationZones[0];
+  const apronThresholdX = primaryApron
+    ? primaryApron.cx + primaryApron.width * 0.5 + 1
+    : config.world.apronBounds.maxX + 1;
+  const approachDist = 4.2;
+  const approachSpot = new THREE.Vector3(
+    bay.parkPos[0] + Math.sin(bay.parkYaw) * approachDist,
+    apronSurfaceY,
+    bay.parkPos[2] + Math.cos(bay.parkYaw) * approachDist,
+  );
+  const parkSpot = new THREE.Vector3(...bay.parkPos);
+
+  if (unit.pos.x <= apronThresholdX + 1.0) {
+    // Already inside the precinct apron: pull directly to bay without looping back onto street roads
+    const wps: THREE.Vector3[] = [];
+    if (unit.pos.distanceToSquared(approachSpot) > 5.5) {
+      wps.push(approachSpot);
+    }
+    wps.push(parkSpot);
+    unit.waypoints = wps;
+    unit.waypointIndex = 0;
+    return;
+  }
 
   const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z, staticBvh);
   let pathA = roadGraph.findNodePath(entry.nearestNode.id, primary);
@@ -510,15 +559,8 @@ export function routeUnitToStation(
   pruneLeadingWaypoints(unit.pos, unit.yaw, wps, staticBvh);
   wps.push(new THREE.Vector3(exitRoadX - laneOffset, roadSurfaceY, bay.parkPos[2]));
   wps.push(new THREE.Vector3(apronExitX, apronSurfaceY, bay.parkPos[2]));
-  const approachDist = 4.2;
-  wps.push(
-    new THREE.Vector3(
-      bay.parkPos[0] + Math.sin(bay.parkYaw) * approachDist,
-      apronSurfaceY,
-      bay.parkPos[2] + Math.cos(bay.parkYaw) * approachDist,
-    ),
-  );
-  wps.push(new THREE.Vector3(...bay.parkPos));
+  wps.push(approachSpot);
+  wps.push(parkSpot);
   unit.waypoints = wps;
   unit.waypointIndex = 0;
 }
@@ -551,17 +593,19 @@ export function dispatchNearestUnit(
   const apronSurfaceY = surface.surfaceHeights.apron;
   const roadSurfaceY = roadGraph.roadSurfaceY;
 
-  const mountedAvailable = units.filter(
-    (u) =>
-      (allowHeavy ? u.isHeavyUnit : !u.isHeavyUnit) &&
-      !u.immobilized &&
-      (u.status === UnitStatus.AtStation || u.status === UnitStatus.Returning) &&
-      u.id !== crime.assignedUnitId &&
-      u.targetCrimeId !== crime.id,
-  );
+  const reqClass: 0 | 1 = allowHeavy ? 1 : 0;
+  const isAvailableForDispatch = (u: PoliceUnit): boolean =>
+    u.vehicleClass === reqClass &&
+    !u.immobilized &&
+    (u.status === UnitStatus.AtStation ||
+      (u.status === UnitStatus.Returning && (u.bayApproachTimer ?? 0) <= 0)) &&
+    u.id !== crime.assignedUnitId &&
+    u.targetCrimeId !== crime.id;
+
+  const mountedAvailable = units.filter(isAvailableForDispatch);
   const footRoamAvailable = units.filter(
     (u) =>
-      (allowHeavy ? u.isHeavyUnit : !u.isHeavyUnit) &&
+      u.vehicleClass === reqClass &&
       u.freeRoam &&
       u.status === UnitStatus.Engaging &&
       !u.targetCrimeId &&
@@ -597,7 +641,7 @@ export function dispatchNearestUnit(
     }
   }
 
-  // If dispatched station unit has crew inside precinct, verify closest unoccupied compatible station vehicle to precinctDoors
+  // If dispatched station unit has crew inside precinct, pick closest unoccupied class-compatible vehicle to precinctDoors
   const bestCrew = resolveUnitOfficers(best, officersById);
   if (
     !specificUnitId &&
@@ -615,8 +659,15 @@ export function dispatchNearestUnit(
         candidate.mounted ||
         candidate.immobilized ||
         candidate.targetCrimeId ||
-        candidate.isHeavyUnit !== best.isHeavyUnit ||
+        candidate.vehicleClass !== best.vehicleClass ||
         !candidate.seats.every((s) => s.occupantOfficerId === null)
+      ) {
+        continue;
+      }
+      const otherCrew = resolveUnitOfficers(candidate, officersById);
+      if (
+        !bestCrew.every((o) => canOfficerOperateVehicle(o, candidate)) ||
+        !otherCrew.every((o) => canOfficerOperateVehicle(o, best))
       ) {
         continue;
       }
@@ -628,7 +679,6 @@ export function dispatchNearestUnit(
       }
     }
     if (closestStationVeh !== best) {
-      // Swap crew refs cleanly so dispatched officers board the closest available vehicle
       const otherCrew = resolveUnitOfficers(closestStationVeh, officersById);
       best.officerRefs = otherCrew.map((o) => o.id);
       closestStationVeh.officerRefs = bestCrew.map((o) => o.id);
@@ -654,6 +704,8 @@ export function dispatchNearestUnit(
   best.assignedCaseNumber = crime.caseNumber;
   best.assignedRole = allowHeavy ? 'tactical' : isBackup ? 'backup' : 'primary';
   best.pursuitRole = 'direct';
+  best.patrolTimer = 0;
+  best.patrolTargetNodeId = null;
   if (!isBackup || !crime.assignedUnitId) {
     crime.assignedUnitId = best.id;
   }
@@ -663,22 +715,25 @@ export function dispatchNearestUnit(
 
   const crewAfterAssign = resolveUnitOfficers(best, officersById);
   const anyLivingInPrecinct = crewAfterAssign.some(
-    (o) => o.hp > 0 && o.locationState === 'in_precinct',
+    (o) => o.hp > 0 && (o.locationState === 'in_precinct' || o.locationState === 'entering_precinct'),
   );
   if (anyLivingInPrecinct && !best.mounted) {
     // Exit precinct doors and sprint to closest assigned vehicle
     crewAfterAssign.forEach((o, sIdx) => {
       if (o.hp <= 0) return;
       if (o.locationState === 'in_precinct' || o.locationState === 'entering_precinct') {
+        const wasHidden = o.locationState === 'in_precinct';
         o.locationState = 'exiting_precinct';
         o.boardingState = 'dismounted';
         o.mountPhase = 'walk';
         o.boardTimer = 0;
-        o.pos.set(
-          doorSpec.x + 0.4 + sIdx * 0.45,
-          apronSurfaceY,
-          doorSpec.z + (sIdx % 2 === 0 ? -0.45 : 0.45),
-        );
+        if (wasHidden) {
+          o.pos.set(
+            doorSpec.x + 0.4 + sIdx * 0.45,
+            apronSurfaceY,
+            doorSpec.z + (sIdx % 2 === 0 ? -0.45 : 0.45),
+          );
+        }
         o.yaw = Math.atan2(best.pos.x - o.pos.x, best.pos.z - o.pos.z);
         o.rig.root.position.copy(o.pos);
         o.rig.root.visible = true;
@@ -690,7 +745,7 @@ export function dispatchNearestUnit(
     best.activeGoal = 'MOUNT_CREW';
     best.goalReason = `Crew exiting precinct to ${best.callsign} (Case #${crime.caseNumber})`;
     best.mountTimer = 0;
-    best.lightsActive = true;
+    best.lightsActive = false;
     best.sirensActive = false;
     playBoundAudioEvent(audio, config, 'dispatch_chirp');
     simEventLog.info(
@@ -741,11 +796,21 @@ export function dispatchNearestUnit(
   const bays = map?.stationBays?.length ? map.stationBays : config.vehicles.stationBays;
   const bay = bays[best.bayIndex] ?? bays[0];
   const wps: THREE.Vector3[] = [];
-  const targetNodeId = crime.inVehiclePursuit ? crime.vehicleNextNodeId : crime.nearestNodeId;
+  const knownSpot = crime.hasLineOfSight
+    ? crime.inVehiclePursuit
+      ? crime.vehiclePos
+      : crime.roadPullOverPos
+    : crime.everSpotted
+    ? crime.predictedPos
+    : crime.reportedPos;
+  const targetNodeId =
+    crime.inVehiclePursuit && crime.hasLineOfSight
+      ? crime.vehicleNextNodeId
+      : crime.inVehiclePursuit
+      ? roadGraph.findNearestNode(knownSpot.x, knownSpot.z).id
+      : crime.nearestNodeId;
 
-  const pullSpot = crime.inVehiclePursuit
-    ? crime.vehiclePos.clone()
-    : crime.roadPullOverPos.clone();
+  const pullSpot = knownSpot.clone();
   if ((isBackup || allowHeavy || alreadyAssignedCount > 0) && !crime.inVehiclePursuit) {
     const side = alreadyAssignedCount % 2 === 1 ? 1 : -1;
     const rank = Math.ceil(Math.max(1, alreadyAssignedCount) * 0.5);
@@ -794,7 +859,14 @@ export function dispatchNearestUnit(
   } else if (
     staticBvh &&
     bestDist < 95 * 95 &&
-    staticBvh.raycastSegment(best.pos.x, best.pos.z, pullSpot.x, pullSpot.z).clear
+    staticBvh.sweepCorridor(
+      best.pos.x,
+      best.pos.z,
+      pullSpot.x - best.pos.x,
+      pullSpot.z - best.pos.z,
+      Math.max(0.1, Math.hypot(pullSpot.x - best.pos.x, pullSpot.z - best.pos.z)),
+      best.halfW + 0.55,
+    ).clear
   ) {
     // Off-road / alley direct corridor shortcut when unobstructed
     wps.push(pullSpot.clone());
@@ -1000,8 +1072,237 @@ export function buildAllVehicleProxies(
   return proxies;
 }
 
+interface PoliceGoalEvalContext {
+  unit: PoliceUnit;
+  crew: OfficerActor[];
+  livingCrew: OfficerActor[];
+  crime: ActiveCrime | undefined;
+  primarySuspect: AssailantActor | undefined;
+  suspectAlive: boolean;
+  anyFleeing: boolean;
+  allDead: boolean;
+  anyUnseatedLiving: boolean;
+  anyExitingPrecinct: boolean;
+  anyEnteringPrecinct: boolean;
+  anyInPrecinctLiving: boolean;
+  arrivedAtBay: boolean;
+}
+
+interface PoliceGoalSpec {
+  id: string;
+  defaultPriority: number;
+  predicate: (ctx: PoliceGoalEvalContext, params: Record<string, number>) => boolean;
+  resolve: (
+    ctx: PoliceGoalEvalContext,
+    params: Record<string, number>,
+  ) => { goal: PoliceUnitGoalId; reason: string };
+}
+
+const POLICE_GOAL_SPECS: PoliceGoalSpec[] = [
+  {
+    id: 'AWAIT_TOW',
+    defaultPriority: 100,
+    predicate: (ctx) => ctx.unit.immobilized || (ctx.allDead && !ctx.unit.mounted),
+    resolve: (ctx) => {
+      if (
+        ctx.unit.immobilized &&
+        !ctx.unit.mounted &&
+        ctx.crime &&
+        ctx.suspectAlive &&
+        !ctx.crime.inVehiclePursuit &&
+        ctx.crew.some((o) => o.hp > 0 && o.cowardiceState !== 'fleeing')
+      ) {
+        return {
+          goal: 'ENGAGE_ON_FOOT',
+          reason: `Vehicle disabled — engaging Case #${ctx.crime.caseNumber} on foot`,
+        };
+      }
+      return {
+        goal: 'IMMOBILIZED_HOLD',
+        reason: ctx.allDead
+          ? 'Crew incapacitated — unit out of service'
+          : 'Vehicle disabled / awaiting recovery',
+      };
+    },
+  },
+  {
+    id: 'RETREAT_TO_PRECINCT',
+    defaultPriority: 90,
+    predicate: (ctx) =>
+      ctx.unit.status === UnitStatus.Retreating || (ctx.anyFleeing && ctx.unit.status !== UnitStatus.AtStation),
+    resolve: (ctx) =>
+      !ctx.unit.mounted || ctx.anyUnseatedLiving
+        ? {
+            goal: 'MOUNT_CREW',
+            reason: 'Squad retreating — waiting for officers to board',
+          }
+        : {
+            goal: 'RETREAT_TO_STATION',
+            reason: 'Squad morale broken — retreating to station',
+          },
+  },
+  {
+    id: 'DEPLOY_NAIL_MAT',
+    defaultPriority: 85,
+    predicate: (ctx) =>
+      ctx.unit.pursuitRole === 'nail_mat' &&
+      Boolean(ctx.crime && ctx.suspectAlive && ctx.crime.inVehiclePursuit) &&
+      ctx.unit.status === UnitStatus.DeployingSpikes,
+    resolve: (ctx) => ({
+      goal: 'DEPLOY_SPIKES',
+      reason: `Staging spike strip ahead of Case #${ctx.crime!.caseNumber}`,
+    }),
+  },
+  {
+    id: 'DISMOUNT_COMBAT',
+    defaultPriority: 75,
+    predicate: (ctx, params) => {
+      if (!ctx.crime || !ctx.suspectAlive || ctx.crime.inVehiclePursuit) return false;
+      if (
+        !ctx.unit.mounted &&
+        !ctx.anyExitingPrecinct &&
+        ctx.unit.status !== UnitStatus.Mounting &&
+        !ctx.anyInPrecinctLiving
+      ) {
+        return true;
+      }
+      const dismountDist = params.dismountDist ?? 22.0;
+      const targetRef =
+        ctx.crime.hasLineOfSight && ctx.primarySuspect
+          ? ctx.primarySuspect.pos
+          : ctx.crime.everSpotted
+          ? ctx.crime.predictedPos
+          : ctx.crime.reportedPos;
+      return (
+        ctx.unit.mounted &&
+        ctx.unit.status === UnitStatus.Pursuing &&
+        Boolean(ctx.primarySuspect) &&
+        ctx.unit.pos.distanceToSquared(targetRef) < dismountDist * dismountDist
+      );
+    },
+    resolve: (ctx) => ({
+      goal: 'ENGAGE_ON_FOOT',
+      reason:
+        ctx.unit.status === UnitStatus.Pursuing
+          ? `Suspect bailed out — dismounting (Case #${ctx.crime!.caseNumber})`
+          : `Engaging suspect on foot (Case #${ctx.crime!.caseNumber})`,
+    }),
+  },
+  {
+    id: 'PURSUE_INTERCEPT',
+    defaultPriority: 70,
+    predicate: (ctx) => Boolean(ctx.crime && ctx.suspectAlive && ctx.crime.inVehiclePursuit),
+    resolve: (ctx) =>
+      !ctx.unit.mounted || ctx.anyUnseatedLiving
+        ? {
+            goal: 'MOUNT_CREW',
+            reason: ctx.anyExitingPrecinct
+              ? `Waiting for crew from precinct (Case #${ctx.crime!.caseNumber})`
+              : `Mounting crew for pursuit (Case #${ctx.crime!.caseNumber})`,
+          }
+        : {
+            goal: 'PURSUE_VEHICLE',
+            reason: `Intercepting getaway vehicle (Case #${ctx.crime!.caseNumber})`,
+          },
+  },
+  {
+    id: 'RESPOND_TO_CALL',
+    defaultPriority: 65,
+    predicate: (ctx) => Boolean(ctx.crime && ctx.suspectAlive),
+    resolve: (ctx) =>
+      !ctx.unit.mounted || ctx.anyUnseatedLiving
+        ? {
+            goal: 'MOUNT_CREW',
+            reason: ctx.anyExitingPrecinct
+              ? `Waiting for crew from precinct (Case #${ctx.crime!.caseNumber})`
+              : `Mounting crew to respond (Case #${ctx.crime!.caseNumber})`,
+          }
+        : {
+            goal: 'RESPOND_TO_CALL',
+            reason: `Responding to Case #${ctx.crime!.caseNumber}`,
+          },
+  },
+  {
+    id: 'BOARD_CRUISER',
+    defaultPriority: 50,
+    predicate: (ctx) =>
+      (!ctx.unit.mounted || ctx.anyUnseatedLiving) &&
+      !ctx.unit.freeRoam &&
+      ctx.unit.status !== UnitStatus.AtStation &&
+      !ctx.anyEnteringPrecinct &&
+      !ctx.anyInPrecinctLiving &&
+      (ctx.unit.patrolTimer ?? 0) <= 0,
+    resolve: () => ({
+      goal: 'MOUNT_CREW',
+      reason: 'Scene clear — remounting cruiser',
+    }),
+  },
+  {
+    id: 'MANUAL_FOOT_PATROL',
+    defaultPriority: 40,
+    predicate: (ctx) => ctx.unit.freeRoam && !ctx.unit.mounted,
+    resolve: () => ({
+      goal: 'MANUAL_FOOT_PATROL',
+      reason: 'On foot patrol near cruiser',
+    }),
+  },
+  {
+    id: 'PATROL_STREETS',
+    defaultPriority: 25,
+    predicate: (ctx) =>
+      !ctx.unit.isHeavyUnit &&
+      ctx.unit.vehicleClass === 0 &&
+      (ctx.unit.patrolTimer ?? 0) > 0 &&
+      ctx.unit.status !== UnitStatus.AtStation,
+    resolve: (ctx) =>
+      !ctx.unit.mounted || ctx.anyUnseatedLiving
+        ? {
+            goal: 'MOUNT_CREW',
+            reason: ctx.anyExitingPrecinct
+              ? 'Crew exiting precinct for city patrol'
+              : 'Mounting cruiser for city patrol',
+          }
+        : {
+            goal: 'PATROL_STREETS',
+            reason: 'On routine precinct sector patrol',
+          },
+  },
+  {
+    id: 'RETURN_TO_PRECINCT',
+    defaultPriority: 20,
+    predicate: (ctx) =>
+      ctx.unit.status !== UnitStatus.AtStation &&
+      !ctx.arrivedAtBay &&
+      !ctx.anyEnteringPrecinct &&
+      !ctx.anyInPrecinctLiving,
+    resolve: (ctx) =>
+      !ctx.unit.mounted || ctx.anyUnseatedLiving
+        ? {
+            goal: 'MOUNT_CREW',
+            reason: 'Remounting before return to precinct',
+          }
+        : {
+            goal: 'RETURN_TO_STATION',
+            reason: 'Code 4 — returning to precinct bay',
+          },
+  },
+  {
+    id: 'PARKED_STANDBY',
+    defaultPriority: 10,
+    predicate: () => true,
+    resolve: (ctx) => ({
+      goal: 'STATION_STANDBY',
+      reason: ctx.anyEnteringPrecinct
+        ? 'Parked at bay — crew walking into precinct'
+        : 'Parked & on standby at precinct',
+    }),
+  },
+];
+
+const POLICE_GOAL_MAP = new Map(POLICE_GOAL_SPECS.map((s) => [s.id, s]));
+
 /**
- * Priority-ordered Goal-Based AI Evaluator for police units, driven by asset-pack `aiGoals.police`.
+ * Priority-ordered Predicate-Based Goal Evaluator for police units, driven by asset-pack `aiGoals.police`.
  */
 function evaluateUnitGoal(
   unit: PoliceUnit,
@@ -1012,204 +1313,150 @@ function evaluateUnitGoal(
   config: EngineConfigAsset,
 ): { goal: PoliceUnitGoalId; reason: string } {
   const suspectAlive = Boolean(primarySuspect?.alive);
-  const packGoals = [...(config.aiGoals?.police ?? [])].sort(
-    (a, b) => (b.priority ?? 0) - (a.priority ?? 0),
-  );
-  const goalMap = new Map<string, { enabled: boolean; params?: Record<string, number> }>();
-  for (const g of packGoals) {
-    goalMap.set(g.id, { enabled: g.enabled !== false, params: g.params });
-  }
-  const isEnabled = (packId: string): boolean => goalMap.get(packId)?.enabled ?? true;
-  const dismountDist = goalMap.get('DISMOUNT_COMBAT')?.params?.dismountDist ?? 22.0;
-
-  // Priority 1: Immobilized vehicle (crew can fight on foot if near active foot crime, else hold)
-  if (unit.immobilized && isEnabled('AWAIT_TOW')) {
-    if (!unit.mounted && crime && suspectAlive && !crime.inVehiclePursuit) {
-      const anyAlive = crew.some((o) => o.hp > 0 && o.cowardiceState !== 'fleeing');
-      if (anyAlive) {
-        return {
-          goal: 'ENGAGE_ON_FOOT',
-          reason: `Vehicle disabled — engaging Case #${crime.caseNumber} on foot`,
-        };
-      }
-    }
-    return {
-      goal: 'IMMOBILIZED_HOLD',
-      reason: 'Vehicle disabled / awaiting recovery',
-    };
-  }
-
-  const anyFleeing = crew.some((o) => o.hp > 0 && o.cowardiceState === 'fleeing');
   const livingCrew = crew.filter((o) => o.hp > 0);
   const allDead = crew.length > 0 && livingCrew.length === 0;
+  const anyFleeing = livingCrew.some((o) => o.cowardiceState === 'fleeing');
   const anyUnseatedLiving = livingCrew.some(
-    (o) => o.locationState !== 'in_precinct' && o.boardingState !== 'seated',
+    (o) =>
+      o.locationState !== 'in_precinct' &&
+      o.locationState !== 'entering_precinct' &&
+      o.boardingState !== 'seated',
   );
   const anyExitingPrecinct = livingCrew.some((o) => o.locationState === 'exiting_precinct');
+  const anyEnteringPrecinct = livingCrew.some((o) => o.locationState === 'entering_precinct');
+  const anyInPrecinctLiving = livingCrew.some((o) => o.locationState === 'in_precinct');
 
-  if (allDead && !unit.mounted) {
-    return {
-      goal: 'IMMOBILIZED_HOLD',
-      reason: 'Crew incapacitated — unit out of service',
-    };
-  }
+  const distToBay = bayParkPos
+    ? Math.hypot(unit.pos.x - bayParkPos[0], unit.pos.z - bayParkPos[2])
+    : 999;
+  const arrivedAtBay =
+    unit.status === UnitStatus.AtStation ||
+    (distToBay < 4.2 && Math.abs(unit.speed) < 2.2) ||
+    (unit.bayApproachTimer ?? 0) > 5.5;
 
-  // Ordered goal rules matching pack configuration
-  const orderedIds =
-    packGoals.length > 0
-      ? packGoals.map((g) => g.id)
-      : [
-          'RETREAT_TO_PRECINCT',
-          'DEPLOY_NAIL_MAT',
-          'DISMOUNT_COMBAT',
-          'PURSUE_INTERCEPT',
-          'RESPOND_TO_CALL',
-          'MANUAL_FOOT_PATROL',
-          'BOARD_CRUISER',
-          'PATROL_STREETS',
-          'RETURN_TO_PRECINCT',
-          'PARKED_STANDBY',
-        ];
-
-  for (const gid of orderedIds) {
-    if (!isEnabled(gid)) continue;
-
-    if (
-      gid === 'RETREAT_TO_PRECINCT' &&
-      (unit.status === UnitStatus.Retreating || anyFleeing)
-    ) {
-      if (!unit.mounted || anyUnseatedLiving) {
-        return {
-          goal: 'MOUNT_CREW',
-          reason: 'Squad retreating — waiting for officers to board',
-        };
-      }
-      return {
-        goal: 'RETREAT_TO_STATION',
-        reason: 'Squad morale broken — retreating to station',
-      };
-    }
-
-    if (
-      gid === 'DEPLOY_NAIL_MAT' &&
-      unit.pursuitRole === 'nail_mat' &&
-      crime &&
-      suspectAlive &&
-      crime.inVehiclePursuit &&
-      unit.status === UnitStatus.DeployingSpikes
-    ) {
-      return {
-        goal: 'DEPLOY_SPIKES',
-        reason: `Staging spike strip ahead of Case #${crime.caseNumber}`,
-      };
-    }
-
-    if (gid === 'DISMOUNT_COMBAT' && crime && suspectAlive && !crime.inVehiclePursuit) {
-      if (!unit.mounted && !anyExitingPrecinct && unit.status !== UnitStatus.Mounting && !livingCrew.some((o) => o.locationState === 'in_precinct')) {
-        return {
-          goal: 'ENGAGE_ON_FOOT',
-          reason: `Engaging suspect on foot (Case #${crime.caseNumber})`,
-        };
-      }
-      if (
-        unit.mounted &&
-        unit.status === UnitStatus.Pursuing &&
-        primarySuspect &&
-        unit.pos.distanceToSquared(primarySuspect.pos) < dismountDist * dismountDist
-      ) {
-        return {
-          goal: 'ENGAGE_ON_FOOT',
-          reason: `Suspect bailed out — dismounting (Case #${crime.caseNumber})`,
-        };
-      }
-    }
-
-    if (gid === 'PURSUE_INTERCEPT' && crime && suspectAlive && crime.inVehiclePursuit) {
-      if (!unit.mounted || anyUnseatedLiving) {
-        return {
-          goal: 'MOUNT_CREW',
-          reason: anyExitingPrecinct
-            ? `Waiting for crew from precinct (Case #${crime.caseNumber})`
-            : `Mounting crew for pursuit (Case #${crime.caseNumber})`,
-        };
-      }
-      return {
-        goal: 'PURSUE_VEHICLE',
-        reason: `Intercepting getaway vehicle (Case #${crime.caseNumber})`,
-      };
-    }
-
-    if (gid === 'RESPOND_TO_CALL' && crime && suspectAlive) {
-      if (!unit.mounted || anyUnseatedLiving) {
-        return {
-          goal: 'MOUNT_CREW',
-          reason: anyExitingPrecinct
-            ? `Waiting for crew from precinct (Case #${crime.caseNumber})`
-            : `Mounting crew to respond (Case #${crime.caseNumber})`,
-        };
-      }
-      return {
-        goal: 'RESPOND_TO_CALL',
-        reason: `Responding to Case #${crime.caseNumber}`,
-      };
-    }
-
-    if (gid === 'MANUAL_FOOT_PATROL' && unit.freeRoam && !unit.mounted) {
-      return {
-        goal: 'MANUAL_FOOT_PATROL',
-        reason: 'On foot patrol near cruiser',
-      };
-    }
-
-    if (
-      gid === 'BOARD_CRUISER' &&
-      (!unit.mounted || anyUnseatedLiving) &&
-      unit.status !== UnitStatus.AtStation
-    ) {
-      return {
-        goal: 'MOUNT_CREW',
-        reason: 'Scene clear — remounting cruiser',
-      };
-    }
-
-    if (
-      gid === 'PATROL_STREETS' &&
-      unit.mounted &&
-      !anyUnseatedLiving &&
-      unit.status !== UnitStatus.AtStation &&
-      unit.status !== UnitStatus.Returning &&
-      unit.status !== UnitStatus.Retreating &&
-      (unit.patrolTimer ?? 0) > 0
-    ) {
-      return {
-        goal: 'PATROL_STREETS',
-        reason: 'Aimless street patrol',
-      };
-    }
-
-    if (gid === 'RETURN_TO_PRECINCT') {
-      const atBay =
-        bayParkPos !== undefined &&
-        Math.hypot(unit.pos.x - bayParkPos[0], unit.pos.z - bayParkPos[2]) < 3.6;
-      if (!atBay && unit.status !== UnitStatus.AtStation && unit.mounted && !anyUnseatedLiving) {
-        return {
-          goal: 'RETURN_TO_STATION',
-          reason: 'Code 4 — returning to precinct bay',
-        };
-      }
-      if (unit.status !== UnitStatus.AtStation && (!unit.mounted || anyUnseatedLiving)) {
-        return {
-          goal: 'MOUNT_CREW',
-          reason: 'Remounting before return to precinct',
-        };
-      }
-    }
-  }
-
-  return {
-    goal: 'STATION_STANDBY',
-    reason: 'Parked & ready at station bay',
+  const evalCtx: PoliceGoalEvalContext = {
+    unit,
+    crew,
+    livingCrew,
+    crime,
+    primarySuspect,
+    suspectAlive,
+    anyFleeing,
+    allDead,
+    anyUnseatedLiving,
+    anyExitingPrecinct,
+    anyEnteringPrecinct,
+    anyInPrecinctLiving,
+    arrivedAtBay,
   };
+
+  const packRules = config.aiGoals?.police ?? [];
+  const ruleEntries =
+    packRules.length > 0
+      ? [...packRules]
+          .filter((r) => r.enabled !== false)
+          .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+          .map((r) => ({ id: r.id, params: r.params ?? {} }))
+      : POLICE_GOAL_SPECS.map((s) => ({ id: s.id, params: {} as Record<string, number> }));
+
+  // Test each enabled rule's predicate in descending priority order; fall through on false
+  for (const entry of ruleEntries) {
+    const spec = POLICE_GOAL_MAP.get(entry.id);
+    if (!spec) continue;
+    if (spec.predicate(evalCtx, entry.params)) {
+      return spec.resolve(evalCtx, entry.params);
+    }
+  }
+
+  // Final fallback goal MUST always succeed
+  const fallback = POLICE_GOAL_MAP.get('PARKED_STANDBY')!;
+  return fallback.resolve(evalCtx, {});
+}
+
+function maintainCityPatrols(
+  units: PoliceUnit[],
+  officersById: Map<string, OfficerActor>,
+  doorSpec: { x: number; y: number; z: number },
+  apronSurfaceY: number,
+  config: EngineConfigAsset,
+  simTime: number,
+  defaultPatrolSec: number,
+  maxPatrolCars: number,
+): void {
+  if (simTime < 0.8 || maxPatrolCars <= 0) return;
+
+  // Never patrol tactical/SWAT units; only count non-SWAT class-0 cruisers on patrol
+  const regularUnits = units.filter((u) => u.vehicleClass === 0 && !u.isHeavyUnit);
+  if (regularUnits.length < 2) return;
+
+  const maxAllowed = Math.min(maxPatrolCars, Math.max(1, regularUnits.length - 1));
+  let activePatrols = 0;
+  let scramblingPatrol = false;
+
+  for (const u of regularUnits) {
+    if (!u.targetCrimeId && (u.patrolTimer ?? 0) > 0 && u.status !== UnitStatus.AtStation) {
+      activePatrols++;
+      if (!u.mounted) scramblingPatrol = true;
+    }
+  }
+
+  if (activePatrols >= maxAllowed || scramblingPatrol) return;
+
+  // Pick a compatible AtStation regular cruiser whose living crew are resting in_precinct
+  const candidates = regularUnits
+    .filter((u) => {
+      if (u.status !== UnitStatus.AtStation || u.mounted || u.immobilized || u.targetCrimeId) {
+        return false;
+      }
+      if (!u.seats.every((s) => s.occupantOfficerId === null)) return false;
+      const crew = resolveUnitOfficers(u, officersById);
+      return (
+        crew.length > 0 &&
+        crew.every(
+          (o) =>
+            o.hp > 0 &&
+            o.locationState === 'in_precinct' &&
+            canOfficerOperateVehicle(o, u),
+        )
+      );
+    })
+    .sort(
+      (a, b) =>
+        (a.pos.x - doorSpec.x) ** 2 +
+        (a.pos.z - doorSpec.z) ** 2 -
+        ((b.pos.x - doorSpec.x) ** 2 + (b.pos.z - doorSpec.z) ** 2),
+    );
+
+  const pick = candidates[0];
+  if (!pick) return;
+
+  const crew = resolveUnitOfficers(pick, officersById);
+  crew.forEach((o, sIdx) => {
+    if (o.hp <= 0) return;
+    o.locationState = 'exiting_precinct';
+    o.boardingState = 'dismounted';
+    o.mountPhase = 'walk';
+    o.boardTimer = 0;
+    o.pos.set(
+      doorSpec.x + 0.4 + sIdx * 0.45,
+      apronSurfaceY,
+      doorSpec.z + (sIdx % 2 === 0 ? -0.45 : 0.45),
+    );
+    o.yaw = Math.atan2(pick.pos.x - o.pos.x, pick.pos.z - o.pos.z);
+    o.rig.root.position.copy(o.pos);
+    o.rig.root.visible = true;
+    resetOfficerPose(o, o.yaw);
+  });
+
+  pick.freeRoam = false;
+  pick.status = UnitStatus.Mounting;
+  pick.activeGoal = 'MOUNT_CREW';
+  pick.goalReason = 'Crew exiting precinct for routine city patrol';
+  pick.mountTimer = 0;
+  pick.patrolTimer = defaultPatrolSec;
+  pick.patrolTargetNodeId = null;
+  pick.lightsActive = false;
+  pick.sirensActive = false;
 }
 
 function beginMounting(unit: PoliceUnit, crew: OfficerActor[]): void {
@@ -1264,8 +1511,23 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
   const doorSpec = map ? getPrecinctDoorPos(map, config) : { x: apronThresholdX - 18, y: world.surfaceHeights.apron, z: -38 };
   const patrolGoalDef = config.aiGoals?.police?.find((g) => g.id === 'PATROL_STREETS');
   const patrolEnabled = patrolGoalDef ? patrolGoalDef.enabled !== false : true;
-  const defaultPatrolSec = patrolGoalDef?.params?.patrolDuration ?? 16.0;
+  const defaultPatrolSec = patrolGoalDef?.params?.patrolDuration ?? 36.0;
   const defaultPatrolSpeed = patrolGoalDef?.params?.cruiseSpeed ?? 10.5;
+  const maxPatrolRadius = patrolGoalDef?.params?.maxRadiusFromPrecinct ?? 125.0;
+  const maxPatrolCars = Math.round(patrolGoalDef?.params?.maxPatrolCars ?? 2);
+
+  if (patrolEnabled) {
+    maintainCityPatrols(
+      units,
+      officersById,
+      doorSpec,
+      world.surfaceHeights.apron,
+      config,
+      simTime,
+      defaultPatrolSec,
+      maxPatrolCars,
+    );
+  }
 
   for (const unit of units) {
     const crew = resolveUnitOfficers(unit, officersById);
@@ -1308,10 +1570,28 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       unit.assignedRole = null;
       crime = undefined;
       primarySuspect = undefined;
-      // Start an aimless patrol window when finishing an active call in the field
-      if (patrolEnabled && unit.pos.x > apronThresholdX && (unit.patrolTimer ?? 0) <= 0) {
+      // Only let non-SWAT regular units continue onto sector patrol if below active patrol cap
+      const activePatrolCount = units.filter(
+        (u) =>
+          u.id !== unit.id &&
+          u.vehicleClass === 0 &&
+          !u.isHeavyUnit &&
+          !u.targetCrimeId &&
+          (u.patrolTimer ?? 0) > 0 &&
+          u.status !== UnitStatus.AtStation,
+      ).length;
+      if (
+        patrolEnabled &&
+        !unit.isHeavyUnit &&
+        unit.vehicleClass === 0 &&
+        unit.pos.x > apronThresholdX &&
+        activePatrolCount < maxPatrolCars &&
+        (unit.patrolTimer ?? 0) <= 0
+      ) {
         unit.patrolTimer = defaultPatrolSec;
         unit.patrolTargetNodeId = null;
+      } else {
+        unit.patrolTimer = 0;
       }
     }
 
@@ -1503,11 +1783,13 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       if (goal === 'MANUAL_FOOT_PATROL' && crew[0]) {
         const nearbyFoot = crimes.find((c) => {
           const p = resolveCrimePrimaryAssailant(c, assailantsById);
-          return (
-            p?.alive &&
-            !c.inVehiclePursuit &&
-            c.pos.distanceToSquared(crew[0].pos) < 48 * 48
-          );
+          if (!p?.alive || c.inVehiclePursuit) return false;
+          const spot = c.hasLineOfSight
+            ? p.pos
+            : c.everSpotted
+            ? c.predictedPos
+            : c.reportedPos;
+          return spot.distanceToSquared(crew[0].pos) < 48 * 48;
         });
         if (nearbyFoot) {
           unit.targetCrimeId = nearbyFoot.id;
@@ -1518,16 +1800,27 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         }
       }
 
-      // Engage crime suspect or nearest standalone foot assailant if within range
+      // Engage crime suspect or nearest standalone foot assailant if within range and LoS
       let combatTarget =
         crime && primarySuspect?.alive && !crime.inVehiclePursuit ? primarySuspect : undefined;
       if (!combatTarget && crew[0]) {
         combatTarget = assailants.find(
-          (a) => a.alive && !a.inVehicle && a.pos.distanceToSquared(crew[0].pos) < 40 * 40,
+          (a) =>
+            a.alive &&
+            !a.inVehicle &&
+            a.crimeId === null &&
+            a.pos.distanceToSquared(crew[0].pos) < 40 * 40 &&
+            staticBvh.raycastSegment(crew[0].pos.x, crew[0].pos.z, a.pos.x, a.pos.z).clear,
         );
       }
 
       if (combatTarget) {
+        const knownTargetPos =
+          crime && !crime.hasLineOfSight
+            ? crime.everSpotted
+              ? crime.predictedPos
+              : crime.reportedPos
+            : undefined;
         let activeCombatants = 0;
         let fleeingCount = 0;
         crew.forEach((off, idx) => {
@@ -1542,6 +1835,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             pedestrians,
             audio,
             dt,
+            knownTargetPos,
           );
           if (off.hp > 0 && off.cowardiceState !== 'fleeing') activeCombatants++;
           if (off.hp > 0 && off.cowardiceState === 'fleeing') fleeingCount++;
@@ -1784,14 +2078,19 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             );
           }
           if (!reassigned) {
-            if (patrolEnabled && unit.pos.x > apronThresholdX) {
-              unit.patrolTimer = defaultPatrolSec;
-              unit.patrolTargetNodeId = null;
+            if (
+              patrolEnabled &&
+              !unit.isHeavyUnit &&
+              unit.vehicleClass === 0 &&
+              (unit.patrolTimer ?? 0) > 0
+            ) {
+              unit.status = UnitStatus.Returning;
               unit.lightsActive = false;
               unit.sirensActive = false;
               unit.waypoints = [];
               unit.waypointIndex = 0;
             } else {
+              unit.patrolTimer = 0;
               routeUnitToStation(unit, false, roadGraph, config, staticBvh, map);
             }
           }
@@ -1814,6 +2113,23 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
       unit.dyn.omega = 0;
       unit.lightsActive = false;
       unit.sirensActive = false;
+      unit.patrolTimer = 0;
+      unit.patrolTargetNodeId = null;
+      unit.bayApproachTimer = 0;
+      unit.waypoints = [];
+      unit.waypointIndex = 0;
+
+      // Guarantee living crew disembark vehicle & walk into precinctDoors on arrival
+      crew.forEach((off) => {
+        if (off.hp <= 0) return;
+        if (off.boardingState !== 'dismounted' || off.occupiedUnitId !== null) {
+          ejectOfficerFromSeat(off, unit, staticBvh, world);
+          off.locationState = 'entering_precinct';
+          off.mountPhase = 'walk';
+          off.boardTimer = 0;
+        }
+      });
+      unit.mounted = false;
 
       // Walk any dismounted entering_precinct crew inside precinctDoors
       crew.forEach((off, idx) => {
@@ -1822,7 +2138,7 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           off.rig.root.visible = false;
           return;
         }
-        if (off.locationState === 'field') {
+        if (off.locationState === 'field' || off.locationState === 'exiting_precinct') {
           off.locationState = 'entering_precinct';
           off.boardTimer = 0;
         }
@@ -1844,7 +2160,6 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             off.ragdoll.active = false;
             off.mountPhase = 'walk';
             off.boardTimer = 0;
-            unit.mounted = false;
             return;
           }
           const spd = 2.6;
@@ -1907,12 +2222,27 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
         (unit.waypointIndex >= unit.waypoints.length || unit.waypoints.length === 0) &&
         roadGraph.nodes.length > 0
       ) {
-        const entry = roadGraph.findNearestRoadEntryPoint(unit.pos.x, unit.pos.z, staticBvh);
-        const candidates = roadGraph.nodes.filter(
+        const [patrolApronExitX] = roadGraph.stationExitPoint;
+        const onApron = bay && unit.pos.x <= apronThresholdX;
+        const entry = roadGraph.findNearestRoadEntryPoint(
+          onApron ? patrolApronExitX + 4 : unit.pos.x,
+          unit.pos.z,
+          staticBvh,
+        );
+        const nearbyRadiusNodes = roadGraph.nodes.filter(
           (n) =>
             n.id !== entry.nearestNode.id &&
-            Math.hypot(n.x - unit.pos.x, n.z - unit.pos.z) > 28,
+            Math.hypot(n.x - doorSpec.x, n.z - doorSpec.z) <= maxPatrolRadius &&
+            Math.hypot(n.x - unit.pos.x, n.z - unit.pos.z) > 26,
         );
+        const candidates =
+          nearbyRadiusNodes.length > 0
+            ? nearbyRadiusNodes
+            : roadGraph.nodes.filter(
+                (n) =>
+                  n.id !== entry.nearestNode.id &&
+                  Math.hypot(n.x - unit.pos.x, n.z - unit.pos.z) > 26,
+              );
         const pick =
           candidates.length > 0
             ? candidates[Math.floor(rng() * candidates.length)]
@@ -1921,7 +2251,11 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           unit.patrolTargetNodeId = pick.id;
           const nodePath = roadGraph.findNodePath(entry.nearestNode.id, pick.id);
           const wps: THREE.Vector3[] = [];
-          if (unit.pos.distanceToSquared(entry.point) > 9) {
+          if (onApron && bay) {
+            wps.push(
+              new THREE.Vector3(patrolApronExitX, world.surfaceHeights.apron, bay.parkPos[2]),
+            );
+          } else if (unit.pos.distanceToSquared(entry.point) > 9) {
             wps.push(entry.point);
           }
           wps.push(...roadGraph.buildLaneWaypoints(nodePath, undefined, false));
@@ -1963,13 +2297,20 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
     ) {
       unit.repathTimer -= dt;
       if (unit.repathTimer <= 0) {
-        unit.repathTimer = isPursuit ? 0.48 : 1.6;
-        const targetPos = crime.inVehiclePursuit ? crime.vehiclePos : crime.roadPullOverPos;
+        unit.repathTimer = isPursuit ? 0.85 : 1.5;
+        const targetPos = crime.hasLineOfSight
+          ? crime.inVehiclePursuit
+            ? crime.vehiclePos
+            : crime.roadPullOverPos
+          : crime.everSpotted
+          ? crime.predictedPos
+          : crime.reportedPos;
         const dSq = unit.pos.distanceToSquared(targetPos);
 
         if (
           crime.inVehiclePursuit &&
-          dSq < 42 * 42 &&
+          crime.hasLineOfSight &&
+          dSq < 34 * 34 &&
           staticBvh.raycastSegment(
             unit.pos.x,
             unit.pos.z,
@@ -1978,17 +2319,24 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
           ).clear
         ) {
           const distNow = Math.sqrt(dSq);
-          const leadDist = distNow < 6.5 ? 0 : Math.min(11.0, distNow * 0.45);
+          const leadDist = distNow < 6.5 ? 0 : Math.min(7.5, distNow * 0.28);
           const leadX = crime.vehiclePos.x + Math.sin(crime.vehicleYaw) * leadDist;
           const leadZ = crime.vehiclePos.z + Math.cos(crime.vehicleYaw) * leadDist;
           unit.waypoints = [new THREE.Vector3(leadX, roadGraph.roadSurfaceY, leadZ)];
           unit.waypointIndex = 0;
         } else if (
-          dSq < 90 * 90 &&
+          dSq < 68 * 68 &&
           unit.pos.x > apronThresholdX - 2 &&
-          staticBvh.raycastSegment(unit.pos.x, unit.pos.z, targetPos.x, targetPos.z).clear
+          staticBvh.sweepCorridor(
+            unit.pos.x,
+            unit.pos.z,
+            targetPos.x - unit.pos.x,
+            targetPos.z - unit.pos.z,
+            Math.max(0.1, Math.sqrt(dSq)),
+            unit.halfW + 0.55,
+          ).clear
         ) {
-          // Allow direct off-road/alley traversal if unobstructed
+          // Direct off-road/alley corridor toward known or predicted location
           unit.waypoints = [targetPos.clone()];
           unit.waypointIndex = 0;
         } else {
@@ -2010,7 +2358,10 @@ export function updatePoliceUnits(ctx: PoliceUnitUpdateContext, dt: number): voi
             wps.push(entry.point);
           }
           if (crime.inVehiclePursuit) {
-            let path = roadGraph.findNodePath(entry.nearestNode.id, crime.vehicleNextNodeId);
+            const targetNodeId = crime.hasLineOfSight
+              ? crime.vehicleNextNodeId
+              : roadGraph.findNearestNode(targetPos.x, targetPos.z).id;
+            let path = roadGraph.findNodePath(entry.nearestNode.id, targetNodeId);
             if (path.length === 0) {
               const reach = roadGraph.findNearestReachableNode(targetPos.x, targetPos.z, entry.nearestNode.id);
               if (reach) path = roadGraph.findNodePath(entry.nearestNode.id, reach.id);

@@ -487,6 +487,7 @@ export class CombatSystem {
     pedestrians: PedestrianActor[],
     audio: JsonAudioSynth | null,
     dt: number,
+    knownTargetPos?: THREE.Vector3,
   ): void {
     if (!this.weapons || (!this.world && !this.map)) return;
     const world = this.surfaceSource;
@@ -519,14 +520,28 @@ export class CombatSystem {
       return;
     }
 
-    const dx = targetAssailant.pos.x - off.pos.x;
-    const dz = targetAssailant.pos.z - off.pos.z;
+    const actualDx = targetAssailant.pos.x - off.pos.x;
+    const actualDz = targetAssailant.pos.z - off.pos.z;
+    const actualDist = Math.hypot(actualDx, actualDz) || 1;
+    const hasLos =
+      actualDist < 72 &&
+      staticBvh.raycastSegment(
+        off.pos.x,
+        off.pos.z,
+        targetAssailant.pos.x,
+        targetAssailant.pos.z,
+      ).clear;
+
+    // Without direct LoS, officers orient and move using last-known/predicted target coords
+    const beliefPos = hasLos ? targetAssailant.pos : knownTargetPos ?? targetAssailant.pos;
+    const dx = beliefPos.x - off.pos.x;
+    const dz = beliefPos.z - off.pos.z;
     const dist = Math.hypot(dx, dz) || 1;
     const ux = dx / dist;
     const uz = dz / dist;
 
     const effectiveCowardice = off.isHeavy ? cowardiceLevel * 0.2 : cowardiceLevel;
-    if (effectiveCowardice > 0.4 && dist < 13) {
+    if (hasLos && effectiveCowardice > 0.4 && actualDist < 13) {
       off.morale = Math.max(0, off.morale - effectiveCowardice * 7.0 * dt);
     } else if (off.cowardiceState === 'steady') {
       off.morale = Math.min(100, off.morale + (off.isHeavy ? 4.0 : 1.8) * dt);
@@ -568,12 +583,6 @@ export class CombatSystem {
     }
 
     off.yaw = Math.atan2(ux, uz);
-    const hasLos = staticBvh.raycastSegment(
-      off.pos.x,
-      off.pos.z,
-      targetAssailant.pos.x,
-      targetAssailant.pos.z,
-    ).clear;
 
     off.strafeTimer -= dt;
     if (off.strafeTimer <= 0) {
@@ -599,8 +608,14 @@ export class CombatSystem {
       }
     } else {
       if (!hasLos) {
-        moveX = ux * 0.45 + perpX * 0.88;
-        moveZ = uz * 0.45 + perpZ * 0.88;
+        // Advance toward predicted / last known position, fanning slightly to clear corner
+        if (dist > 3.2) {
+          moveX = ux * 0.82 + perpX * 0.42;
+          moveZ = uz * 0.82 + perpZ * 0.42;
+        } else {
+          moveX = perpX * 0.9;
+          moveZ = perpZ * 0.9;
+        }
         moving = true;
       } else if (dist > preferredRange) {
         moveX = ux * 0.88 + perpX * 0.35;
@@ -619,7 +634,7 @@ export class CombatSystem {
 
     if (moving) {
       const mLen = Math.hypot(moveX, moveZ) || 1;
-      const moveSpd = isSuppressed ? 3.8 : !hasLos ? 5.6 : off.isHeavy ? 4.2 : 4.7;
+      const moveSpd = isSuppressed ? 3.8 : !hasLos ? 5.2 : off.isHeavy ? 4.2 : 4.7;
       off.pos.x += (moveX / mLen) * moveSpd * dt;
       off.pos.z += (moveZ / mLen) * moveSpd * dt;
       staticBvh.resolveCircle(off.pos, 0.48);

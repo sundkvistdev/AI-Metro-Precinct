@@ -545,6 +545,231 @@ export function updateCivilianTraffic(
   }
 }
 
+interface PedGoalEvalContext {
+  ped: PedestrianActor;
+  allVehicles: AvoidanceVehicleProxy[];
+  assailants: AssailantActor[];
+  staticBvh: StaticObstacleBVH;
+  surfaceSource: CustomMapAsset | WorldConfig;
+  dt: number;
+  nearestThreat: AssailantActor | null;
+  evadeVec: { dirX: number; dirZ: number; bestTtc: number } | null;
+}
+
+interface PedGoalAction {
+  handled: boolean;
+  stopFrame?: boolean;
+  dirX: number;
+  dirZ: number;
+  speed: number;
+  goalId: string;
+}
+
+interface PedestrianGoalSpec {
+  id: string;
+  predicate: (ctx: PedGoalEvalContext, params: Record<string, number>) => boolean;
+  execute: (ctx: PedGoalEvalContext, params: Record<string, number>) => PedGoalAction;
+}
+
+const PEDESTRIAN_GOAL_SPECS: PedestrianGoalSpec[] = [
+  {
+    id: 'RAGDOLL_INCAPACITATED',
+    predicate: (ctx) => ctx.ped.dead || ctx.ped.ragdoll.active,
+    execute: (ctx) => {
+      const { ped, staticBvh, surfaceSource, dt } = ctx;
+      ped.activeGoal = 'RAGDOLL_INCAPACITATED';
+      if (ped.ragdoll.active) {
+        stepRagdollPhysics(ped.ragdoll, ped.pos, ped.rig, staticBvh, surfaceSource, dt);
+      } else if (ped.dead) {
+        ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surfaceSource) + 0.16;
+        ped.rig.root.position.copy(ped.pos);
+        ped.rig.root.rotation.set(Math.PI * 0.5, ped.yaw, 0);
+        applyRigidHumanoidPose(ped.rig, 'dead_flat', { snap: true });
+      }
+      if (!ped.dead && ped.ragdoll.active) {
+        ped.ragdoll.recoverTimer -= dt;
+        if (ped.ragdoll.recoverTimer <= 0) {
+          ped.ragdoll.active = false;
+          ped.jumpY = 0;
+          ped.jumpVelY = 0;
+          ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surfaceSource);
+          ped.rig.root.rotation.set(0, ped.yaw, 0);
+          applyRigidHumanoidPose(ped.rig, 'idle', { snap: true });
+        }
+      }
+      return { handled: true, stopFrame: true, dirX: 0, dirZ: 0, speed: 0, goalId: 'RAGDOLL_INCAPACITATED' };
+    },
+  },
+  {
+    id: 'EVADE_VEHICLE',
+    predicate: (ctx, params) => {
+      const { ped, allVehicles } = ctx;
+      const detectRadius = params.detectRadius ?? 22;
+      const ttcHorizon = params.ttcHorizon ?? 1.85;
+      let bestTtc = Infinity;
+      let evadeX = 0;
+      let evadeZ = 0;
+
+      for (let v = 0; v < allVehicles.length; v++) {
+        const veh = allVehicles[v];
+        if (veh.speed < 1.35) continue;
+        const relX = ped.pos.x - veh.x;
+        const relZ = ped.pos.z - veh.z;
+        if (relX * relX + relZ * relZ > detectRadius * detectRadius) continue;
+
+        const fwdX = Math.sin(veh.yaw);
+        const fwdZ = Math.cos(veh.yaw);
+        const along = relX * fwdX + relZ * fwdZ;
+        if (along < -0.6) continue;
+
+        const ttc = along / Math.max(1.0, veh.speed);
+        if (ttc > ttcHorizon) continue;
+
+        const rightX = Math.cos(veh.yaw);
+        const rightZ = -Math.sin(veh.yaw);
+        const sideDist = relX * rightX + relZ * rightZ;
+        const clearance = veh.halfW + 1.5;
+        if (Math.abs(sideDist) > clearance) continue;
+
+        if (ttc < bestTtc) {
+          bestTtc = ttc;
+          const escapeSign = sideDist >= 0 ? 1 : -1;
+          evadeX = rightX * escapeSign * 0.92 + fwdX * 0.35;
+          evadeZ = rightZ * escapeSign * 0.92 + fwdZ * 0.35;
+        }
+      }
+
+      if (bestTtc < Infinity) {
+        const len = Math.hypot(evadeX, evadeZ) || 1;
+        ctx.evadeVec = { dirX: evadeX / len, dirZ: evadeZ / len, bestTtc };
+        return true;
+      }
+      return false;
+    },
+    execute: (ctx, params) => {
+      const { ped, evadeVec } = ctx;
+      const jumpThresholdTtc = params.jumpThresholdTtc ?? 0.95;
+      const sprintSpeed = (params.sprintSpeed ?? 6.4) * (ped.injured ? 0.65 : 1.0);
+      ped.panicTimer = Math.max(ped.panicTimer, 2.2);
+      if (evadeVec && evadeVec.bestTtc < jumpThresholdTtc && ped.jumpY <= 0.02) {
+        ped.jumpVelY = 4.6;
+      }
+      return {
+        handled: true,
+        dirX: evadeVec?.dirX ?? 0,
+        dirZ: evadeVec?.dirZ ?? 0,
+        speed: sprintSpeed,
+        goalId: 'EVADE_VEHICLE',
+      };
+    },
+  },
+  {
+    id: 'FLEE_THREAT',
+    predicate: (ctx, params) => {
+      const { ped, assailants } = ctx;
+      const fleeRadius = params.fleeRadius ?? 34;
+      let nearestThreat: AssailantActor | null = null;
+      let minSq = fleeRadius * fleeRadius;
+      for (let a = 0; a < assailants.length; a++) {
+        const as = assailants[a];
+        if (!as.alive || as.inVehicle) continue;
+        const dSq = as.pos.distanceToSquared(ped.pos);
+        if (dSq < minSq) {
+          minSq = dSq;
+          nearestThreat = as;
+        }
+      }
+      ctx.nearestThreat = nearestThreat;
+      return Boolean(nearestThreat) || ped.panicTimer > 0;
+    },
+    execute: (ctx, params) => {
+      const { ped, nearestThreat } = ctx;
+      const fleeSpeed = (params.fleeSpeed ?? 5.2) * (ped.injured ? 0.58 : 1.0);
+      if (nearestThreat) {
+        const dx = ped.pos.x - nearestThreat.pos.x;
+        const dz = ped.pos.z - nearestThreat.pos.z;
+        const d = Math.hypot(dx, dz) || 1;
+        return {
+          handled: true,
+          dirX: dx / d,
+          dirZ: dz / d,
+          speed: fleeSpeed,
+          goalId: 'FLEE_THREAT',
+        };
+      }
+      const hw = ped.loopRect ? ped.loopRect.halfW : ped.loopRadius;
+      const hd = ped.loopRect ? ped.loopRect.halfD : ped.loopRadius;
+      const cx = ped.loopRect ? ped.loopRect.cx : ped.blockCx;
+      const cz = ped.loopRect ? ped.loopRect.cz : ped.blockCz;
+      const corners = [
+        [cx - hw, cz - hd],
+        [cx + hw, cz - hd],
+        [cx + hw, cz + hd],
+        [cx - hw, cz + hd],
+      ];
+      const [tx, tz] = corners[ped.cornerIdx];
+      const dx = tx - ped.pos.x;
+      const dz = tz - ped.pos.z;
+      const dist = Math.hypot(dx, dz);
+      let dirX = 0;
+      let dirZ = 0;
+      if (dist < 0.9) {
+        ped.cornerIdx = (ped.cornerIdx + (ped.dir === 1 ? 1 : 3)) % 4;
+      } else {
+        dirX = dx / dist;
+        dirZ = dz / dist;
+      }
+      return {
+        handled: true,
+        dirX,
+        dirZ,
+        speed: fleeSpeed * 0.92,
+        goalId: 'FLEE_THREAT',
+      };
+    },
+  },
+  {
+    id: 'SIDEWALK_STROLL',
+    predicate: () => true,
+    execute: (ctx, params) => {
+      const { ped } = ctx;
+      const walkSpeed = (params.walkSpeed ?? 1.8) * (ped.injured ? 0.52 : 1.0);
+      const hw = ped.loopRect ? ped.loopRect.halfW : ped.loopRadius;
+      const hd = ped.loopRect ? ped.loopRect.halfD : ped.loopRadius;
+      const cx = ped.loopRect ? ped.loopRect.cx : ped.blockCx;
+      const cz = ped.loopRect ? ped.loopRect.cz : ped.blockCz;
+
+      const corners = [
+        [cx - hw, cz - hd],
+        [cx + hw, cz - hd],
+        [cx + hw, cz + hd],
+        [cx - hw, cz + hd],
+      ];
+      const [tx, tz] = corners[ped.cornerIdx];
+      const dx = tx - ped.pos.x;
+      const dz = tz - ped.pos.z;
+      const dist = Math.hypot(dx, dz);
+      let dirX = 0;
+      let dirZ = 0;
+      if (dist < 0.85) {
+        ped.cornerIdx = (ped.cornerIdx + (ped.dir === 1 ? 1 : 3)) % 4;
+      } else {
+        dirX = dx / dist;
+        dirZ = dz / dist;
+      }
+      return {
+        handled: true,
+        dirX,
+        dirZ,
+        speed: walkSpeed,
+        goalId: 'SIDEWALK_STROLL',
+      };
+    },
+  },
+];
+
+const PEDESTRIAN_GOAL_MAP = new Map(PEDESTRIAN_GOAL_SPECS.map((s) => [s.id, s]));
+
 export function updatePedestrians(
   pedestrians: PedestrianActor[],
   allVehicles: AvoidanceVehicleProxy[],
@@ -578,182 +803,37 @@ export function updatePedestrians(
       if (ped.avoidSideTimer <= 0) ped.avoidSideSign = undefined;
     }
 
-    // Evaluate highest-priority active goal from asset-pack goals
-    let chosenDirX = 0;
-    let chosenDirZ = 0;
-    let chosenSpeed = 0;
-    let goalHandled = false;
+    const evalCtx: PedGoalEvalContext = {
+      ped,
+      allVehicles,
+      assailants,
+      staticBvh,
+      surfaceSource,
+      dt,
+      nearestThreat: null,
+      evadeVec: null,
+    };
 
+    // Test enabled goal predicates in priority order; guaranteed fallback to SIDEWALK_STROLL
+    let action: PedGoalAction | null = null;
     for (const rule of rules) {
-      if (goalHandled) break;
+      const spec = PEDESTRIAN_GOAL_MAP.get(rule.id);
+      if (!spec) continue;
       const params = rule.params ?? {};
-
-      if (rule.id === 'RAGDOLL_INCAPACITATED') {
-        if (ped.dead || ped.ragdoll.active) {
-          ped.activeGoal = 'RAGDOLL_INCAPACITATED';
-          if (ped.ragdoll.active) {
-            stepRagdollPhysics(ped.ragdoll, ped.pos, ped.rig, staticBvh, surfaceSource, dt);
-          } else if (ped.dead) {
-            ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surfaceSource) + 0.16;
-            ped.rig.root.position.copy(ped.pos);
-            ped.rig.root.rotation.set(Math.PI * 0.5, ped.yaw, 0);
-            applyRigidHumanoidPose(ped.rig, 'dead_flat', { snap: true });
-          }
-          if (!ped.dead && ped.ragdoll.active) {
-            ped.ragdoll.recoverTimer -= dt;
-            if (ped.ragdoll.recoverTimer <= 0) {
-              ped.ragdoll.active = false;
-              ped.jumpY = 0;
-              ped.jumpVelY = 0;
-              ped.pos.y = getSurfaceHeight(ped.pos.x, ped.pos.z, surfaceSource);
-              ped.rig.root.rotation.set(0, ped.yaw, 0);
-              applyRigidHumanoidPose(ped.rig, 'idle', { snap: true });
-            }
-          }
-          goalHandled = true;
-        }
-        continue;
-      }
-
-      if (ped.dead || ped.ragdoll.active) continue;
-
-      if (rule.id === 'EVADE_VEHICLE') {
-        const detectRadius = params.detectRadius ?? 22;
-        const ttcHorizon = params.ttcHorizon ?? 1.85;
-        const jumpThresholdTtc = params.jumpThresholdTtc ?? 0.95;
-        const sprintSpeed = (params.sprintSpeed ?? 6.4) * (ped.injured ? 0.65 : 1.0);
-
-        let bestTtc = Infinity;
-        let evadeX = 0;
-        let evadeZ = 0;
-
-        for (let v = 0; v < allVehicles.length; v++) {
-          const veh = allVehicles[v];
-          if (veh.speed < 1.35) continue;
-          const relX = ped.pos.x - veh.x;
-          const relZ = ped.pos.z - veh.z;
-          if (relX * relX + relZ * relZ > detectRadius * detectRadius) continue;
-
-          const fwdX = Math.sin(veh.yaw);
-          const fwdZ = Math.cos(veh.yaw);
-          const along = relX * fwdX + relZ * fwdZ;
-          if (along < -0.6) continue;
-
-          const ttc = along / Math.max(1.0, veh.speed);
-          if (ttc > ttcHorizon) continue;
-
-          const rightX = Math.cos(veh.yaw);
-          const rightZ = -Math.sin(veh.yaw);
-          const sideDist = relX * rightX + relZ * rightZ;
-          const clearance = veh.halfW + 1.5;
-          if (Math.abs(sideDist) > clearance) continue;
-
-          if (ttc < bestTtc) {
-            bestTtc = ttc;
-            const escapeSign = sideDist >= 0 ? 1 : -1;
-            evadeX = rightX * escapeSign * 0.92 + fwdX * 0.35;
-            evadeZ = rightZ * escapeSign * 0.92 + fwdZ * 0.35;
-          }
-        }
-
-        if (bestTtc < Infinity) {
-          const len = Math.hypot(evadeX, evadeZ) || 1;
-          chosenDirX = evadeX / len;
-          chosenDirZ = evadeZ / len;
-          chosenSpeed = sprintSpeed;
-          ped.panicTimer = Math.max(ped.panicTimer, 2.2);
-          if (bestTtc < jumpThresholdTtc && ped.jumpY <= 0.02) {
-            ped.jumpVelY = 4.6;
-          }
-          ped.activeGoal = 'EVADE_VEHICLE';
-          goalHandled = true;
-        }
-        continue;
-      }
-
-      if (rule.id === 'FLEE_THREAT') {
-        const fleeRadius = params.fleeRadius ?? 34;
-        const fleeSpeed = (params.fleeSpeed ?? 5.2) * (ped.injured ? 0.58 : 1.0);
-        let nearestThreat: AssailantActor | null = null;
-        let minSq = fleeRadius * fleeRadius;
-
-        for (let a = 0; a < assailants.length; a++) {
-          const as = assailants[a];
-          if (!as.alive || as.inVehicle) continue;
-          const dSq = as.pos.distanceToSquared(ped.pos);
-          if (dSq < minSq) {
-            minSq = dSq;
-            nearestThreat = as;
-          }
-        }
-
-        if (nearestThreat) {
-          const dx = ped.pos.x - nearestThreat.pos.x;
-          const dz = ped.pos.z - nearestThreat.pos.z;
-          const d = Math.hypot(dx, dz) || 1;
-          chosenDirX = dx / d;
-          chosenDirZ = dz / d;
-          chosenSpeed = fleeSpeed;
-          ped.activeGoal = 'FLEE_THREAT';
-          goalHandled = true;
-        } else if (ped.panicTimer > 0) {
-          const hw = ped.loopRect ? ped.loopRect.halfW : ped.loopRadius;
-          const hd = ped.loopRect ? ped.loopRect.halfD : ped.loopRadius;
-          const cx = ped.loopRect ? ped.loopRect.cx : ped.blockCx;
-          const cz = ped.loopRect ? ped.loopRect.cz : ped.blockCz;
-          const corners = [
-            [cx - hw, cz - hd],
-            [cx + hw, cz - hd],
-            [cx + hw, cz + hd],
-            [cx - hw, cz + hd],
-          ];
-          const [tx, tz] = corners[ped.cornerIdx];
-          const dx = tx - ped.pos.x;
-          const dz = tz - ped.pos.z;
-          const dist = Math.hypot(dx, dz);
-          if (dist < 0.9) {
-            ped.cornerIdx = (ped.cornerIdx + (ped.dir === 1 ? 1 : 3)) % 4;
-          } else {
-            chosenDirX = dx / dist;
-            chosenDirZ = dz / dist;
-          }
-          chosenSpeed = fleeSpeed * 0.92;
-          ped.activeGoal = 'FLEE_THREAT';
-          goalHandled = true;
-        }
-        continue;
-      }
-
-      if (rule.id === 'SIDEWALK_STROLL' || rule.id === 'AVOID_OBSTACLE') {
-        const walkSpeed = (params.walkSpeed ?? 1.8) * (ped.injured ? 0.52 : 1.0);
-        const hw = ped.loopRect ? ped.loopRect.halfW : ped.loopRadius;
-        const hd = ped.loopRect ? ped.loopRect.halfD : ped.loopRadius;
-        const cx = ped.loopRect ? ped.loopRect.cx : ped.blockCx;
-        const cz = ped.loopRect ? ped.loopRect.cz : ped.blockCz;
-
-        const corners = [
-          [cx - hw, cz - hd],
-          [cx + hw, cz - hd],
-          [cx + hw, cz + hd],
-          [cx - hw, cz + hd],
-        ];
-        const [tx, tz] = corners[ped.cornerIdx];
-        const dx = tx - ped.pos.x;
-        const dz = tz - ped.pos.z;
-        const dist = Math.hypot(dx, dz);
-        if (dist < 0.85) {
-          ped.cornerIdx = (ped.cornerIdx + (ped.dir === 1 ? 1 : 3)) % 4;
-        } else {
-          chosenDirX = dx / dist;
-          chosenDirZ = dz / dist;
-        }
-        chosenSpeed = walkSpeed;
-        ped.activeGoal = 'SIDEWALK_STROLL';
-        goalHandled = true;
+      if (spec.predicate(evalCtx, params)) {
+        action = spec.execute(evalCtx, params);
+        break;
       }
     }
+    if (!action) {
+      action = PEDESTRIAN_GOAL_MAP.get('SIDEWALK_STROLL')!.execute(evalCtx, {});
+    }
+    if (action.stopFrame || ped.dead || ped.ragdoll.active) continue;
 
-    if (ped.dead || ped.ragdoll.active) continue;
+    ped.activeGoal = action.goalId;
+    let chosenDirX = action.dirX;
+    let chosenDirZ = action.dirZ;
+    const chosenSpeed = action.speed;
 
     // Apply AVOID_OBSTACLE separation + static wall steering if goal rule enabled
     const avoidRule = rules.find((r) => r.id === 'AVOID_OBSTACLE');

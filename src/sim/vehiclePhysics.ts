@@ -132,15 +132,15 @@ export function stepVehicleDynamics(
       targetSteerAngle = -turnDir * 0.42;
     } else {
       const speedAuthority = THREE.MathUtils.clamp(Math.abs(vForward) / 2.2, 0.22, 1.0);
-      const highSpeedLimit = 1.0 / (1.0 + Math.abs(vForward) * 0.048);
+      const highSpeedLimit = 1.0 / (1.0 + Math.abs(vForward) * 0.068);
       targetOmega =
-        THREE.MathUtils.clamp(yawDiff * 2.15, -cmd.maxSteerRate, cmd.maxSteerRate) *
+        THREE.MathUtils.clamp(yawDiff * 1.95, -cmd.maxSteerRate, cmd.maxSteerRate) *
         speedAuthority *
         highSpeedLimit;
-      targetSteerAngle = THREE.MathUtils.clamp(yawDiff * 0.55, -0.42, 0.42);
+      targetSteerAngle = THREE.MathUtils.clamp(yawDiff * 0.48, -0.4, 0.4);
     }
 
-    dyn.omega = THREE.MathUtils.damp(dyn.omega, targetOmega, 9.2, dt);
+    dyn.omega = THREE.MathUtils.damp(dyn.omega, targetOmega, 7.6, dt);
     yawRef.yaw = normalizeAngle(yawRef.yaw + dyn.omega * dt);
 
     vLateral *= Math.exp(-cmd.lateralGrip * dt);
@@ -221,6 +221,8 @@ export interface VehicleCollisionEntry {
   onWheelBroken?: (tiltSide: number) => void;
 }
 
+export type CollisionCauser = 'a' | 'b' | 'mutual';
+
 export interface CollisionResolutionOptions {
   debrisObstacles?: boolean;
   crashIntensity?: number;
@@ -231,6 +233,7 @@ export interface CollisionResolutionOptions {
     strikeSpeed: number,
     contactX: number,
     contactZ: number,
+    causer: CollisionCauser,
   ) => void;
 }
 
@@ -260,6 +263,13 @@ export class VehicleCrashPhysicsSystem {
 
   public getDebrisCount(): number {
     return this.debris.length;
+  }
+
+  public evictOldestDebris(): boolean {
+    const oldest = this.debris.shift();
+    if (!oldest) return false;
+    this.debrisGroup.remove(oldest.object);
+    return true;
   }
 
   public resolveAllCollisions(
@@ -377,6 +387,29 @@ export class VehicleCrashPhysicsSystem {
 
       this.cooldowns.set(pairKey, 0.34);
 
+      // Compute fault/causer strictly from PRE-IMPULSE velocity toward the other vehicle & front-bumper orientation
+      const sepDx = b.pos.x - a.pos.x;
+      const sepDz = b.pos.z - a.pos.z;
+      const sepLen = Math.hypot(sepDx, sepDz) || 1;
+      const dirX = sepDx / sepLen;
+      const dirZ = sepDz / sepLen;
+      const approachA = Math.max(0, a.dyn.vx * dirX + a.dyn.vz * dirZ);
+      const approachB = Math.max(0, -(b.dyn.vx * dirX + b.dyn.vz * dirZ));
+      const frontAlignA = Math.max(0, Math.sin(a.yaw) * dirX + Math.cos(a.yaw) * dirZ);
+      const frontAlignB = Math.max(0, -(Math.sin(b.yaw) * dirX + Math.cos(b.yaw) * dirZ));
+      const scoreA = approachA * (0.35 + 0.85 * frontAlignA);
+      const scoreB = approachB * (0.35 + 0.85 * frontAlignB);
+      let causer: CollisionCauser = 'mutual';
+      if (scoreA > Math.max(1.8, scoreB * 1.2)) {
+        causer = 'a';
+      } else if (scoreB > Math.max(1.8, scoreA * 1.2)) {
+        causer = 'b';
+      } else if (scoreA > scoreB + 0.6) {
+        causer = 'a';
+      } else if (scoreB > scoreA + 0.6) {
+        causer = 'b';
+      }
+
       const invInertiaA = 1 / (a.mass * 2.2);
       const invInertiaB = 1 / (b.mass * 2.2);
       const rACrossN = rAx * sat.normalZ - rAz * sat.normalX;
@@ -450,7 +483,7 @@ export class VehicleCrashPhysicsSystem {
 
       a.onImpact(strikeSpeed, b.kind === 'police');
       b.onImpact(strikeSpeed, a.kind === 'police');
-      options?.onVehicleCollision?.(a, b, strikeSpeed, sat.contactX, sat.contactZ);
+      options?.onVehicleCollision?.(a, b, strikeSpeed, sat.contactX, sat.contactZ, causer);
       if (strikeSpeed >= 9.5) {
         onHeavyCrash?.(strikeSpeed * crashIntensity);
       }

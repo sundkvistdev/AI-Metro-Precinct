@@ -569,7 +569,22 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
 
                               <div className="flex items-center justify-between gap-1 text-[10px] font-mono-tabular text-zinc-300">
                                 <span>
-                                  {crime.district} · {crime.incidentStatus.replace('_', ' ')}
+                                  {crime.district} ·{' '}
+                                  <span
+                                    className={
+                                      crime.sightStatus === 'visual'
+                                        ? 'text-emerald-300'
+                                        : crime.showQuestionMark
+                                        ? 'text-red-300 font-semibold'
+                                        : 'text-amber-300'
+                                    }
+                                  >
+                                    {crime.sightStatus === 'visual'
+                                      ? 'VISUAL'
+                                      : crime.showQuestionMark
+                                      ? '? LOST SIGHT'
+                                      : 'PREDICTED'}
+                                  </span>
                                 </span>
                                 <span>
                                   {!crime.suspectAlive
@@ -1151,6 +1166,7 @@ export const SidebarPanel: React.FC<SidebarPanelProps> = (props) => {
                         {(
                           [
                             { id: 'topBar', label: 'Top Status Bar' },
+                            { id: 'minimap', label: 'Tactical Radar Minimap' },
                             { id: 'cameraBar', label: 'Camera & Quick Bar' },
                           ] as Array<{ id: HudWidgetId; label: string }>
                         ).map((w) => (

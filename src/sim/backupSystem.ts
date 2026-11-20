@@ -67,11 +67,13 @@ function findStandbyUnit(
   allowHeavy: boolean,
   preferVehicleKind?: 'van' | 'apc',
 ): PoliceUnit | null {
+  const reqClass: 0 | 1 = allowHeavy ? 1 : 0;
   const candidates = units.filter(
     (u) =>
-      (allowHeavy ? u.isHeavyUnit : !u.isHeavyUnit) &&
+      u.vehicleClass === reqClass &&
       !u.immobilized &&
-      (u.status === UnitStatus.AtStation || u.status === UnitStatus.Returning) &&
+      (u.status === UnitStatus.AtStation ||
+        (u.status === UnitStatus.Returning && (u.bayApproachTimer ?? 0) <= 0)) &&
       u.id !== crime.assignedUnitId &&
       u.targetCrimeId !== crime.id,
   );

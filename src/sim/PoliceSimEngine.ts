@@ -37,7 +37,7 @@ import {
   spawnPoliceUnits,
   updatePoliceUnits,
 } from './policeUnitSystem';
-import { getSurfaceHeight, TownRoadGraph } from './roadGraph';
+import { getSurfaceHeight, sampleEdgeBezier, TownRoadGraph } from './roadGraph';
 import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
@@ -46,6 +46,8 @@ import {
   NailMatActor,
   OfficerActor,
   PedestrianActor,
+  PersistentCorpse,
+  PersistentWreck,
   PoliceUnit,
   resolveCrimePrimaryAssailant,
   resolveUnitOfficers,
@@ -74,6 +76,11 @@ import {
   LightbarMode,
   PaintSwatchSummary,
   PoliceVehicleKind,
+  RadarCopBlip,
+  RadarIncidentBlip,
+  RadarLiveSnapshot,
+  RadarOfficerBlip,
+  RadarStaticMapData,
   SimSnapshot,
   SirenPattern,
   UnitStatus,
@@ -176,6 +183,9 @@ export class PoliceSimEngine {
   private nailMats: NailMatActor[] = [];
   private civilianCars: CivilianVehicle[] = [];
   private pedestrians: PedestrianActor[] = [];
+  private persistentWrecks: PersistentWreck[] = [];
+  private persistentCorpses: PersistentCorpse[] = [];
+  private cachedRadarMap: RadarStaticMapData | null = null;
   private clickables: THREE.Object3D[] = [];
   private paintPalette: PaintSwatchSummary[] = [];
   private standaloneActorSeq = 1;
@@ -214,6 +224,7 @@ export class PoliceSimEngine {
   private simTime = 0;
   private snapshotAccum = 0;
   private initialCrimeTriggered = false;
+  private initialCrimeDelaySec = 10.5;
   private assetsLoaded = false;
 
   private assetSourceLabel = 'Unloaded';
@@ -417,6 +428,8 @@ export class PoliceSimEngine {
 
     const assets = result.assets;
     const config = result.config;
+    const baseInitialDelay = Math.max(6.0, config.simulation.initialCrimeDelaySec ?? 8.5);
+    this.initialCrimeDelaySec = baseInitialDelay + this.simRng() * 6.5;
     if (this.pendingMapId && assets.maps[this.pendingMapId]) {
       assets.activeMapId = this.pendingMapId;
       assets.map = assets.maps[this.pendingMapId];
@@ -551,6 +564,7 @@ export class PoliceSimEngine {
     const textures = this.textures;
 
     this.roadGraph = new TownRoadGraph(assets.map);
+    this.cachedRadarMap = this.buildRadarMap();
     this.envHandles = buildTownEnvironment(
       this.hierarchy,
       assets.map,
@@ -614,6 +628,7 @@ export class PoliceSimEngine {
     this.vfx.clearActiveParticles();
     this.combat.clearTracers();
     this.crashPhysics.clearDebris();
+    this.clearPersistentRemains();
     this.crimes = [];
     this.nailMats = [];
     this.clickables = [];
@@ -623,6 +638,117 @@ export class PoliceSimEngine {
     this.buildWorldAndEntities();
     this.devEditor?.refreshVisuals();
     this.emitSnapshot();
+  }
+
+  private buildRadarMap(): RadarStaticMapData | null {
+    const map = this.assets?.map;
+    if (!map) return null;
+
+    const nodesById = new Map<number, { id: number; x: number; z: number }>();
+    for (const n of map.roadNetwork.nodes) {
+      nodesById.set(n.id, n);
+    }
+
+    const roadPolylines: Array<Array<[number, number]>> = [];
+    for (const edge of map.roadNetwork.edges) {
+      const a = nodesById.get(edge.from);
+      const b = nodesById.get(edge.to);
+      if (!a || !b) continue;
+      const points: Array<[number, number]> = [];
+      if (edge.ctrlX !== undefined && edge.ctrlZ !== undefined) {
+        const steps = 10;
+        for (let i = 0; i <= steps; i++) {
+          const p = sampleEdgeBezier(
+            a.x,
+            a.z,
+            b.x,
+            b.z,
+            edge.ctrlX,
+            edge.ctrlZ,
+            i / steps,
+          );
+          points.push([p.x, p.z]);
+        }
+      } else {
+        points.push([a.x, a.z], [b.x, b.z]);
+      }
+      roadPolylines.push(points);
+    }
+
+    const extraStrips = (map.roadNetwork.extraStrips ?? []).map((s) => ({
+      x1: s.x1,
+      z1: s.z1,
+      x2: s.x2,
+      z2: s.z2,
+    }));
+
+    const buildings = (map.buildings ?? []).map((b) => ({
+      x: b.cx,
+      z: b.cz,
+      w: b.width,
+      d: b.depth,
+      rotY: b.rotationY ?? 0,
+      isStation: Boolean(
+        b.kind === 'station' ||
+          b.modelRef?.toLowerCase().includes('station') ||
+          b.id.toLowerCase().includes('station'),
+      ),
+    }));
+
+    const zones = (map.zones ?? []).map((z) => ({
+      kind: z.kind,
+      cx: z.cx,
+      cz: z.cz,
+      w: z.width,
+      d: z.depth,
+      rotY: z.rotationY ?? 0,
+    }));
+
+    return {
+      halfSize: map.bounds.halfSize,
+      roadWidth: map.roadNetwork.roadWidth,
+      roadPolylines,
+      extraStrips,
+      buildings,
+      zones,
+    };
+  }
+
+  private clearPersistentRemains(): void {
+    for (const w of this.persistentWrecks) {
+      this.hierarchy.removeEntity(w.object);
+    }
+    for (const c of this.persistentCorpses) {
+      this.hierarchy.removeEntity(c.object);
+    }
+    this.persistentWrecks = [];
+    this.persistentCorpses = [];
+  }
+
+  private enforcePhysicsPartLimits(): void {
+    const limit = this.maxPhysicsParts;
+    while (
+      this.crashPhysics.getDebrisCount() +
+        this.persistentWrecks.length +
+        this.persistentCorpses.length >
+      limit
+    ) {
+      if (this.crashPhysics.evictOldestDebris()) continue;
+      const oldestWreck = this.persistentWrecks[0];
+      const oldestCorpse = this.persistentCorpses[0];
+      if (
+        oldestWreck &&
+        (!oldestCorpse || oldestWreck.createdAt <= oldestCorpse.createdAt)
+      ) {
+        this.persistentWrecks.shift();
+        this.hierarchy.removeEntity(oldestWreck.object);
+      } else if (oldestCorpse) {
+        this.persistentCorpses.shift();
+        this.hierarchy.removeEntity(oldestCorpse.object);
+      } else {
+        break;
+      }
+    }
   }
 
   private getOfficersById(): Map<string, OfficerActor> {
@@ -649,6 +775,7 @@ export class PoliceSimEngine {
     this.vfx.clearActiveParticles();
     this.combat.clearTracers();
     this.crashPhysics.clearDebris();
+    this.clearPersistentRemains();
     this.crimes = [];
     this.assailants = [];
     this.officers = [];
@@ -960,6 +1087,7 @@ export class PoliceSimEngine {
     this.customMaxPhysicsParts = clamped;
     this.maxPhysicsParts = clamped;
     this.crashPhysics.setMaxPhysicsParts(clamped);
+    this.enforcePhysicsPartLimits();
     this.emitSnapshot();
   }
 
@@ -1062,6 +1190,8 @@ export class PoliceSimEngine {
       units: this.units,
       officersById: this.getOfficersById(),
       assailants: this.assailants,
+      civilianCars: this.civilianCars,
+      pedestrians: this.pedestrians,
       hierarchy: this.hierarchy,
       roadGraph: this.roadGraph,
       staticBvh: this.staticBvh,
@@ -1097,7 +1227,7 @@ export class PoliceSimEngine {
     const dt = rawDt * this.simSpeed;
     this.simTime += dt;
 
-    if (!this.initialCrimeTriggered && this.simTime > config.simulation.initialCrimeDelaySec) {
+    if (!this.initialCrimeTriggered && this.simTime > this.initialCrimeDelaySec) {
       this.initialCrimeTriggered = true;
       this.triggerCrimeNow(false);
     }
@@ -1188,7 +1318,10 @@ export class PoliceSimEngine {
       for (const a of this.assailants) {
         if (!a.alive || a.inVehicle) continue;
         const dSq = a.pos.distanceToSquared(off.pos);
-        if (dSq < nearestSq) {
+        if (
+          dSq < nearestSq &&
+          this.staticBvh.raycastSegment(off.pos.x, off.pos.z, a.pos.x, a.pos.z).clear
+        ) {
           nearestSq = dSq;
           nearestTarget = a;
         }
@@ -1260,6 +1393,8 @@ export class PoliceSimEngine {
         pedestrians: this.pedestrians,
         allVehicles,
         nailMats: this.nailMats,
+        persistentWrecks: this.persistentWrecks,
+        persistentCorpses: this.persistentCorpses,
         hierarchy: this.hierarchy,
         roadGraph,
         staticBvh: this.staticBvh,
@@ -1281,6 +1416,7 @@ export class PoliceSimEngine {
       },
       dt,
     );
+    this.enforcePhysicsPartLimits();
 
     updateCivilianTraffic(
       this.civilianCars,
@@ -1354,6 +1490,7 @@ export class PoliceSimEngine {
       config,
       surfaceSource: map ?? config.world,
     });
+    this.enforcePhysicsPartLimits();
     updatePedestrians(
       this.pedestrians,
       allVehicles,
@@ -1630,11 +1767,9 @@ export class PoliceSimEngine {
             simEventLog.warn('crash', `High-energy vehicle collision (${Math.round(mag)} m/s)`);
           }
         },
-        onVehicleCollision: (a, b, strikeSpeed, contactX, contactZ) => {
+        onVehicleCollision: (a, b, strikeSpeed, contactX, contactZ, causer) => {
           if (a.kind === 'civilian' && b.kind === 'civilian' && strikeSpeed >= 4.2) {
-            const spdA = Math.hypot(a.dyn.vx, a.dyn.vz);
-            const spdB = Math.hypot(b.dyn.vx, b.dyn.vz);
-            const culprit = spdA >= spdB ? a : b;
+            const culprit = causer === 'b' ? b : a;
             this.promoteCivilianDriverIfWitnessed(
               culprit.id,
               contactX,
@@ -1642,22 +1777,27 @@ export class PoliceSimEngine {
               'Reckless collision',
               officersById,
             );
-          } else if (a.kind === 'civilian' && b.kind === 'police' && strikeSpeed >= 2.6) {
-            this.promoteCivilianDriverIfWitnessed(
-              a.id,
-              contactX,
-              contactZ,
-              'Struck police cruiser',
-              officersById,
-            );
-          } else if (b.kind === 'civilian' && a.kind === 'police' && strikeSpeed >= 2.6) {
-            this.promoteCivilianDriverIfWitnessed(
-              b.id,
-              contactX,
-              contactZ,
-              'Struck police cruiser',
-              officersById,
-            );
+          } else if (a.kind === 'civilian' && b.kind === 'police' && strikeSpeed >= 2.8) {
+            // Only flag the civilian if the civilian actually caused/rammed the collision (never if police hit civilian)
+            if (causer === 'a') {
+              this.promoteCivilianDriverIfWitnessed(
+                a.id,
+                contactX,
+                contactZ,
+                'Struck police cruiser',
+                officersById,
+              );
+            }
+          } else if (b.kind === 'civilian' && a.kind === 'police' && strikeSpeed >= 2.8) {
+            if (causer === 'b') {
+              this.promoteCivilianDriverIfWitnessed(
+                b.id,
+                contactX,
+                contactZ,
+                'Struck police cruiser',
+                officersById,
+              );
+            }
           }
         },
       },
@@ -1854,6 +1994,16 @@ export class PoliceSimEngine {
       const counts = getCrimeUnitCounts(c, this.units, this.nailMats);
       const primarySuspect = resolveCrimePrimaryAssailant(c, assailantsById);
       const anyAlive = this.isCrimeActive(c, assailantsById);
+      const hasLineOfSight = c.hasLineOfSight;
+      const showQuestionMark =
+        anyAlive &&
+        !hasLineOfSight &&
+        (c.everSpotted ? c.sightLostSec >= 3.5 : c.elapsedSec >= 7.0);
+      const sightStatus: 'visual' | 'predicted' | 'lost' = hasLineOfSight
+        ? 'visual'
+        : showQuestionMark
+        ? 'lost'
+        : 'predicted';
       const assignedUnits: CaseAssignedUnitBadge[] = this.units
         .filter((u) => u.targetCrimeId === c.id && u.status !== UnitStatus.Retreating)
         .map((u) => ({
@@ -1884,8 +2034,134 @@ export class PoliceSimEngine {
         apcDeployed: counts.apcDeployed,
         nailMatDeployed: counts.activeNailMats > 0,
         elapsedSec: Math.round(c.elapsedSec),
+        sightStatus,
+        showQuestionMark,
+        hasLineOfSight,
       };
     });
+
+    const radarCops: RadarCopBlip[] = this.units.map((u) => ({
+      id: u.id,
+      callsign: u.callsign,
+      x: u.pos.x,
+      z: u.pos.z,
+      yaw: u.yaw,
+      immobilized: u.immobilized,
+      followed: u.id === this.selectedUnitId,
+      isHeavyUnit: u.isHeavyUnit,
+    }));
+
+    const followedUnit = this.units.find((u) => u.id === this.selectedUnitId);
+    const followedCrewDismounted = Boolean(
+      followedUnit &&
+        !followedUnit.mounted &&
+        resolveUnitOfficers(followedUnit, officersById).some(
+          (o) =>
+            o.hp > 0 &&
+            o.boardingState === 'dismounted' &&
+            o.locationState === 'field',
+        ),
+    );
+
+    const radarOfficers: RadarOfficerBlip[] = [];
+    for (const o of this.officers) {
+      const dead = o.hp <= 0;
+      if (!dead && (o.locationState === 'in_precinct' || o.boardingState === 'seated')) {
+        continue;
+      }
+      if (dead && o.boardingState === 'seated') continue;
+      radarOfficers.push({
+        id: o.id,
+        unitId: o.unitId,
+        x: o.pos.x,
+        z: o.pos.z,
+        yaw: o.yaw,
+        dead,
+        incapacitated: !dead && o.ragdoll.active,
+        followedCrew: o.unitId === this.selectedUnitId,
+      });
+    }
+
+    const radarIncidents: RadarIncidentBlip[] = [];
+    const deadSuspects: Array<{ id: string; x: number; z: number }> = [];
+    const wreckedSuspectVehicles: Array<{ id: string; x: number; z: number; yaw: number }> = [];
+
+    for (const c of this.crimes) {
+      const primarySuspect = resolveCrimePrimaryAssailant(c, assailantsById);
+      const anyAlive = this.isCrimeActive(c, assailantsById);
+      const hasLineOfSight = c.hasLineOfSight;
+      const showQuestionMark =
+        anyAlive &&
+        !hasLineOfSight &&
+        (c.everSpotted ? c.sightLostSec >= 3.5 : c.elapsedSec >= 7.0);
+      const actualPos =
+        c.inVehiclePursuit && c.vehicleRig
+          ? c.vehiclePos
+          : primarySuspect
+          ? primarySuspect.pos
+          : c.pos;
+      const displayPos = hasLineOfSight
+        ? actualPos
+        : c.everSpotted
+        ? c.predictedPos
+        : c.reportedPos;
+
+      if (anyAlive) {
+        radarIncidents.push({
+          id: c.id,
+          caseNumber: c.caseNumber,
+          x: displayPos.x,
+          z: displayPos.z,
+          yaw: c.inVehiclePursuit ? c.vehicleYaw : primarySuspect?.yaw,
+          isVehicle: c.inVehiclePursuit,
+          hasLineOfSight,
+          showQuestionMark,
+          alive: anyAlive,
+        });
+      }
+
+      for (const aid of c.assailantRefs) {
+        const as = assailantsById.get(aid);
+        if (as && !as.alive && !as.inVehicle) {
+          deadSuspects.push({ id: as.id, x: as.pos.x, z: as.pos.z });
+        }
+      }
+      if (!c.inVehiclePursuit && c.vehicleRig) {
+        wreckedSuspectVehicles.push({
+          id: `wreck-${c.id}`,
+          x: c.vehiclePos.x,
+          z: c.vehiclePos.z,
+          yaw: c.vehicleYaw,
+        });
+      }
+    }
+
+    for (const as of this.assailants) {
+      if (!as.alive && !as.inVehicle && as.crimeId === null) {
+        deadSuspects.push({ id: as.id, x: as.pos.x, z: as.pos.z });
+      }
+    }
+    for (const corpse of this.persistentCorpses) {
+      deadSuspects.push({ id: corpse.id, x: corpse.x, z: corpse.z });
+    }
+    for (const wreck of this.persistentWrecks) {
+      wreckedSuspectVehicles.push({
+        id: wreck.id,
+        x: wreck.x,
+        z: wreck.z,
+        yaw: wreck.yaw,
+      });
+    }
+
+    const radar: RadarLiveSnapshot = {
+      cops: radarCops,
+      officers: radarOfficers,
+      incidents: radarIncidents,
+      deadSuspects,
+      wreckedSuspectVehicles,
+      followedUnitId: this.selectedUnitId,
+      followedCrewDismounted,
+    };
 
     this.onSnapshot({
       units: unitsSummary,
@@ -1893,6 +2169,8 @@ export class PoliceSimEngine {
       neutralizedCount: this.neutralizedCount,
       casualtyCount: this.casualtyCount,
       debrisCount: this.crashPhysics.getDebrisCount(),
+      persistentWreckCount: this.persistentWrecks.length,
+      persistentBodyCount: this.persistentCorpses.length,
       civilianCarCount: this.civilianCars.length,
       pedestrianCount: this.pedestrians.length,
       activeNailMats: this.nailMats.filter((m) => m.phase !== 'recovering').length,
@@ -1945,6 +2223,8 @@ export class PoliceSimEngine {
       assetsLoaded: this.assetsLoaded,
       assetIssues: this.assetIssues,
       fatalError: this.fatalError,
+      radarMap: this.cachedRadarMap,
+      radar,
     });
   }
 
@@ -2233,6 +2513,8 @@ export class PoliceSimEngine {
         units: this.units,
         officersById: this.getOfficersById(),
         assailants: this.assailants,
+        civilianCars: this.civilianCars,
+        pedestrians: this.pedestrians,
         hierarchy: this.hierarchy,
         roadGraph: this.roadGraph,
         staticBvh: this.staticBvh,
@@ -2289,6 +2571,7 @@ export class PoliceSimEngine {
         maxArmor,
         weaponKind,
         isHeavy,
+        officerClass: isHeavy ? 1 : 0,
         morale: 100,
         cowardiceState: 'steady',
         ragdoll: createRagdollState(),
@@ -2536,6 +2819,7 @@ export class PoliceSimEngine {
       lightbarId: this.activeLightbarId,
       baseColorHex: 0x0f172a,
       isHeavyUnit: isHeavy,
+      vehicleClass: isHeavy ? 1 : 0,
       weaponKind,
       wheelRadius: chassis.wheelRadius,
       halfW: chassis.halfW,
@@ -2618,6 +2902,7 @@ export class PoliceSimEngine {
         maxArmor,
         weaponKind,
         isHeavy,
+        officerClass: isHeavy ? 1 : 0,
         morale: 100,
         cowardiceState: 'steady',
         ragdoll: createRagdollState(),

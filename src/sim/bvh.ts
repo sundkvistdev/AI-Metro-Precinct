@@ -71,6 +71,13 @@ export interface RayBVHResult {
   normalZ: number;
 }
 
+export interface SweepCorridorResult {
+  clear: boolean;
+  t: number;
+  hitLat: number;
+  kind?: ObstacleAABB['kind'];
+}
+
 function obstacleToOBB(b: ObstacleAABB): OBB2D {
   const cx = b.cx ?? (b.minX + b.maxX) * 0.5;
   const cz = b.cz ?? (b.minZ + b.maxZ) * 0.5;
@@ -402,6 +409,118 @@ export class StaticObstacleBVH {
             out.hitZ = z0 + dz * hit.t;
             out.normalX = hit.nx;
             out.normalZ = hit.nz;
+          }
+        }
+      } else {
+        this.stack[sp++] = n.left;
+        this.stack[sp++] = n.right;
+      }
+    }
+
+    return out;
+  }
+
+  public sweepCorridor(
+    x0: number,
+    z0: number,
+    dirX: number,
+    dirZ: number,
+    length: number,
+    halfWidth: number,
+  ): SweepCorridorResult {
+    const out: SweepCorridorResult = { clear: true, t: 1, hitLat: 0 };
+    if (this.nodes.length === 0 || length <= 1e-4) return out;
+
+    const dirLen = Math.hypot(dirX, dirZ) || 1;
+    const fx = dirX / dirLen;
+    const fz = dirZ / dirLen;
+    const rx = fz;
+    const rz = -fx;
+
+    const x1 = x0 + fx * length;
+    const z1 = z0 + fz * length;
+    const wx = Math.abs(rx) * halfWidth;
+    const wz = Math.abs(rz) * halfWidth;
+    const qMinX = Math.min(x0, x1) - wx;
+    const qMaxX = Math.max(x0, x1) + wx;
+    const qMinZ = Math.min(z0, z1) - wz;
+    const qMaxZ = Math.max(z0, z1) + wz;
+
+    const midX = (x0 + x1) * 0.5;
+    const midZ = (z0 + z1) * 0.5;
+    const halfLen = length * 0.5;
+
+    let bestT = 1.0;
+    let sp = 0;
+    this.stack[sp++] = 0;
+
+    while (sp > 0) {
+      const n = this.nodes[this.stack[--sp]];
+      if (qMaxX < n.minX || qMinX > n.maxX || qMaxZ < n.minZ || qMinZ > n.maxZ) {
+        continue;
+      }
+
+      if (n.left === -1) {
+        for (let i = n.start; i < n.start + n.count; i++) {
+          const b = this.items[i];
+          if (b.disabled) continue;
+          if (qMaxX < b.minX || qMinX > b.maxX || qMaxZ < b.minZ || qMinZ > b.maxZ) {
+            continue;
+          }
+
+          const bx = b.cx ?? (b.minX + b.maxX) * 0.5;
+          const bz = b.cz ?? (b.minZ + b.maxZ) * 0.5;
+          const bHalfW = b.halfW ?? (b.maxX - b.minX) * 0.5;
+          const bHalfD = b.halfD ?? (b.maxZ - b.minZ) * 0.5;
+          const rot = b.rotationY ?? 0;
+
+          let extF: number;
+          let extR: number;
+          if (Math.abs(rot) > 1e-4) {
+            const cosR = Math.cos(rot);
+            const sinR = Math.sin(rot);
+            const bRx = cosR;
+            const bRz = -sinR;
+            const bFx = sinR;
+            const bFz = cosR;
+
+            const mdx = midX - bx;
+            const mdz = midZ - bz;
+            const corrProjX =
+              Math.abs(fx * bRx + fz * bRz) * halfLen +
+              Math.abs(rx * bRx + rz * bRz) * halfWidth;
+            if (Math.abs(mdx * bRx + mdz * bRz) > bHalfW + corrProjX) continue;
+            const corrProjZ =
+              Math.abs(fx * bFx + fz * bFz) * halfLen +
+              Math.abs(rx * bFx + rz * bFz) * halfWidth;
+            if (Math.abs(mdx * bFx + mdz * bFz) > bHalfD + corrProjZ) continue;
+
+            extF =
+              Math.abs(bRx * fx + bRz * fz) * bHalfW +
+              Math.abs(bFx * fx + bFz * fz) * bHalfD;
+            extR =
+              Math.abs(bRx * rx + bRz * rz) * bHalfW +
+              Math.abs(bFx * rx + bFz * rz) * bHalfD;
+          } else {
+            extF = Math.abs(fx) * bHalfW + Math.abs(fz) * bHalfD;
+            extR = Math.abs(rx) * bHalfW + Math.abs(rz) * bHalfD;
+          }
+
+          const dx = bx - x0;
+          const dz = bz - z0;
+          const locR = dx * rx + dz * rz;
+          if (Math.abs(locR) > halfWidth + extR) continue;
+
+          const locF = dx * fx + dz * fz;
+          if (locF + extF < 0 || locF - extF > length) continue;
+
+          const hitT = Math.max(0, locF - extF) / length;
+          if (hitT < bestT) {
+            bestT = hitT;
+            out.clear = false;
+            out.t = hitT;
+            out.hitLat = locR;
+            out.kind = b.kind;
           }
         }
       } else {

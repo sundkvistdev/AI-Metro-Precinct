@@ -27,6 +27,7 @@
       "lightbarId": "led_array",
       "weaponKind": "pistol",
       "isHeavyUnit": false,
+      "vehicleClass": 0,
       "parkPos": [-92, 0.18, -58],
       "parkYaw": 1.5707963,
       "exitRoadNodeId": 6
@@ -39,6 +40,7 @@
       "lightbarId": "led_array",
       "weaponKind": "rifle",
       "isHeavyUnit": false,
+      "vehicleClass": 0,
       "parkPos": [-92, 0.18, -50],
       "parkYaw": 1.5707963,
       "exitRoadNodeId": 6
@@ -51,6 +53,7 @@
       "lightbarId": "rotator_classic",
       "weaponKind": "pistol",
       "isHeavyUnit": false,
+      "vehicleClass": 0,
       "parkPos": [-92, 0.18, -42],
       "parkYaw": 1.5707963,
       "exitRoadNodeId": 7
@@ -63,6 +66,7 @@
       "lightbarId": "vector_v_pods",
       "weaponKind": "rifle",
       "isHeavyUnit": false,
+      "vehicleClass": 0,
       "parkPos": [-92, 0.18, -34],
       "parkYaw": 1.5707963,
       "exitRoadNodeId": 7
@@ -75,6 +79,7 @@
       "lightbarId": "mini_beacon",
       "weaponKind": "pistol",
       "isHeavyUnit": false,
+      "vehicleClass": 0,
       "parkPos": [-92, 0.18, -26],
       "parkYaw": 1.5707963,
       "exitRoadNodeId": 7
@@ -87,6 +92,7 @@
       "lightbarId": "halogen_flash",
       "weaponKind": "rifle",
       "isHeavyUnit": true,
+      "vehicleClass": 1,
       "parkPos": [-92, 0.18, -18],
       "parkYaw": 1.5707963,
       "exitRoadNodeId": 7
@@ -99,6 +105,7 @@
       "lightbarId": "visor_stealth",
       "weaponKind": "rifle",
       "isHeavyUnit": true,
+      "vehicleClass": 1,
       "parkPos": [-92, 0.18, -10],
       "parkYaw": 1.5707963,
       "exitRoadNodeId": 7

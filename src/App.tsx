@@ -11,6 +11,8 @@ import { BottomControlBar } from './components/BottomControlBar';
 import { ErrorDialog } from './components/ErrorDialog';
 import { EventLogDialog } from './components/EventLogDialog';
 import { MainMenu, MainMenuSettings } from './components/MainMenu';
+import { MapDialog } from './components/MapDialog';
+import { MinimapRadar } from './components/MinimapRadar';
 import { SidebarPaneId, SidebarPanel } from './components/SidebarPanel';
 import { TopStatusHud } from './components/TopStatusHud';
 import { ValidatorDialog } from './components/ValidatorDialog';
@@ -36,6 +38,8 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   neutralizedCount: 0,
   casualtyCount: 0,
   debrisCount: 0,
+  persistentWreckCount: 0,
+  persistentBodyCount: 0,
   civilianCarCount: 0,
   pedestrianCount: 0,
   activeNailMats: 0,
@@ -80,6 +84,16 @@ const INITIAL_SNAPSHOT: SimSnapshot = {
   assetsLoaded: false,
   assetIssues: [],
   fatalError: null,
+  radarMap: null,
+  radar: {
+    cops: [],
+    officers: [],
+    incidents: [],
+    deadSuspects: [],
+    wreckedSuspectVehicles: [],
+    followedUnitId: 'unit-1',
+    followedCrewDismounted: false,
+  },
 };
 
 export default function App() {
@@ -119,6 +133,7 @@ export default function App() {
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [eventLogOpen, setEventLogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);
+  const [mapDialogOpen, setMapDialogOpen] = useState(false);
   const [contextLost, setContextLost] = useState(false);
 
   const applyNewAssetResult = useCallback((result: AssetLoadResult) => {
@@ -497,8 +512,10 @@ export default function App() {
             onOpenErrorDialog={() => setErrorDialogOpen(true)}
             onOpenEventLog={() => setEventLogOpen(true)}
             onOpenValidator={() => setValidatorOpen(true)}
+            onOpenMapDialog={() => setMapDialogOpen((prev) => !prev)}
             onReturnToMenu={() => {
               engineRef.current?.getDevEditor()?.setActive(false);
+              setMapDialogOpen(false);
               setScreen('menu');
             }}
           />
@@ -543,6 +560,11 @@ export default function App() {
             }}
           />
 
+          <MinimapRadar
+            snapshot={snapshot}
+            onOpenMapDialog={() => setMapDialogOpen(true)}
+          />
+
           <BottomControlBar
             snapshot={snapshot}
             onSetCameraMode={handleSetCameraMode}
@@ -551,6 +573,14 @@ export default function App() {
             onToggleAudio={handleToggleAudio}
             onTriggerCrime={handleTriggerCrime}
             onTriggerPursuit={handleTriggerPursuit}
+            onOpenMapDialog={() => setMapDialogOpen((prev) => !prev)}
+          />
+
+          <MapDialog
+            open={mapDialogOpen}
+            snapshot={snapshot}
+            onClose={() => setMapDialogOpen(false)}
+            onSelectUnit={handleSelectUnit}
           />
         </>
       )}

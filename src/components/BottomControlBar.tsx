@@ -7,6 +7,7 @@ import {
   Crosshair,
   Gauge,
   HelpCircle,
+  Map as MapIcon,
   RotateCcw,
   Volume2,
   VolumeX,
@@ -23,6 +24,7 @@ export interface BottomControlBarProps {
   onToggleAudio: () => void;
   onTriggerCrime: () => void;
   onTriggerPursuit: () => void;
+  onOpenMapDialog?: () => void;
 }
 
 const CAMERA_BUTTONS: Array<{
@@ -44,6 +46,7 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
   onToggleAudio,
   onTriggerCrime,
   onTriggerPursuit,
+  onOpenMapDialog,
 }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -208,6 +211,18 @@ export const BottomControlBar: React.FC<BottomControlBarProps> = ({
                 <Car className="h-3.5 w-3.5" />
                 Pursuit
               </button>
+
+              {onOpenMapDialog && (
+                <button
+                  type="button"
+                  onClick={onOpenMapDialog}
+                  title="Open Interactive Sector Map"
+                  className="flex items-center gap-1 border border-zinc-600 bg-zinc-700/80 px-2 py-1 text-[11px] font-medium text-zinc-200 hover:bg-zinc-600 cursor-pointer whitespace-nowrap shrink-0 rounded-none"
+                >
+                  <MapIcon className="h-3.5 w-3.5 text-sky-400" />
+                  Map
+                </button>
+              )}
 
               <button
                 type="button"

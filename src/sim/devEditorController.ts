@@ -2637,6 +2637,7 @@ export class DevEditorController {
             : 'classic_bw',
         weaponKind: opts.weaponKind ?? 'pistol',
         isHeavyUnit: Boolean(opts.isHeavyUnit),
+        vehicleClass: opts.isHeavyUnit ? 1 : 0,
         parkPos: [
           -92 + laneOffset * 8,
           config.world.surfaceHeights.apron,

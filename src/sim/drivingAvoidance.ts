@@ -23,8 +23,8 @@ export interface AvoidanceResult {
   preferredTurnDir: 1 | -1;
 }
 
-const STEER_CANDIDATE_OFFSETS = [0, 0.24, -0.24, 0.48, -0.48, 0.74, -0.74];
-const PREDICT_TIMES = [0.35, 0.75, 1.15];
+const STEER_CANDIDATE_OFFSETS = [0, 0.14, -0.14, 0.3, -0.3, 0.48, -0.48, 0.68, -0.68];
+const PREDICT_TIMES = [0.35, 0.72, 1.1];
 
 /**
  * Computes pure-pursuit path lookahead without cutting across sharp building corners.
@@ -136,8 +136,8 @@ export function computeAvoidanceSteerAndSpeed(params: {
   let wallBlocked = false;
   let vehicleBlocked = false;
 
-  // 1. Bumper-width static building / obstacle feelers + rear left/right clearance
-  const rayLen = 6.2 + selfHalfL + Math.min(9.5, speed * 0.52);
+  // 1. Volumetric bumper-width forward corridor + side feelers + rear left/right clearance
+  const rayLen = 7.2 + selfHalfL + Math.min(10.5, speed * 0.56);
   const castFromOffset = (latFrac: number, angleOffset: number, len: number) => {
     const ox = pos.x + rightX * (latFrac * selfHalfW * 0.94) + fwdX * (selfHalfL * 0.55);
     const oz = pos.z + rightZ * (latFrac * selfHalfW * 0.94) + fwdZ * (selfHalfL * 0.55);
@@ -147,11 +147,18 @@ export function computeAvoidanceSteerAndSpeed(params: {
     return staticBvh.raycastSegment(ox, oz, tx, tz);
   };
 
-  const cRay = castFromOffset(0, 0, rayLen);
-  const lbRay = castFromOffset(1, 0.08, rayLen * 0.9);
-  const rbRay = castFromOffset(-1, -0.08, rayLen * 0.9);
-  const lWideRay = castFromOffset(0.75, 0.58, rayLen * 0.74);
-  const rWideRay = castFromOffset(-0.75, -0.58, rayLen * 0.74);
+  const frontCorridor = staticBvh.sweepCorridor(
+    pos.x + fwdX * (selfHalfL * 0.25),
+    pos.z + fwdZ * (selfHalfL * 0.25),
+    fwdX,
+    fwdZ,
+    rayLen,
+    selfHalfW + 0.26,
+  );
+  const lbRay = castFromOffset(1, 0.14, rayLen * 0.85);
+  const rbRay = castFromOffset(-1, -0.14, rayLen * 0.85);
+  const lWideRay = castFromOffset(0.75, 0.58, rayLen * 0.72);
+  const rWideRay = castFromOffset(-0.75, -0.58, rayLen * 0.72);
 
   const rearLen = selfHalfL + 3.8;
   const rearCenterRay = staticBvh.raycastSegment(
@@ -175,14 +182,18 @@ export function computeAvoidanceSteerAndSpeed(params: {
   const rearClear = rearCenterRay.clear || rearLeftRay.clear || rearRightRay.clear;
 
   const minFrontT = Math.min(
-    cRay.clear ? 1 : cRay.t,
+    frontCorridor.clear ? 1 : frontCorridor.t,
     lbRay.clear ? 1 : lbRay.t,
     rbRay.clear ? 1 : rbRay.t,
   );
   const leftClear = Math.min(lbRay.clear ? 1 : lbRay.t, lWideRay.clear ? 1 : lWideRay.t);
   const rightClear = Math.min(rbRay.clear ? 1 : rbRay.t, rWideRay.clear ? 1 : rWideRay.t);
   const preferredTurnDir: 1 | -1 =
-    rearLeftRay.clear && !rearRightRay.clear
+    !frontCorridor.clear && frontCorridor.kind === 'prop' && Math.abs(frontCorridor.hitLat) > 0.12
+      ? frontCorridor.hitLat >= 0
+        ? -1
+        : 1
+      : rearLeftRay.clear && !rearRightRay.clear
       ? -1
       : rearRightRay.clear && !rearLeftRay.clear
       ? 1
@@ -192,14 +203,14 @@ export function computeAvoidanceSteerAndSpeed(params: {
 
   if (minFrontT < 1) {
     const wallDist = minFrontT * rayLen;
-    if (wallDist < 2.25) {
+    if (wallDist < 2.35) {
       speedCap = 0;
       wallBlocked = true;
-    } else if (wallDist < 5.0) {
-      speedCap = Math.min(speedCap, Math.max(1.1, (wallDist - 1.8) * 1.75));
-      wallBlocked = wallDist < 3.1;
-    } else {
-      speedCap = Math.min(speedCap, Math.max(4.4, wallDist * 0.96));
+    } else if (wallDist < 5.4) {
+      speedCap = Math.min(speedCap, Math.max(1.1, (wallDist - 1.85) * 1.7));
+      wallBlocked = wallDist < 3.25;
+    } else if (wallDist < 9.5) {
+      speedCap = Math.min(speedCap, Math.max(4.6, wallDist * 1.05));
     }
   }
 
@@ -223,46 +234,42 @@ export function computeAvoidanceSteerAndSpeed(params: {
   const goalErr = normalizeAngle(baseDesiredYaw - yaw);
   const testSpeed = Math.max(5.5, Math.min(baseSpeed, speed + 4.5));
   const hardStopGap = THREE.MathUtils.lerp(2.1, 1.15, Math.max(recklessness * 0.85, impatience * 0.55));
-  const probeArcLen = 5.5 + selfHalfL + Math.min(8.0, testSpeed * 0.45);
+  const probeArcLen = 6.2 + selfHalfL + Math.min(8.5, testSpeed * 0.48);
 
   let bestOffset = 0;
   let bestScore = -Infinity;
+  const obstacleNearby = minFrontT < 0.82;
+  const maxCandOffset =
+    obstacleNearby
+      ? 0.68
+      : speed > 16
+      ? 0.32
+      : speed > 10
+      ? 0.48
+      : 0.68;
 
   for (const candOffset of STEER_CANDIDATE_OFFSETS) {
-    // Disallow wide swerves if vehicle cannot overtake unless wall is right ahead
-    if (Math.abs(candOffset) > 0.3 && !canOvertake && minFrontT > 0.55) {
+    // Disallow wide swerves if vehicle cannot overtake unless obstacle is ahead in corridor
+    if (Math.abs(candOffset) > 0.3 && !canOvertake && !obstacleNearby) {
+      continue;
+    }
+    if (Math.abs(candOffset) > maxCandOffset) {
       continue;
     }
     const candYaw = normalizeAngle(baseDesiredYaw + candOffset);
     const cFwdX = Math.sin(candYaw);
     const cFwdZ = Math.cos(candYaw);
-    const cRightX = Math.cos(candYaw);
-    const cRightZ = -Math.sin(candYaw);
 
-    // Check wall clearance along candidate heading
-    const rayMid = staticBvh.raycastSegment(
+    // Volumetric swept corridor check along candidate heading (catches thin streetlights, signs, bollards)
+    const sweep = staticBvh.sweepCorridor(
       pos.x,
       pos.z,
-      pos.x + cFwdX * probeArcLen,
-      pos.z + cFwdZ * probeArcLen,
+      cFwdX,
+      cFwdZ,
+      probeArcLen,
+      selfHalfW + 0.28,
     );
-    const rayLeft = staticBvh.raycastSegment(
-      pos.x + cRightX * (selfHalfW * 0.88),
-      pos.z + cRightZ * (selfHalfW * 0.88),
-      pos.x + cRightX * (selfHalfW * 0.88) + cFwdX * (probeArcLen * 0.85),
-      pos.z + cRightZ * (selfHalfW * 0.88) + cFwdZ * (probeArcLen * 0.85),
-    );
-    const rayRight = staticBvh.raycastSegment(
-      pos.x - cRightX * (selfHalfW * 0.88),
-      pos.z - cRightZ * (selfHalfW * 0.88),
-      pos.x - cRightX * (selfHalfW * 0.88) + cFwdX * (probeArcLen * 0.85),
-      pos.z - cRightZ * (selfHalfW * 0.88) + cFwdZ * (probeArcLen * 0.85),
-    );
-    const minWallT = Math.min(
-      rayMid.clear ? 1 : rayMid.t,
-      rayLeft.clear ? 1 : rayLeft.t,
-      rayRight.clear ? 1 : rayRight.t,
-    );
+    const minWallT = sweep.clear ? 1 : sweep.t;
 
     // Score predictive Time-To-Collision clearance along candidate arc
     let minVehMargin = 6.0;
@@ -283,10 +290,14 @@ export function computeAvoidanceSteerAndSpeed(params: {
       }
     }
 
-    // Score prefers straight path toward goal, penalizes wall proximity & predicted vehicle overlap
-    const goalPenalty = Math.abs(candOffset) * 1.45;
-    const yawContinuity = Math.abs(candOffset - prevSteerBias) * 0.35;
-    const wallScore = minWallT < 1 ? -(1 - minWallT) * 14.0 : 2.5;
+    // Score prefers straight path toward goal, penalizes sign-reversing oscillation & wall/vehicle overlap
+    const goalPenalty = Math.abs(candOffset) * (obstacleNearby ? 1.15 : 1.65);
+    const signFlipPenalty =
+      !obstacleNearby && Math.abs(prevSteerBias) > 0.08 && candOffset !== 0 && candOffset * prevSteerBias < 0
+        ? 1.85
+        : 0;
+    const yawContinuity = Math.abs(candOffset - prevSteerBias) * (obstacleNearby ? 0.55 : 1.15) + signFlipPenalty;
+    const wallScore = minWallT < 1 ? -(1 - minWallT) * 18.0 : 2.5;
     const vehScore = minVehMargin < 0 ? minVehMargin * 9.0 : Math.min(2.5, minVehMargin * 0.6);
     const score = vehScore + wallScore - goalPenalty - yawContinuity;
 
@@ -370,17 +381,26 @@ export function computeAvoidanceSteerAndSpeed(params: {
 
   let targetBias = bestOffset;
   if (wallBlocked && Math.abs(goalErr) < 0.65) {
-    targetBias = preferredTurnDir * 0.92;
+    targetBias = preferredTurnDir * 0.88;
   } else {
-    if (!lWideRay.clear && lWideRay.t < 0.68) {
-      targetBias -= (1 - lWideRay.t) * 0.42;
+    if (!frontCorridor.clear && frontCorridor.t < 0.75 && Math.abs(targetBias) < 0.14) {
+      const pushDir = frontCorridor.hitLat >= 0 ? -1 : 1;
+      targetBias += pushDir * (0.75 - frontCorridor.t) * 0.65;
     }
-    if (!rWideRay.clear && rWideRay.t < 0.68) {
-      targetBias += (1 - rWideRay.t) * 0.42;
+    if (!lWideRay.clear && lWideRay.t < 0.55) {
+      targetBias -= (0.55 - lWideRay.t) * 0.55;
+    }
+    if (!rWideRay.clear && rWideRay.t < 0.55) {
+      targetBias += (0.55 - rWideRay.t) * 0.55;
     }
   }
+  const speedCapBias = obstacleNearby ? 0.68 : speed > 14 ? 0.36 : 0.72;
+  targetBias = wallBlocked
+    ? targetBias
+    : THREE.MathUtils.clamp(targetBias, -speedCapBias, speedCapBias);
 
-  const nextSteerBias = THREE.MathUtils.damp(prevSteerBias, targetBias, 8.0, dt);
+  const dampRate = obstacleNearby ? 9.5 : speed > 13 ? 4.8 : 7.2;
+  const nextSteerBias = THREE.MathUtils.damp(prevSteerBias, targetBias, dampRate, dt);
   const desiredYaw = normalizeAngle(
     wallBlocked ? yaw + targetBias : baseDesiredYaw + nextSteerBias,
   );

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export type HudWidgetId = 'topBar' | 'sidebarDock' | 'cameraBar';
+export type HudWidgetId = 'topBar' | 'sidebarDock' | 'cameraBar' | 'minimap';
 
 export interface HudWidgetLayout {
   visible: boolean;
@@ -22,6 +22,7 @@ const STORAGE_KEY = 'metro_precinct_hud_layout_v1';
 export function getDefaultHudLayout(): HudLayoutConfig {
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
   const vh = typeof window !== 'undefined' ? window.innerHeight : 720;
+  const miniSize = Math.min(220, Math.max(168, Math.round(Math.min(vw, vh) * 0.25)));
   return {
     editMode: false,
     hudOpacity: 0.94,
@@ -48,6 +49,13 @@ export function getDefaultHudLayout(): HudLayoutConfig {
         w: Math.min(640, vw - 16),
         h: 38,
       },
+      minimap: {
+        visible: true,
+        x: Math.max(8, vw - miniSize - 10),
+        y: Math.max(50, vh - miniSize - 10),
+        w: miniSize,
+        h: miniSize,
+      },
     },
   };
 }
@@ -65,8 +73,10 @@ function loadInitialLayout(): HudLayoutConfig {
       const base = def.widgets[id];
       const item = parsed.widgets?.[id];
       if (!item) return base;
-      const w = Math.max(180, Math.min(vw - 8, Number(item.w) || base.w));
-      const h = Math.max(30, Math.min(vh - 8, Number(item.h) || base.h));
+      const minW = id === 'minimap' ? 140 : 180;
+      const minH = id === 'minimap' ? 140 : 30;
+      const w = Math.max(minW, Math.min(vw - 8, Number(item.w) || base.w));
+      const h = Math.max(minH, Math.min(vh - 8, Number(item.h) || base.h));
       const x = Math.max(0, Math.min(vw - 80, Number(item.x) ?? base.x));
       const y = Math.max(0, Math.min(vh - 30, Number(item.y) ?? base.y));
       return {
@@ -88,6 +98,7 @@ function loadInitialLayout(): HudLayoutConfig {
         topBar: mergeWidget('topBar'),
         sidebarDock: mergeWidget('sidebarDock'),
         cameraBar: mergeWidget('cameraBar'),
+        minimap: mergeWidget('minimap'),
       },
     };
   } catch {
@@ -124,12 +135,14 @@ class HudLayoutStore {
     const cur = this.config.widgets[id];
     const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
     const vh = typeof window !== 'undefined' ? window.innerHeight : 720;
+    const minW = id === 'minimap' ? 140 : 180;
+    const minH = id === 'minimap' ? 140 : 30;
     const next: HudWidgetLayout = {
       ...cur,
       ...patch,
     };
-    next.w = Math.max(180, Math.min(vw - 8, next.w));
-    next.h = Math.max(30, Math.min(vh - 8, next.h));
+    next.w = Math.max(minW, Math.min(vw - 8, next.w));
+    next.h = Math.max(minH, Math.min(vh - 8, next.h));
     next.x = Math.max(0, Math.min(vw - 64, next.x));
     next.y = Math.max(0, Math.min(vh - 28, next.y));
     this.config = {

@@ -17,7 +17,7 @@ import {
 } from './drivingAvoidance';
 import { isPointNearArmedNailMat } from './nailMatSystem';
 import { dismountUnit, dispatchNearestUnit } from './policeUnitSystem';
-import { getSurfaceHeight, TownRoadGraph } from './roadGraph';
+import { getSurfaceHeight, TownRoadGraph, WorldConfig } from './roadGraph';
 import { disposeGroupContents, SceneWorldHierarchy } from './sceneHierarchy';
 import {
   ActiveCrime,
@@ -26,6 +26,8 @@ import {
   NailMatActor,
   OfficerActor,
   PedestrianActor,
+  PersistentCorpse,
+  PersistentWreck,
   PoliceUnit,
   resolveCrimePrimaryAssailant,
   resolveUnitOfficers,
@@ -43,6 +45,7 @@ import {
   CivilianCarRig,
   createCivilianCar,
   createHumanoid,
+  HumanoidRig,
 } from './vehicleModels';
 import {
   applyVehicleWheelVisuals,
@@ -100,6 +103,61 @@ function computeInitialUrgency(
   return THREE.MathUtils.clamp(base, 15, 96);
 }
 
+function attachWeaponAndRingToConvertedPed(
+  rig: HumanoidRig,
+  weaponKind: WeaponKind,
+): void {
+  if (!rig.muzzleFlash) {
+    const gunMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      metalness: 0.82,
+      roughness: 0.28,
+    });
+    const gripMat = new THREE.MeshStandardMaterial({
+      color: 0x0f131a,
+      roughness: 0.75,
+    });
+    const barrelLen = weaponKind === 'rifle' ? 0.52 : 0.28;
+    const barrel = new THREE.Mesh(
+      new THREE.BoxGeometry(0.048, barrelLen, 0.072),
+      gunMat,
+    );
+    barrel.position.set(0, -0.49 - barrelLen * 0.35, 0.045);
+    barrel.castShadow = true;
+    const grip = new THREE.Mesh(
+      new THREE.BoxGeometry(0.042, 0.075, 0.12),
+      gripMat,
+    );
+    grip.position.set(0, -0.48, -0.035);
+    const flash = new THREE.Mesh(
+      new THREE.SphereGeometry(0.11, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xfef08a }),
+    );
+    flash.position.set(0, -0.58 - barrelLen * 0.65, 0.045);
+    flash.visible = false;
+    rig.rightArm.add(barrel);
+    rig.rightArm.add(grip);
+    rig.rightArm.add(flash);
+    rig.muzzleFlash = flash;
+  }
+
+  if (!rig.threatRing) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.9, 1.25, 28).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({
+        color: 0xef4444,
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+      }),
+    );
+    ring.position.y = 0.06;
+    rig.root.add(ring);
+    rig.threatRing = ring;
+  }
+  rig.threatRing.visible = true;
+}
+
 export interface SpawnCrimeParams {
   forcePursuit: boolean;
   crimes: ActiveCrime[];
@@ -107,6 +165,8 @@ export interface SpawnCrimeParams {
   units: PoliceUnit[];
   officersById: Map<string, OfficerActor>;
   assailants: AssailantActor[];
+  civilianCars?: CivilianVehicle[];
+  pedestrians?: PedestrianActor[];
   hierarchy: SceneWorldHierarchy;
   roadGraph: TownRoadGraph;
   staticBvh: StaticObstacleBVH;
@@ -128,6 +188,8 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     units,
     officersById,
     assailants,
+    civilianCars,
+    pedestrians,
     hierarchy,
     roadGraph,
     staticBvh,
@@ -145,7 +207,38 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
   if (crimes.length >= config.simulation.maxActiveCrimes) return null;
 
   const isPursuit = forcePursuit || rng() < config.simulation.pursuitTriggerChance;
-  const spot = roadGraph.generateRandomCrimeSpot(rng);
+
+  // 1) For pursuits, convert an existing active civilian vehicle whenever available
+  if (isPursuit && civilianCars && civilianCars.length > 0) {
+    const stationClear = civilianCars.filter((c) => !c.immobilized && c.pos.x > -40);
+    const pool = stationClear.length > 0 ? stationClear : civilianCars.filter((c) => !c.immobilized);
+    if (pool.length > 0) {
+      const picked = pool[Math.floor(rng() * pool.length)];
+      return promoteCivilianToPursuit({
+        civilian: picked,
+        civilianCars,
+        crimeCounter,
+        crimes,
+        units,
+        officersById,
+        assailants,
+        hierarchy,
+        roadGraph,
+        staticBvh,
+        config,
+        assets,
+        textures,
+        drivingMode,
+        audio,
+        rng,
+        reason: 'Civilian suspect fled in vehicle',
+        map,
+        onAssetIssue,
+        initiallySpotted: false,
+      });
+    }
+  }
+
   const footTypes = [
     CrimeType.ArmedRobbery,
     CrimeType.ShotsFired,
@@ -157,20 +250,6 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     : footTypes[crimeCounter % footTypes.length];
   const id = `crime-${crimeCounter}`;
 
-  const suspectRig = createHumanoid(
-    'suspect',
-    assets,
-    textures,
-    undefined,
-    onAssetIssue,
-  );
-  const pos = new THREE.Vector3(spot.x, 0, spot.z);
-  staticBvh.resolveCircle(pos, 0.52);
-  pos.y = getSurfaceHeight(pos.x, pos.z, surface);
-  suspectRig.root.position.copy(pos);
-  suspectRig.root.visible = !isPursuit;
-  hierarchy.addEntity(suspectRig.root);
-
   const suspectWeaponKind: WeaponKind =
     !isPursuit &&
     (type === CrimeType.ArmedRobbery || rng() < config.simulation.suspectRifleChance)
@@ -178,6 +257,75 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
       : 'pistol';
   const suspectArmor = suspectWeaponKind === 'rifle' ? 40 : 15;
   const magSize = config.weapons[suspectWeaponKind].magSize;
+
+  // 2) For foot crimes, convert an existing living pedestrian into the suspect whenever available
+  let convertedPed: PedestrianActor | null = null;
+  if (!isPursuit && pedestrians && pedestrians.length > 0) {
+    const candidates = pedestrians.filter(
+      (p) => !p.dead && !p.ragdoll.active && p.pos.x > -42,
+    );
+    const pool =
+      candidates.length > 0
+        ? candidates
+        : pedestrians.filter((p) => !p.dead && !p.ragdoll.active);
+    if (pool.length > 0) {
+      const chosen = pool[Math.floor(rng() * pool.length)];
+      const idx = pedestrians.indexOf(chosen);
+      if (idx >= 0) {
+        pedestrians.splice(idx, 1);
+        convertedPed = chosen;
+      }
+    }
+  }
+
+  let spot = roadGraph.generateRandomCrimeSpot(rng);
+  let pos = new THREE.Vector3(spot.x, 0, spot.z);
+  let suspectRig: HumanoidRig;
+
+  if (convertedPed) {
+    pos = convertedPed.pos.clone();
+    staticBvh.resolveCircle(pos, 0.52);
+    pos.y = getSurfaceHeight(pos.x, pos.z, surface);
+    suspectRig = convertedPed.rig;
+    attachWeaponAndRingToConvertedPed(suspectRig, suspectWeaponKind);
+    suspectRig.root.position.copy(pos);
+    suspectRig.root.visible = true;
+
+    const entry = roadGraph.findNearestRoadEntryPoint(pos.x, pos.z, staticBvh);
+    const segNodes = entry.nearestNode.neighbors;
+    const neighborId = segNodes[0] ?? entry.nearestNode.id;
+    const neighborNode = roadGraph.getNodeById(neighborId);
+    const pullYaw = neighborNode
+      ? Math.atan2(
+          neighborNode.x - entry.nearestNode.x,
+          neighborNode.z - entry.nearestNode.z,
+        )
+      : 0;
+    const districts = map?.districts?.length ? map.districts : config.world.districts;
+    spot = {
+      x: pos.x,
+      z: pos.z,
+      roadPullOverPos: entry.point.clone(),
+      roadPullOverYaw: pullYaw,
+      nearestNodeId: entry.nearestNode.id,
+      segmentNodeA: entry.nearestNode.id,
+      segmentNodeB: neighborId,
+      district: districts[crimeCounter % districts.length] ?? spot.district,
+    };
+  } else {
+    suspectRig = createHumanoid(
+      'suspect',
+      assets,
+      textures,
+      undefined,
+      onAssetIssue,
+    );
+    staticBvh.resolveCircle(pos, 0.52);
+    pos.y = getSurfaceHeight(pos.x, pos.z, surface);
+    suspectRig.root.position.copy(pos);
+    suspectRig.root.visible = !isPursuit;
+    hierarchy.addEntity(suspectRig.root);
+  }
 
   let vehicleRig: CivilianCarRig | null = null;
   let vehicleThreatRing: THREE.Mesh | null = null;
@@ -245,7 +393,7 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     crimeId: id,
     rig: suspectRig,
     pos: isPursuit ? vehiclePos.clone() : pos.clone(),
-    yaw: rng() * Math.PI * 2,
+    yaw: convertedPed ? convertedPed.yaw : rng() * Math.PI * 2,
     hp: 100,
     maxHp: 100,
     armor: suspectArmor,
@@ -269,6 +417,7 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
   assailants.push(assailant);
 
   const baseUrgency = computeInitialUrgency(type, suspectWeaponKind, rng);
+  const initialSpot = isPursuit ? vehiclePos.clone() : pos.clone();
 
   const crime: ActiveCrime = {
     id,
@@ -279,7 +428,7 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     baseUrgency,
     urgency: baseUrgency,
     urgencyLevel: computeUrgencyLevel(baseUrgency),
-    pos: isPursuit ? vehiclePos.clone() : pos.clone(),
+    pos: initialSpot.clone(),
     roadPullOverPos: isPursuit ? vehiclePos.clone() : spot.roadPullOverPos.clone(),
     roadPullOverYaw: spot.roadPullOverYaw,
     nearestNodeId: spot.nearestNodeId,
@@ -318,13 +467,24 @@ export function spawnCrime(params: SpawnCrimeParams): ActiveCrime | null {
     cleanupTimer: 4.5,
     elapsedSec: 0,
     engagedSec: 0,
+    reportedPos: initialSpot.clone(),
+    lastKnownPos: initialSpot.clone(),
+    lastKnownVel: new THREE.Vector3(),
+    predictedPos: initialSpot.clone(),
+    lastSeenSimTime: -1,
+    everSpotted: false,
+    hasLineOfSight: false,
+    sightLostSec: 0,
+    convertedFromPedId: convertedPed?.id,
   };
 
   crimes.push(crime);
   simEventLog.info(
     'dispatch',
     `New Case #${crime.caseNumber}: ${crime.type}`,
-    `${crime.district} • Urgency ${crime.urgency}${isPursuit ? ' (Vehicle Pursuit)' : ''}`,
+    `${crime.district} • Urgency ${crime.urgency}${
+      convertedPed ? ` • Suspect ${convertedPed.id}` : ''
+    }${isPursuit ? ' (Vehicle Pursuit)' : ''}`,
   );
   dispatchNearestUnit(
     crime,
@@ -363,6 +523,7 @@ export interface PromoteCivilianPursuitParams {
   reason: string;
   map?: CustomMapAsset;
   onAssetIssue?: (issue: AssetIssue) => void;
+  initiallySpotted?: boolean;
 }
 
 export function promoteCivilianToPursuit(
@@ -388,6 +549,7 @@ export function promoteCivilianToPursuit(
     reason,
     map,
     onAssetIssue,
+    initiallySpotted = true,
   } = params;
 
   if (civilian.immobilized) return null;
@@ -455,6 +617,14 @@ export function promoteCivilianToPursuit(
   };
   assailants.push(assailant);
 
+  const initVel = initiallySpotted
+    ? new THREE.Vector3(
+        Math.sin(civilian.yaw) * Math.max(8, Math.abs(civilian.speed)),
+        0,
+        Math.cos(civilian.yaw) * Math.max(8, Math.abs(civilian.speed)),
+      )
+    : new THREE.Vector3();
+
   const crime: ActiveCrime = {
     id,
     caseNumber: 100 + crimeCounter,
@@ -503,13 +673,22 @@ export function promoteCivilianToPursuit(
     cleanupTimer: 4.5,
     elapsedSec: 0,
     engagedSec: 0,
+    reportedPos: civilian.pos.clone(),
+    lastKnownPos: civilian.pos.clone(),
+    lastKnownVel: initVel,
+    predictedPos: civilian.pos.clone(),
+    lastSeenSimTime: initiallySpotted ? 0 : -1,
+    everSpotted: initiallySpotted,
+    hasLineOfSight: initiallySpotted,
+    sightLostSec: 0,
+    convertedFromCivId: civilian.id,
   };
 
   crimes.push(crime);
   simEventLog.warn(
     'dispatch',
-    `Case #${crime.caseNumber}: Reckless driver flagged (${reason})`,
-    `${crime.district} • Police witnessed violation`,
+    `Case #${crime.caseNumber}: Civilian suspect flagged (${reason})`,
+    `${crime.district} • ${civilian.id}`,
   );
   dispatchNearestUnit(
     crime,
@@ -914,6 +1093,87 @@ export function updateGetawayVehicle(
   }
 }
 
+function updateCrimeSightAndPrediction(
+  c: ActiveCrime,
+  units: PoliceUnit[],
+  officers: OfficerActor[],
+  officersById: Map<string, OfficerActor>,
+  primary: AssailantActor | undefined,
+  staticBvh: StaticObstacleBVH,
+  surface: CustomMapAsset | WorldConfig,
+  simTime: number,
+  mapHalfSize: number,
+  dt: number,
+): void {
+  const actualPos = c.inVehiclePursuit ? c.vehiclePos : (primary?.pos ?? c.pos);
+  const sightRadiusSq = 76 * 76;
+  let spotted = false;
+
+  for (const off of officers) {
+    if (off.hp <= 0 || off.locationState === 'in_precinct') continue;
+    const dx = actualPos.x - off.pos.x;
+    const dz = actualPos.z - off.pos.z;
+    if (dx * dx + dz * dz > sightRadiusSq) continue;
+    if (staticBvh.raycastSegment(off.pos.x, off.pos.z, actualPos.x, actualPos.z).clear) {
+      spotted = true;
+      break;
+    }
+  }
+
+  if (!spotted) {
+    for (const u of units) {
+      if (u.status === UnitStatus.AtStation || u.immobilized) continue;
+      const hasLivingCrew = u.officerRefs.some((oid) => (officersById.get(oid)?.hp ?? 0) > 0);
+      if (!hasLivingCrew) continue;
+      const dx = actualPos.x - u.pos.x;
+      const dz = actualPos.z - u.pos.z;
+      if (dx * dx + dz * dz > sightRadiusSq) continue;
+      if (staticBvh.raycastSegment(u.pos.x, u.pos.z, actualPos.x, actualPos.z).clear) {
+        spotted = true;
+        break;
+      }
+    }
+  }
+
+  if (spotted) {
+    c.hasLineOfSight = true;
+    c.everSpotted = true;
+    c.sightLostSec = 0;
+    c.lastSeenSimTime = simTime;
+    if (c.inVehiclePursuit) {
+      c.lastKnownVel.set(c.vehicleDyn.vx, 0, c.vehicleDyn.vz);
+    } else if (primary && dt > 1e-4) {
+      const vx = (actualPos.x - c.lastKnownPos.x) / dt;
+      const vz = (actualPos.z - c.lastKnownPos.z) / dt;
+      const spd = Math.hypot(vx, vz);
+      if (spd > 8.5) {
+        c.lastKnownVel.set((vx / spd) * 4.2, 0, (vz / spd) * 4.2);
+      } else {
+        c.lastKnownVel.set(vx, 0, vz);
+      }
+    }
+    c.lastKnownPos.copy(actualPos);
+    c.predictedPos.copy(actualPos);
+  } else {
+    c.hasLineOfSight = false;
+    c.sightLostSec += dt;
+    if (c.everSpotted) {
+      // Extrapolate last known position along last seen velocity vector with smooth decay
+      const tPred = Math.min(c.sightLostSec, 7.5) * 0.72;
+      const maxCoord = Math.max(40, mapHalfSize - 10);
+      c.predictedPos.set(
+        THREE.MathUtils.clamp(c.lastKnownPos.x + c.lastKnownVel.x * tPred, -maxCoord, maxCoord),
+        0,
+        THREE.MathUtils.clamp(c.lastKnownPos.z + c.lastKnownVel.z * tPred, -maxCoord, maxCoord),
+      );
+      staticBvh.resolveCircle(c.predictedPos, 1.4);
+      c.predictedPos.y = getSurfaceHeight(c.predictedPos.x, c.predictedPos.z, surface);
+    } else {
+      c.predictedPos.copy(c.reportedPos);
+    }
+  }
+}
+
 export interface UpdateCrimesParams {
   crimes: ActiveCrime[];
   units: PoliceUnit[];
@@ -924,6 +1184,8 @@ export interface UpdateCrimesParams {
   pedestrians: PedestrianActor[];
   allVehicles: AvoidanceVehicleProxy[];
   nailMats: NailMatActor[];
+  persistentWrecks?: PersistentWreck[];
+  persistentCorpses?: PersistentCorpse[];
   hierarchy: SceneWorldHierarchy;
   roadGraph: TownRoadGraph;
   staticBvh: StaticObstacleBVH;
@@ -950,6 +1212,8 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
     pedestrians,
     allVehicles,
     nailMats,
+    persistentWrecks,
+    persistentCorpses,
     hierarchy,
     roadGraph,
     staticBvh,
@@ -965,6 +1229,7 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
     onCrimeCleared,
   } = params;
   const surface = map ?? config.world;
+  const mapHalfSize = map?.bounds.halfSize ?? config.world.townHalfSize ?? 150;
 
   for (let i = crimes.length - 1; i >= 0; i--) {
     const c = crimes[i];
@@ -986,6 +1251,21 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
 
     if (primary && !c.inVehiclePursuit) {
       c.pos.copy(primary.pos);
+    }
+
+    if (anyAlive) {
+      updateCrimeSightAndPrediction(
+        c,
+        units,
+        officers,
+        officersById,
+        primary,
+        staticBvh,
+        surface,
+        simTime,
+        mapHalfSize,
+        dt,
+      );
     }
 
     if (!anyAlive) {
@@ -1092,16 +1372,50 @@ export function updateCrimes(params: UpdateCrimesParams, dt: number): void {
       }
       c.cleanupTimer -= dt;
       if (c.cleanupTimer <= 0) {
+        // Persist dead suspect bodies and wrecked suspect vehicles until debris cap is reached
         for (const a of crimeAssailants) {
-          hierarchy.removeEntity(a.rig.root);
-          disposeEntityObject(a.rig.root);
+          if (a.rig.threatRing) a.rig.threatRing.visible = false;
+          if (a.rig.muzzleFlash) a.rig.muzzleFlash.visible = false;
           const aIdx = assailants.indexOf(a);
           if (aIdx >= 0) assailants.splice(aIdx, 1);
           assailantsById.delete(a.id);
+
+          if (persistentCorpses && !a.inVehicle) {
+            a.ragdoll.active = false;
+            a.pos.y = getSurfaceHeight(a.pos.x, a.pos.z, surface) + 0.16;
+            a.rig.root.position.copy(a.pos);
+            a.rig.root.rotation.set(Math.PI * 0.5, a.yaw, 0);
+            persistentCorpses.push({
+              id: a.id,
+              kind: 'suspect',
+              object: a.rig.root,
+              x: a.pos.x,
+              z: a.pos.z,
+              createdAt: simTime,
+            });
+          } else {
+            hierarchy.removeEntity(a.rig.root);
+            disposeEntityObject(a.rig.root);
+          }
         }
         if (c.vehicleRig) {
-          hierarchy.removeEntity(c.vehicleRig.root);
-          disposeEntityObject(c.vehicleRig.root);
+          if (c.vehicleThreatRing) {
+            c.vehicleRig.root.remove(c.vehicleThreatRing);
+          }
+          if (persistentWrecks) {
+            persistentWrecks.push({
+              id: `wreck-${c.id}`,
+              kind: 'suspect_vehicle',
+              object: c.vehicleRig.root,
+              x: c.vehiclePos.x,
+              z: c.vehiclePos.z,
+              yaw: c.vehicleYaw,
+              createdAt: simTime,
+            });
+          } else {
+            hierarchy.removeEntity(c.vehicleRig.root);
+            disposeEntityObject(c.vehicleRig.root);
+          }
         }
         crimes.splice(i, 1);
         onCrimeCleared();
